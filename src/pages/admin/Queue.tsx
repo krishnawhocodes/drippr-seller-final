@@ -178,10 +178,16 @@ function VariantDraftPreview({ variantDraft }: { variantDraft?: VariantDraft | n
 
 function ChangesTable({ base }: { base?: Record<string, ChangeVal> }) {
   if (!base || !Object.keys(base).length) return null;
+  const displayValue = (value: any) => {
+    if (value == null || value === "") return "—";
+    if (Array.isArray(value)) return value.join(", ") || "—";
+    if (typeof value === "object") return JSON.stringify(value, null, 2);
+    return String(value);
+  };
   return (
-    <div>
-      <h4 className="font-semibold mb-2">Base field changes</h4>
-      <div className="overflow-x-auto rounded border">
+    <div className="rounded-lg border-2 border-primary/30 bg-primary/5 p-4">
+      <h4 className="font-semibold mb-2 text-primary">Requested field changes</h4>
+      <div className="overflow-x-auto rounded border bg-background">
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
@@ -192,10 +198,14 @@ function ChangesTable({ base }: { base?: Record<string, ChangeVal> }) {
           </thead>
           <tbody>
             {Object.entries(base).map(([k, v]) => (
-              <tr key={k} className="border-t">
+              <tr key={k} className="border-t bg-amber-50/60">
                 <td className="p-2 font-medium capitalize">{k.replace(/_/g, " ")}</td>
-                <td className="p-2 text-muted-foreground">{String(v.old ?? "—")}</td>
-                <td className="p-2">{String(v.new ?? "—")}</td>
+                <td className="p-2 text-muted-foreground line-through decoration-destructive/70 whitespace-pre-wrap">
+                  {displayValue(v.old)}
+                </td>
+                <td className="p-2 font-semibold text-emerald-800 bg-emerald-50 underline decoration-2 underline-offset-4 whitespace-pre-wrap">
+                  {displayValue(v.new)}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -212,7 +222,7 @@ function VariantChanges({ variants }: { variants?: Array<{ key?: string; title?:
       <h4 className="font-semibold">Variant changes</h4>
       <div className="space-y-2">
         {variants.map((v, i) => (
-          <div key={v.key || v.title || i} className="rounded border p-3">
+          <div key={v.key || v.title || i} className="rounded-lg border-2 border-primary/30 bg-primary/5 p-3">
             <div className="font-medium mb-2">{v.title || v.key || `Variant ${i + 1}`}</div>
             <div className="overflow-x-auto rounded border">
               <table className="w-full text-sm">
@@ -225,10 +235,10 @@ function VariantChanges({ variants }: { variants?: Array<{ key?: string; title?:
                 </thead>
                 <tbody>
                   {Object.entries(v.fields || {}).map(([fk, fv]) => (
-                    <tr key={fk} className="border-t">
+                    <tr key={fk} className="border-t bg-amber-50/60">
                       <td className="p-2 font-medium capitalize">{fk.replace(/_/g, " ")}</td>
-                      <td className="p-2 text-muted-foreground">{String(fv.old ?? "—")}</td>
-                      <td className="p-2">{String(fv.new ?? "—")}</td>
+                      <td className="p-2 text-muted-foreground line-through decoration-destructive/70">{String(fv.old ?? "—")}</td>
+                      <td className="p-2 font-semibold text-emerald-800 bg-emerald-50 underline decoration-2 underline-offset-4">{String(fv.new ?? "—")}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -269,7 +279,7 @@ export default function ProductQueue() {
     setLoading(true);
     try {
       const resp = await queueList({
-        status: status === "all" ? undefined : status,
+        status,
         limit: 300,
       });
       const base = (resp.items || []) as QueueProduct[];

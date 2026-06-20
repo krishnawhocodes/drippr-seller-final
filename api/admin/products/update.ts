@@ -79,6 +79,31 @@ function readMeasurementMetafields(nodes: any[]) {
   return hasAnyMeasurement(measurements) ? measurements : null;
 }
 
+function valuesEqual(left: any, right: any) {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+function buildChangeSummary(
+  current: Record<string, any>,
+  requested: Record<string, any>,
+  instantApplied: string[],
+) {
+  const base: Record<string, { old: any; new: any }> = {};
+
+  for (const [field, nextValue] of Object.entries(requested)) {
+    const currentValue = current[field];
+    if (!valuesEqual(currentValue, nextValue)) {
+      base[field] = { old: currentValue ?? null, new: nextValue ?? null };
+    }
+  }
+
+  return {
+    instantApplied,
+    base,
+    note: "Highlighted values are pending admin approval before Shopify is updated.",
+  };
+}
+
 /* ---------------- Shopify GQL ---------------- */
 
 // NOTE: removed variant.weight & variant.weightUnit (they caused 500)
@@ -816,10 +841,26 @@ export default async function handler(req: any, res: any) {
 
       if (Object.keys(changedForReview).length) {
         adminNeedsReview = true;
-        updates.pendingUpdates = {
+        const mergedPendingUpdates = {
           ...(doc.pendingUpdates || {}),
           ...changedForReview,
         };
+        const instantApplied = [
+          quickPrice != null && !Number.isNaN(quickPrice) ? "price" : null,
+          quickQty != null && !Number.isNaN(quickQty) ? "stock" : null,
+          quickVariants?.length ? "variant price/stock" : null,
+        ].filter(Boolean) as string[];
+
+        updates.pendingUpdates = mergedPendingUpdates;
+        updates.changeSummary = buildChangeSummary(
+          doc,
+          mergedPendingUpdates,
+          instantApplied,
+        );
+        updates.preReviewStatus =
+          doc.status === "update_in_review"
+            ? doc.preReviewStatus || "approved"
+            : doc.status || "approved";
         updates.status = "update_in_review";
       }
 

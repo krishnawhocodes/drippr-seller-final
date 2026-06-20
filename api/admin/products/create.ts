@@ -217,6 +217,22 @@ const VARIANTS_BULK_UPDATE = /* GraphQL */ `
   }
 `;
 
+const INVENTORY_SET_ON_HAND = /* GraphQL */ `
+  mutation inventorySetOnHandQuantities(
+    $input: InventorySetOnHandQuantitiesInput!
+  ) {
+    inventorySetOnHandQuantities(input: $input) {
+      inventoryAdjustmentGroup {
+        createdAt
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
 /* ---------------- util: CDN fetch with retry ---------------- */
 
 function sleep(ms: number) {
@@ -287,7 +303,6 @@ export default async function handler(req: any, res: any) {
       resourceUrls = [],
       vendor,
       productType,
-      status,
       seo,
       sku: rawSku,
       variantDraft,
@@ -314,11 +329,7 @@ export default async function handler(req: any, res: any) {
 
     // --- Shopify product input ---
     const shopifyTags = [...new Set([`merchant:${merchantId}`, ...tags])];
-    const shopifyStatus = normalizedVariantDraft
-      ? "DRAFT"
-      : status
-        ? String(status).toUpperCase()
-        : undefined;
+    const shopifyStatus = "DRAFT";
 
     const productInput = {
       title,
@@ -411,6 +422,30 @@ export default async function handler(req: any, res: any) {
       console.warn("productVariantsBulkUpdate errors:", variantErrors);
     }
 
+    const locationId = process.env.SHOPIFY_LOCATION_ID;
+    const inventoryItemId = firstVariant?.inventoryItem?.id;
+    const inventoryQuantity = Number(inventory?.quantity);
+    if (
+      locationId &&
+      inventoryItemId &&
+      Number.isFinite(inventoryQuantity) &&
+      inventoryQuantity >= 0
+    ) {
+      const inventoryResult = await shopifyGraphQL(INVENTORY_SET_ON_HAND, {
+        input: {
+          reason: "correction",
+          setQuantities: [
+            { inventoryItemId, locationId, quantity: inventoryQuantity },
+          ],
+        },
+      });
+      const inventoryErrors =
+        inventoryResult?.data?.inventorySetOnHandQuantities?.userErrors || [];
+      if (inventoryErrors.length) {
+        console.warn("inventorySetOnHandQuantities errors:", inventoryErrors);
+      }
+    }
+
     // --- 3) Fetch permanent CDN image URLs ---
     const cdnUrls: string[] = await fetchCdnUrlsWithRetry(product.id);
 
@@ -438,6 +473,7 @@ export default async function handler(req: any, res: any) {
       shopifyProductNumericId,
       shopifyVariantIds: [firstVariant.id],
       shopifyVariantNumericIds: [numericVariantId],
+      inventoryItemId: firstVariant?.inventoryItem?.id || null,
       tags: shopifyTags,
 
       // Permanent CDN URLs only.

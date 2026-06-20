@@ -88,6 +88,205 @@ const METAFIELDS_SET = /* GraphQL */ `
   }
 `;
 
+const PRODUCT_UPDATE = /* GraphQL */ `
+  mutation productUpdate($product: ProductUpdateInput!) {
+    productUpdate(product: $product) {
+      product {
+        id
+        title
+        status
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const VARIANTS_BULK_UPDATE = /* GraphQL */ `
+  mutation productVariantsBulkUpdate(
+    $productId: ID!
+    $variants: [ProductVariantsBulkInput!]!
+  ) {
+    productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+      productVariants {
+        id
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const VARIANTS_BULK_DELETE = /* GraphQL */ `
+  mutation productVariantsBulkDelete($productId: ID!, $variantsIds: [ID!]!) {
+    productVariantsBulkDelete(productId: $productId, variantsIds: $variantsIds) {
+      product {
+        id
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const PRODUCT_INVENTORY_QUERY = /* GraphQL */ `
+  query productInventory($id: ID!) {
+    product(id: $id) {
+      variants(first: 1) {
+        nodes {
+          id
+          inventoryItem {
+            id
+          }
+        }
+      }
+    }
+  }
+`;
+
+const INVENTORY_SET_ON_HAND = /* GraphQL */ `
+  mutation inventorySetOnHandQuantities(
+    $input: InventorySetOnHandQuantitiesInput!
+  ) {
+    inventorySetOnHandQuantities(input: $input) {
+      inventoryAdjustmentGroup {
+        createdAt
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+function throwUserErrors(result: any, path: string) {
+  const errors = path
+    .split(".")
+    .reduce((value, key) => value?.[key], result)?.userErrors || [];
+  if (errors.length) {
+    throw new Error(errors.map((error: any) => error.message).join("; "));
+  }
+}
+
+async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
+  const productId = qdoc.shopifyProductId;
+  if (!productId) throw new Error("Shopify product ID is missing");
+
+  const existingMerchantTags = Array.isArray(qdoc.tags)
+    ? qdoc.tags.filter((tag: any) => String(tag).startsWith("merchant:"))
+    : [];
+  const requestedTags = Array.isArray(pendingUpdates.tags)
+    ? pendingUpdates.tags
+    : Array.isArray(qdoc.tags)
+      ? qdoc.tags
+      : [];
+
+  const productInput: Record<string, any> = {
+    id: productId,
+    status: "ACTIVE",
+  };
+  if (pendingUpdates.title !== undefined) productInput.title = pendingUpdates.title;
+  if (pendingUpdates.description !== undefined)
+    productInput.descriptionHtml = pendingUpdates.description || "";
+  if (pendingUpdates.vendor !== undefined) productInput.vendor = pendingUpdates.vendor;
+  if (pendingUpdates.productType !== undefined)
+    productInput.productType = pendingUpdates.productType || "";
+  if (pendingUpdates.tags !== undefined)
+    productInput.tags = [...new Set([...existingMerchantTags, ...requestedTags])];
+
+  const productResult = await shopifyGraphQL(PRODUCT_UPDATE, {
+    product: productInput,
+  });
+  throwUserErrors(productResult, "data.productUpdate");
+
+  const defaultVariantId = Array.isArray(qdoc.shopifyVariantIds)
+    ? qdoc.shopifyVariantIds[0]
+    : undefined;
+  if (defaultVariantId) {
+    const variantInput: Record<string, any> = { id: defaultVariantId };
+    if (pendingUpdates.compareAtPrice !== undefined)
+      variantInput.compareAtPrice = String(pendingUpdates.compareAtPrice);
+    if (pendingUpdates.barcode !== undefined)
+      variantInput.barcode = pendingUpdates.barcode || null;
+
+    if (Object.keys(variantInput).length > 1) {
+      const variantResult = await shopifyGraphQL(VARIANTS_BULK_UPDATE, {
+        productId,
+        variants: [variantInput],
+      });
+      throwUserErrors(variantResult, "data.productVariantsBulkUpdate");
+    }
+  }
+
+  const removeVariantIds = Array.isArray(pendingUpdates.removeVariantIds)
+    ? pendingUpdates.removeVariantIds.filter(Boolean)
+    : [];
+  if (removeVariantIds.length) {
+    const deleteResult = await shopifyGraphQL(VARIANTS_BULK_DELETE, {
+      productId,
+      variantsIds: removeVariantIds,
+    });
+    throwUserErrors(deleteResult, "data.productVariantsBulkDelete");
+  }
+
+  let inventoryItemId = qdoc.inventoryItemId || null;
+  const approvedStock = Number(
+    pendingUpdates.stock !== undefined ? pendingUpdates.stock : qdoc.stock,
+  );
+  const locationId = process.env.SHOPIFY_LOCATION_ID;
+  if (locationId && Number.isFinite(approvedStock) && approvedStock >= 0) {
+    if (!inventoryItemId) {
+      const inventoryQuery = await shopifyGraphQL(PRODUCT_INVENTORY_QUERY, {
+        id: productId,
+      });
+      inventoryItemId =
+        inventoryQuery?.data?.product?.variants?.nodes?.[0]?.inventoryItem?.id ||
+        null;
+    }
+    if (inventoryItemId) {
+      const inventoryResult = await shopifyGraphQL(INVENTORY_SET_ON_HAND, {
+        input: {
+          reason: "correction",
+          setQuantities: [
+            { inventoryItemId, locationId, quantity: approvedStock },
+          ],
+        },
+      });
+      throwUserErrors(inventoryResult, "data.inventorySetOnHandQuantities");
+    }
+  }
+
+  return { inventoryItemId };
+}
+
+function changeSummaryForQueueItem(item: any) {
+  if (item.changeSummary || item.status !== "update_in_review") {
+    return item.changeSummary || null;
+  }
+  const pending =
+    item.pendingUpdates && typeof item.pendingUpdates === "object"
+      ? item.pendingUpdates
+      : {};
+  const base: Record<string, { old: any; new: any }> = {};
+  for (const [field, nextValue] of Object.entries(pending)) {
+    if (JSON.stringify(item[field] ?? null) !== JSON.stringify(nextValue ?? null)) {
+      base[field] = { old: item[field] ?? null, new: nextValue ?? null };
+    }
+  }
+  return {
+    instantApplied: [],
+    base,
+    note: "Highlighted values are pending admin approval before Shopify is updated.",
+  };
+}
+
 async function syncMeasurementsToShopify(
   shopifyProductId: string | undefined,
   measurements: any,
@@ -241,6 +440,7 @@ export default async function handler(req: any, res: any) {
         );
         const enriched = items.map((i) => ({
           ...i,
+          changeSummary: changeSummaryForQueueItem(i),
           merchant: merchantMap.get(i.merchantId) || null,
         }));
 
@@ -271,6 +471,10 @@ export default async function handler(req: any, res: any) {
               pendingUpdates.variantDraft?.variants ||
               qdoc.variantDraft?.variants;
 
+        const shopifyResult = await applyApprovedChangesToShopify(
+          qdoc,
+          pendingUpdates,
+        );
         await syncMeasurementsToShopify(qdoc.shopifyProductId, approvedMeasurements);
         await syncVariantMeasurementsToShopify(approvedVariantMeasurements || []);
 
@@ -278,7 +482,13 @@ export default async function handler(req: any, res: any) {
           {
             ...pendingUpdates,
             status: "approved",
+            published: true,
+            shopifyStatus: "ACTIVE",
+            inventoryItemId:
+              shopifyResult.inventoryItemId || qdoc.inventoryItemId || null,
             pendingUpdates: null,
+            changeSummary: null,
+            preReviewStatus: null,
             reviewerUid: me.uid,
             reviewNote: note || null,
             reviewedAt: Date.now(),
@@ -306,9 +516,19 @@ export default async function handler(req: any, res: any) {
         const snap = await ref.get();
         if (!snap.exists) return res.status(404).json({ ok: false, error: "queue item not found" });
 
+        const isUpdateReview = qdoc.status === "update_in_review";
         await ref.set(
           {
-            status: "rejected",
+            status: isUpdateReview
+              ? qdoc.preReviewStatus || "approved"
+              : "rejected",
+            ...(isUpdateReview
+              ? {
+                  pendingUpdates: null,
+                  changeSummary: null,
+                  preReviewStatus: null,
+                }
+              : {}),
             reviewerUid: me.uid,
             reviewNote: reason || null,
             reviewedAt: Date.now(),
