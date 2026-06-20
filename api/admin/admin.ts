@@ -595,6 +595,7 @@ export default async function handler(req: any, res: any) {
         const snap = await ref.get();
         if (!snap.exists) return res.status(404).json({ ok: false, error: "queue item not found" });
 
+        const qdoc = snap.data() as any;
         const isUpdateReview = qdoc.status === "update_in_review";
         await ref.set(
           {
