@@ -305,12 +305,15 @@ export default function ProductQueue() {
   const approve = async (product: QueueProduct) => {
     try {
       setActionBusy(true);
-      await queueApprove(product.id); // backend handles both new + update approvals
+      const result = await queueApprove(product.id); // backend handles both new + update approvals
       toast.success(
         product.status === "update_in_review"
           ? `${product.title} update approved`
           : `${product.title} approved`
       );
+      if (Array.isArray(result?.warnings) && result.warnings.length) {
+        toast.warning(result.warnings.join("\n"), { duration: 10000 });
+      }
       setSelected(null);
       fetchQueue();
     } catch (e: any) {

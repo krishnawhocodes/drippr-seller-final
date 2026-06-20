@@ -104,6 +104,22 @@ const PRODUCT_UPDATE = /* GraphQL */ `
   }
 `;
 
+const PRODUCT_UPDATE_LEGACY = /* GraphQL */ `
+  mutation productUpdate($input: ProductInput!) {
+    productUpdate(input: $input) {
+      product {
+        id
+        title
+        status
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
 const VARIANTS_BULK_UPDATE = /* GraphQL */ `
   mutation productVariantsBulkUpdate(
     $productId: ID!
@@ -175,6 +191,47 @@ function throwUserErrors(result: any, path: string) {
   }
 }
 
+function normalizeLocationId(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  return raw.startsWith("gid://shopify/Location/")
+    ? raw
+    : `gid://shopify/Location/${raw}`;
+}
+
+async function updateShopifyProduct(productInput: Record<string, any>) {
+  try {
+    const result = await shopifyGraphQL(PRODUCT_UPDATE, {
+      product: productInput,
+    });
+    throwUserErrors(result, "data.productUpdate");
+    return;
+  } catch (error: any) {
+    const message = String(error?.message || error);
+    const needsLegacyMutation =
+      message.includes("ProductUpdateInput") ||
+      message.includes('Unknown argument "product"') ||
+      message.includes('argument "input" of type') ||
+      (message.includes("productUpdate") &&
+        message.includes("input") &&
+        message.includes("product"));
+    if (!needsLegacyMutation) {
+      throw new Error(`Shopify product publish failed: ${message}`);
+    }
+  }
+
+  try {
+    const legacyResult = await shopifyGraphQL(PRODUCT_UPDATE_LEGACY, {
+      input: productInput,
+    });
+    throwUserErrors(legacyResult, "data.productUpdate");
+  } catch (error: any) {
+    throw new Error(
+      `Shopify product publish failed with both API formats: ${String(error?.message || error)}`,
+    );
+  }
+}
+
 async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
   const productId = qdoc.shopifyProductId;
   if (!productId) throw new Error("Shopify product ID is missing");
@@ -201,10 +258,7 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
   if (pendingUpdates.tags !== undefined)
     productInput.tags = [...new Set([...existingMerchantTags, ...requestedTags])];
 
-  const productResult = await shopifyGraphQL(PRODUCT_UPDATE, {
-    product: productInput,
-  });
-  throwUserErrors(productResult, "data.productUpdate");
+  await updateShopifyProduct(productInput);
 
   const defaultVariantId = Array.isArray(qdoc.shopifyVariantIds)
     ? qdoc.shopifyVariantIds[0]
@@ -240,7 +294,8 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
   const approvedStock = Number(
     pendingUpdates.stock !== undefined ? pendingUpdates.stock : qdoc.stock,
   );
-  const locationId = process.env.SHOPIFY_LOCATION_ID;
+  const locationId = normalizeLocationId(process.env.SHOPIFY_LOCATION_ID);
+  const warnings: string[] = [];
   if (locationId && Number.isFinite(approvedStock) && approvedStock >= 0) {
     if (!inventoryItemId) {
       const inventoryQuery = await shopifyGraphQL(PRODUCT_INVENTORY_QUERY, {
@@ -251,19 +306,25 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
         null;
     }
     if (inventoryItemId) {
-      const inventoryResult = await shopifyGraphQL(INVENTORY_SET_ON_HAND, {
-        input: {
-          reason: "correction",
-          setQuantities: [
-            { inventoryItemId, locationId, quantity: approvedStock },
-          ],
-        },
-      });
-      throwUserErrors(inventoryResult, "data.inventorySetOnHandQuantities");
+      try {
+        const inventoryResult = await shopifyGraphQL(INVENTORY_SET_ON_HAND, {
+          input: {
+            reason: "correction",
+            setQuantities: [
+              { inventoryItemId, locationId, quantity: approvedStock },
+            ],
+          },
+        });
+        throwUserErrors(inventoryResult, "data.inventorySetOnHandQuantities");
+      } catch (error: any) {
+        warnings.push(
+          `Product approved, but Shopify inventory sync failed: ${String(error?.message || error)}`,
+        );
+      }
     }
   }
 
-  return { inventoryItemId };
+  return { inventoryItemId, warnings };
 }
 
 function changeSummaryForQueueItem(item: any) {
@@ -475,8 +536,26 @@ export default async function handler(req: any, res: any) {
           qdoc,
           pendingUpdates,
         );
-        await syncMeasurementsToShopify(qdoc.shopifyProductId, approvedMeasurements);
-        await syncVariantMeasurementsToShopify(approvedVariantMeasurements || []);
+        const warnings = [...(shopifyResult.warnings || [])];
+        try {
+          await syncMeasurementsToShopify(
+            qdoc.shopifyProductId,
+            approvedMeasurements,
+          );
+        } catch (error: any) {
+          warnings.push(
+            `Product approved, but product measurement sync failed: ${String(error?.message || error)}`,
+          );
+        }
+        try {
+          await syncVariantMeasurementsToShopify(
+            approvedVariantMeasurements || [],
+          );
+        } catch (error: any) {
+          warnings.push(
+            `Product approved, but variant measurement sync failed: ${String(error?.message || error)}`,
+          );
+        }
 
         await ref.set(
           {
@@ -505,7 +584,7 @@ export default async function handler(req: any, res: any) {
           );
         }
 
-        return res.status(200).json({ ok: true });
+        return res.status(200).json({ ok: true, warnings });
       }
 
       case "queue.reject": {

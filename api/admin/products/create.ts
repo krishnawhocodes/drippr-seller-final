@@ -14,6 +14,14 @@ function skuClaimId(uid: string, sku: string) {
   return `${uid}__${normSku(sku)}`;
 }
 
+function normalizeLocationId(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  return raw.startsWith("gid://shopify/Location/")
+    ? raw
+    : `gid://shopify/Location/${raw}`;
+}
+
 function normalizeMeasurements(input: any) {
   if (!input || typeof input !== "object") return null;
 
@@ -422,7 +430,7 @@ export default async function handler(req: any, res: any) {
       console.warn("productVariantsBulkUpdate errors:", variantErrors);
     }
 
-    const locationId = process.env.SHOPIFY_LOCATION_ID;
+    const locationId = normalizeLocationId(process.env.SHOPIFY_LOCATION_ID);
     const inventoryItemId = firstVariant?.inventoryItem?.id;
     const inventoryQuantity = Number(inventory?.quantity);
     if (
