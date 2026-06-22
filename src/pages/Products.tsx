@@ -48,7 +48,7 @@ import {
   where,
 } from "firebase/firestore";
 import type { FitType, GarmentCategory, Variant } from "@/lib/types";
-import { measurementsForVariant } from "@/lib/sizing";
+import { GARMENT_SIZES, measurementsForVariant } from "@/lib/sizing";
 
 /** ---------------- Types ---------------- */
 type StagedTarget = {
@@ -107,6 +107,7 @@ type AddProductDraft = {
   options?: VariantOption[];
   garmentCategory?: GarmentCategory;
   fitType?: FitType;
+  fallbackSize?: string;
   measurements?: ProductMeasurements | null;
   variantRows?: Omit<VariantRow, "id">[]; // store variant data (no id)
 };
@@ -251,6 +252,7 @@ export default function Products() {
   const [garmentCategory, setGarmentCategory] =
     useState<GarmentCategory>("Tops");
   const [fitType, setFitType] = useState<FitType>("Regular");
+  const [fallbackSize, setFallbackSize] = useState("M");
 
   // ----- list / search -----
   const [uid, setUid] = useState<string | null>(auth.currentUser?.uid ?? null);
@@ -310,6 +312,7 @@ export default function Products() {
       options,
       garmentCategory,
       fitType,
+      fallbackSize,
       measurements: buildMeasurementDraft(),
       variantRows: Object.keys(variantRows).length
         ? Object.values(variantRows).map(({ id, ...r }) => r)
@@ -332,6 +335,7 @@ export default function Products() {
     setStatusSel("active");
     setGarmentCategory("Tops");
     setFitType("Regular");
+    setFallbackSize("M");
     setDraftTitle("");
     setDraftDescription("");
     setDraftVendor("");
@@ -475,6 +479,20 @@ export default function Products() {
     );
   }
 
+  function autofillFallbackMeasurements(
+    size: string = fallbackSize,
+    category: GarmentCategory = garmentCategory,
+    fit: FitType = fitType,
+  ) {
+    const generated = measurementsForVariant(category, fit, size);
+    if (!generated) return;
+    setDraftBustSize(generated.chest == null ? "" : String(generated.chest));
+    setDraftWaistSize(generated.waist == null ? "" : String(generated.waist));
+    setDraftHipSize(generated.hip == null ? "" : String(generated.hip));
+    const garmentLength = generated.length ?? generated.inseam;
+    setDraftLengthSize(garmentLength == null ? "" : String(garmentLength));
+  }
+
   function setOptionName(idx: number, name: string) {
     setOptions((prev) => {
       const next = [...prev];
@@ -591,6 +609,7 @@ export default function Products() {
     draftLengthSize,
     garmentCategory,
     fitType,
+    fallbackSize,
     basePriceInput,
     trackInventory,
     statusSel,
@@ -635,6 +654,7 @@ export default function Products() {
       if (saved.productType) setDraftProductType(saved.productType);
       if (saved.garmentCategory) setGarmentCategory(saved.garmentCategory);
       if (saved.fitType) setFitType(saved.fitType);
+      if (saved.fallbackSize) setFallbackSize(saved.fallbackSize);
       if (saved.measurements?.bust != null)
         setDraftBustSize(String(saved.measurements.bust));
       if (saved.measurements?.waist != null)
@@ -908,6 +928,19 @@ export default function Products() {
   const [eWaistSize, setEWaistSize] = useState<number | "">("");
   const [eHipSize, setEHipSize] = useState<number | "">("");
   const [eLengthSize, setELengthSize] = useState<number | "">("");
+
+  function autofillEditFallbackMeasurements(
+    size: string = fallbackSize,
+    category: GarmentCategory = garmentCategory,
+    fit: FitType = fitType,
+  ) {
+    const generated = measurementsForVariant(category, fit, size);
+    if (!generated) return;
+    setEBustSize(generated.chest ?? "");
+    setEWaistSize(generated.waist ?? "");
+    setEHipSize(generated.hip ?? "");
+    setELengthSize(generated.length ?? generated.inseam ?? "");
+  }
 
   // existing variants (live) + images (live)
   const [loadingDetails, setLoadingDetails] = useState(false);
@@ -1551,7 +1584,7 @@ export default function Products() {
           open={isAddProductOpen}
           onOpenChange={handleAddDialogOpenChange}
         >
-          <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
+          <DialogContent className="w-[calc(100vw-2rem)] max-w-5xl max-h-[90vh] overflow-x-hidden overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Add New Product</DialogTitle>
             </DialogHeader>
@@ -1559,7 +1592,7 @@ export default function Products() {
             <form
               id="add-product-form"
               onSubmit={handleSubmit}
-              className="space-y-8"
+              className="min-w-0 space-y-8"
             >
               {/* Product Images (required) */}
               <div className="space-y-2">
@@ -1808,6 +1841,66 @@ export default function Products() {
                   </p>
                 </div>
 
+                <div className="grid gap-3 rounded-md border bg-muted/20 p-3 sm:grid-cols-2 lg:grid-cols-[150px_170px_170px_auto] lg:items-end">
+                  <div className="space-y-2">
+                    <Label>Size</Label>
+                    <Select
+                      value={fallbackSize}
+                      onValueChange={(value) => {
+                        setFallbackSize(value);
+                        autofillFallbackMeasurements(value, garmentCategory, fitType);
+                      }}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {GARMENT_SIZES.map((size) => (
+                          <SelectItem key={size} value={size}>{size}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Garment category</Label>
+                    <Select
+                      value={garmentCategory}
+                      onValueChange={(value) => {
+                        const category = value as GarmentCategory;
+                        setGarmentCategory(category);
+                        autofillFallbackMeasurements(fallbackSize, category, fitType);
+                        generateVariants(category, fitType);
+                      }}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Tops">Tops</SelectItem>
+                        <SelectItem value="Bottoms">Bottoms</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Fit type</Label>
+                    <Select
+                      value={fitType}
+                      onValueChange={(value) => {
+                        const fit = value as FitType;
+                        setFitType(fit);
+                        autofillFallbackMeasurements(fallbackSize, garmentCategory, fit);
+                        generateVariants(garmentCategory, fit);
+                      }}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Slim">Slim</SelectItem>
+                        <SelectItem value="Regular">Regular</SelectItem>
+                        <SelectItem value="Oversized">Oversized</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button type="button" variant="secondary" onClick={() => autofillFallbackMeasurements()}>
+                    Auto-fill size
+                  </Button>
+                </div>
+
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="bust-size">Bust Size (in)</Label>
@@ -1895,7 +1988,7 @@ export default function Products() {
                 </div>
               </div>
 
-              <div className="space-y-2">
+              <div className="min-w-0 space-y-2">
                 <Label htmlFor="tags">Tags (comma-separated)</Label>
                 <Input
                   id="tags"
@@ -1964,10 +2057,10 @@ export default function Products() {
                   value={statusSel}
                   onValueChange={(v) => setStatusSel(v as any)}
                 >
-                  <SelectTrigger id="status">
+                  <SelectTrigger id="status" className="max-w-full">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent position="item-aligned" className="max-h-48">
                     <SelectItem value="active">Active</SelectItem>
                     <SelectItem value="draft">Draft</SelectItem>
                   </SelectContent>
@@ -2193,13 +2286,13 @@ export default function Products() {
 
         {/* EDIT dialog */}
         <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
-          <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
+          <DialogContent className="w-[calc(100vw-2rem)] max-w-5xl max-h-[90vh] overflow-x-hidden overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Edit Product</DialogTitle>
             </DialogHeader>
 
             {editing && (
-              <form onSubmit={handleEditSubmit} className="space-y-6">
+              <form onSubmit={handleEditSubmit} className="min-w-0 space-y-6">
                 {/* Basics */}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -2308,6 +2401,66 @@ export default function Products() {
                       Size-wise variant measurements below are used first for AI
                       fit verification.
                     </p>
+                  </div>
+
+                  <div className="grid gap-3 rounded-md border bg-muted/20 p-3 sm:grid-cols-2 lg:grid-cols-[150px_170px_170px_auto] lg:items-end">
+                    <div className="space-y-2">
+                      <Label>Size</Label>
+                      <Select
+                        value={fallbackSize}
+                        onValueChange={(value) => {
+                          setFallbackSize(value);
+                          autofillEditFallbackMeasurements(value, garmentCategory, fitType);
+                        }}
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {GARMENT_SIZES.map((size) => (
+                            <SelectItem key={size} value={size}>{size}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Garment category</Label>
+                      <Select
+                        value={garmentCategory}
+                        onValueChange={(value) => {
+                          const category = value as GarmentCategory;
+                          setGarmentCategory(category);
+                          autofillEditFallbackMeasurements(fallbackSize, category, fitType);
+                          generateVariants(category, fitType);
+                        }}
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Tops">Tops</SelectItem>
+                          <SelectItem value="Bottoms">Bottoms</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Fit type</Label>
+                      <Select
+                        value={fitType}
+                        onValueChange={(value) => {
+                          const fit = value as FitType;
+                          setFitType(fit);
+                          autofillEditFallbackMeasurements(fallbackSize, garmentCategory, fit);
+                          generateVariants(garmentCategory, fit);
+                        }}
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Slim">Slim</SelectItem>
+                          <SelectItem value="Regular">Regular</SelectItem>
+                          <SelectItem value="Oversized">Oversized</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <Button type="button" variant="secondary" onClick={() => autofillEditFallbackMeasurements()}>
+                      Auto-fill size
+                    </Button>
                   </div>
 
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -2834,7 +2987,7 @@ function VariantPlanner(props: {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="min-w-0 max-w-full space-y-3 overflow-hidden">
       {/* Options editor */}
       <div className="grid gap-4">
         {options.map((opt, idx) => (
@@ -2956,7 +3109,7 @@ function VariantPlanner(props: {
       {comboKeys.length > 0 && (
         <div className="space-y-2">
           <Label>Variant combinations (to add)</Label>
-          <div className="overflow-x-auto rounded-md border">
+          <div className="w-full max-w-full overflow-x-auto overscroll-x-contain rounded-md border">
             <table className="w-full min-w-[1240px] table-fixed text-sm">
               <thead className="bg-muted/50">
                 <tr>
