@@ -224,6 +224,7 @@ export default function Products() {
   const [selectedImages, setSelectedImages] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [submitFeedback, setSubmitFeedback] = useState<string | null>(null);
   const [handleDeliveryCharge, setHandleDeliveryCharge] = useState(true);
   const [basePriceInput, setBasePriceInput] = useState<string>("");
 
@@ -386,11 +387,13 @@ export default function Products() {
     ) as HTMLFormElement | null;
 
     if (!form) {
-      toast.error("Product form is unavailable. Please reopen Add Product.");
+      const message = "Product form is unavailable. Please reopen Add Product.";
+      setSubmitFeedback(message);
+      toast.error(message);
       return;
     }
 
-    form.requestSubmit();
+    void submitAddProduct(form);
   }
 
   useEffect(() => {
@@ -797,11 +800,19 @@ export default function Products() {
   }
 
   /** ====== ADD submit ====== */
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!auth.currentUser) return toast.error("Please login again.");
+  const showSubmitError = (message: string) => {
+    setSubmitFeedback(message);
+    toast.error(message);
+  };
 
-    const form = new FormData(e.currentTarget as HTMLFormElement);
+  const submitAddProduct = async (formElement: HTMLFormElement) => {
+    setSubmitFeedback(null);
+    if (!auth.currentUser) {
+      showSubmitError("Please login again.");
+      return;
+    }
+
+    const form = new FormData(formElement);
     const title = String(form.get("title") || "").trim();
     const description = String(form.get("description") || "").trim();
 
@@ -843,19 +854,20 @@ export default function Products() {
 
     // --- required checks per your request ---
     if (selectedImages.length === 0)
-      return toast.error("Please add at least one product image.");
-    if (!title) return toast.error("Product title is required.");
-    if (!description) return toast.error("Product description is required.");
+      return showSubmitError("Please add at least one new product image.");
+    if (!title) return showSubmitError("Product title is required.");
+    if (!description) return showSubmitError("Product description is required.");
     if (!Number.isFinite(price) || price <= 0)
-      return toast.error("Please enter a valid base price.");
+      return showSubmitError("Please enter a valid base price.");
     if (Number.isNaN(compareAtPrice))
-      return toast.error("Compare at Price is required.");
-    if (!sku) return toast.error("SKU is required.");
-    if (Number.isNaN(quantity)) return toast.error("Quantity is required.");
-    if (!vendor) return toast.error("Vendor name is required.");
-    if (!productType) return toast.error("Product type is required.");
+      return showSubmitError("Compare at Price is required.");
+    if (!sku) return showSubmitError("SKU is required.");
+    if (Number.isNaN(quantity))
+      return showSubmitError("Quantity is required.");
+    if (!vendor) return showSubmitError("Vendor name is required.");
+    if (!productType) return showSubmitError("Product type is required.");
     if (!seoTitle || !seoDescription)
-      return toast.error("SEO Title and SEO Description are required.");
+      return showSubmitError("SEO Title and SEO Description are required.");
 
     try {
       setBusy(true);
@@ -942,13 +954,14 @@ export default function Products() {
       toast.success(
         "Product submitted for review. Admin will configure variants & publish.",
       );
+      setSubmitFeedback("Product submitted successfully for admin review.");
       clearAddProductDraft(uid);
       setLocalDraft(null);
       setIsAddProductOpen(false);
-      clearAddProductFormState(e.target as HTMLFormElement);
+      clearAddProductFormState(formElement);
     } catch (err: any) {
       console.error(err);
-      toast.error(err?.message || "Failed to create product");
+      showSubmitError(err?.message || "Failed to create product");
     } finally {
       setBusy(false);
     }
@@ -1636,7 +1649,10 @@ export default function Products() {
 
             <form
               id="add-product-form"
-              onSubmit={handleSubmit}
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitAddProduct(event.currentTarget);
+              }}
               noValidate
               className="min-w-0 space-y-8"
             >
@@ -2118,7 +2134,16 @@ export default function Products() {
               </div>
 
               {/* Add form actions: Save draft, Discard, Submit */}
-              <div className="sticky bottom-0 z-10 flex flex-wrap justify-end gap-2 border-t bg-background/95 py-4 backdrop-blur">
+              <div className="sticky bottom-0 z-10 border-t bg-background/95 py-4 backdrop-blur">
+                {submitFeedback && (
+                  <p
+                    role="status"
+                    className="mb-3 rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-900"
+                  >
+                    {submitFeedback}
+                  </p>
+                )}
+                <div className="flex flex-wrap justify-end gap-2">
                 <Button
                   type="button"
                   variant="outline"
@@ -2142,6 +2167,7 @@ export default function Products() {
                 >
                   {busy ? "Submitting…" : "Submit for review"}
                 </Button>
+                </div>
               </div>
             </form>
           </DialogContent>
