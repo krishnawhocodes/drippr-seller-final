@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -253,6 +253,7 @@ export default function Products() {
     useState<GarmentCategory>("Tops");
   const [fitType, setFitType] = useState<FitType>("Regular");
   const [fallbackSize, setFallbackSize] = useState("M");
+  const skipNextDraftAutosave = useRef(false);
 
   // ----- list / search -----
   const [uid, setUid] = useState<string | null>(auth.currentUser?.uid ?? null);
@@ -354,6 +355,29 @@ export default function Products() {
     setDraftHipSize("");
     setDraftLengthSize("");
     form?.reset();
+  }
+
+  function handleClearAddProductForm() {
+    skipNextDraftAutosave.current = true;
+    clearAddProductDraft(uid);
+    setLocalDraft(null);
+    clearAddProductFormState(
+      document.getElementById("add-product-form") as HTMLFormElement | null,
+    );
+    toast.success("Form and local draft cleared.");
+  }
+
+  async function handleSaveAddProductDraft() {
+    if (!uid) {
+      toast.error("Please login again before saving a draft.");
+      return;
+    }
+
+    const draft = readCurrentAddDraft();
+    await saveAddProductDraft(uid, () => draft);
+    setLocalDraft(draft);
+    setIsAddProductOpen(false);
+    toast.success("Draft saved locally. You can reopen it from Products.");
   }
 
   useEffect(() => {
@@ -581,6 +605,10 @@ export default function Products() {
     if (!isAddProductOpen || !uid) return;
 
     const timeout = setTimeout(() => {
+      if (skipNextDraftAutosave.current) {
+        skipNextDraftAutosave.current = false;
+        return;
+      }
       const draft = readCurrentAddDraft();
       saveAddProductDraft(uid, () => draft);
       setLocalDraft(draft);
@@ -803,12 +831,16 @@ export default function Products() {
     // --- required checks per your request ---
     if (selectedImages.length === 0)
       return toast.error("Please add at least one product image.");
-    if (!title || !price) return toast.error("Please provide Title and Price.");
+    if (!title) return toast.error("Product title is required.");
+    if (!description) return toast.error("Product description is required.");
+    if (!Number.isFinite(price) || price <= 0)
+      return toast.error("Please enter a valid base price.");
     if (Number.isNaN(compareAtPrice))
       return toast.error("Compare at Price is required.");
     if (!sku) return toast.error("SKU is required.");
     if (Number.isNaN(quantity)) return toast.error("Quantity is required.");
     if (!vendor) return toast.error("Vendor name is required.");
+    if (!productType) return toast.error("Product type is required.");
     if (!seoTitle || !seoDescription)
       return toast.error("SEO Title and SEO Description are required.");
 
@@ -1592,6 +1624,7 @@ export default function Products() {
             <form
               id="add-product-form"
               onSubmit={handleSubmit}
+              noValidate
               className="min-w-0 space-y-8"
             >
               {/* Product Images (required) */}
@@ -2072,20 +2105,11 @@ export default function Products() {
               </div>
 
               {/* Add form actions: Save draft, Discard, Submit */}
-              <div className="flex justify-end gap-2">
+              <div className="sticky bottom-0 z-10 flex flex-wrap justify-end gap-2 border-t bg-background/95 py-4 backdrop-blur">
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => {
-                    clearAddProductDraft(uid);
-                    setLocalDraft(null);
-                    clearAddProductFormState(
-                      document.getElementById(
-                        "add-product-form",
-                      ) as HTMLFormElement | null,
-                    );
-                    toast.success("Draft discarded.");
-                  }}
+                  onClick={handleClearAddProductForm}
                 >
                   Clear Form
                 </Button>
@@ -2093,14 +2117,7 @@ export default function Products() {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => {
-                    const draft = readCurrentAddDraft();
-                    saveAddProductDraft(uid, () => draft);
-                    setLocalDraft(draft);
-                    toast.success(
-                      "Local draft saved and added to product list.",
-                    );
-                  }}
+                  onClick={handleSaveAddProductDraft}
                 >
                   Save Draft Locally
                 </Button>
