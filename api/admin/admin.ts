@@ -169,6 +169,19 @@ const PRODUCT_INVENTORY_QUERY = /* GraphQL */ `
   }
 `;
 
+const PRODUCT_BY_SKU_QUERY = /* GraphQL */ `
+  query productBySku($query: String!) {
+    productVariants(first: 1, query: $query) {
+      nodes {
+        id
+        product {
+          id
+        }
+      }
+    }
+  }
+`;
+
 const INVENTORY_SET_ON_HAND = /* GraphQL */ `
   mutation inventorySetOnHandQuantities(
     $input: InventorySetOnHandQuantitiesInput!
@@ -200,6 +213,41 @@ function normalizeLocationId(value: unknown) {
   return raw.startsWith("gid://shopify/Location/")
     ? raw
     : `gid://shopify/Location/${raw}`;
+}
+
+function normalizeShopifyGid(
+  value: unknown,
+  resource: "Product" | "ProductVariant",
+) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (raw.startsWith(`gid://shopify/${resource}/`)) return raw;
+  const numericId = raw.split("/").pop() || "";
+  return /^\d+$/.test(numericId)
+    ? `gid://shopify/${resource}/${numericId}`
+    : null;
+}
+
+function resolveShopifyProductId(qdoc: any) {
+  return (
+    normalizeShopifyGid(qdoc.shopifyProductId, "Product") ||
+    normalizeShopifyGid(qdoc.shopifyProductNumericId, "Product") ||
+    normalizeShopifyGid(qdoc.productId, "Product") ||
+    normalizeShopifyGid(qdoc.shopifyId, "Product")
+  );
+}
+
+async function recoverShopifyProductIdBySku(qdoc: any) {
+  const sku = String(qdoc.sku || "").trim();
+  if (!sku) return null;
+  const escapedSku = sku.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const result = await shopifyGraphQL(PRODUCT_BY_SKU_QUERY, {
+    query: `sku:"${escapedSku}"`,
+  });
+  return normalizeShopifyGid(
+    result?.data?.productVariants?.nodes?.[0]?.product?.id,
+    "Product",
+  );
 }
 
 async function updateShopifyProduct(productInput: Record<string, any>) {
@@ -236,8 +284,14 @@ async function updateShopifyProduct(productInput: Record<string, any>) {
 }
 
 async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
-  const productId = qdoc.shopifyProductId;
-  if (!productId) throw new Error("Shopify product ID is missing");
+  const productId =
+    resolveShopifyProductId(qdoc) ||
+    (await recoverShopifyProductIdBySku(qdoc));
+  if (!productId) {
+    throw new Error(
+      "Shopify product could not be found using its saved ID or SKU.",
+    );
+  }
 
   const existingMerchantTags = Array.isArray(qdoc.tags)
     ? qdoc.tags.filter((tag: any) => String(tag).startsWith("merchant:"))
@@ -263,9 +317,12 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
 
   await updateShopifyProduct(productInput);
 
-  const defaultVariantId = Array.isArray(qdoc.shopifyVariantIds)
-    ? qdoc.shopifyVariantIds[0]
-    : undefined;
+  const defaultVariantId = normalizeShopifyGid(
+    Array.isArray(qdoc.shopifyVariantIds)
+      ? qdoc.shopifyVariantIds[0]
+      : qdoc.shopifyVariantId || qdoc.variantId,
+    "ProductVariant",
+  );
   if (defaultVariantId) {
     const variantInput: Record<string, any> = { id: defaultVariantId };
     if (pendingUpdates.compareAtPrice !== undefined)
@@ -283,7 +340,11 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
   }
 
   const removeVariantIds = Array.isArray(pendingUpdates.removeVariantIds)
-    ? pendingUpdates.removeVariantIds.filter(Boolean)
+    ? pendingUpdates.removeVariantIds
+        .map((variantId: unknown) =>
+          normalizeShopifyGid(variantId, "ProductVariant"),
+        )
+        .filter(Boolean)
     : [];
   if (removeVariantIds.length) {
     const deleteResult = await shopifyGraphQL(VARIANTS_BULK_DELETE, {
@@ -327,7 +388,7 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
     }
   }
 
-  return { inventoryItemId, warnings };
+  return { productId, inventoryItemId, warnings };
 }
 
 function changeSummaryForQueueItem(item: any) {
@@ -372,11 +433,15 @@ async function syncMeasurementsToShopify(
 
 async function syncVariantMeasurementsToShopify(variantMeasurements: any[]) {
   const normalized = normalizeVariantMeasurements(variantMeasurements);
-  const metafields = normalized.flatMap((variant) =>
-    variant.variantId
-      ? buildMeasurementMetafields(variant.variantId, variant.measurements)
-      : [],
-  );
+  const metafields = normalized.flatMap((variant) => {
+    const variantId = normalizeShopifyGid(
+      variant.variantId,
+      "ProductVariant",
+    );
+    return variantId
+      ? buildMeasurementMetafields(variantId, variant.measurements)
+      : [];
+  });
 
   if (!metafields.length) return;
 
@@ -542,7 +607,7 @@ export default async function handler(req: any, res: any) {
         const warnings = [...(shopifyResult.warnings || [])];
         try {
           await syncMeasurementsToShopify(
-            qdoc.shopifyProductId,
+            shopifyResult.productId,
             approvedMeasurements,
           );
         } catch (error: any) {
@@ -566,6 +631,11 @@ export default async function handler(req: any, res: any) {
             status: "approved",
             published: true,
             shopifyStatus: "ACTIVE",
+            shopifyProductId: shopifyResult.productId,
+            shopifyProductNumericId:
+              shopifyResult.productId.split("/").pop() ||
+              qdoc.shopifyProductNumericId ||
+              null,
             inventoryItemId:
               shopifyResult.inventoryItemId || qdoc.inventoryItemId || null,
             pendingUpdates: null,
