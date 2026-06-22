@@ -380,6 +380,19 @@ export default function Products() {
     toast.success("Draft saved locally. You can reopen it from Products.");
   }
 
+  function handleSubmitForReviewClick() {
+    const form = document.getElementById(
+      "add-product-form",
+    ) as HTMLFormElement | null;
+
+    if (!form) {
+      toast.error("Product form is unavailable. Please reopen Add Product.");
+      return;
+    }
+
+    form.requestSubmit();
+  }
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUid(u?.uid ?? null));
     return () => unsub();
@@ -2122,7 +2135,11 @@ export default function Products() {
                   Save Draft Locally
                 </Button>
 
-                <Button type="submit" disabled={busy}>
+                <Button
+                  type="button"
+                  disabled={busy}
+                  onClick={handleSubmitForReviewClick}
+                >
                   {busy ? "Submitting…" : "Submit for review"}
                 </Button>
               </div>
