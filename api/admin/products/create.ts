@@ -32,10 +32,13 @@ function normalizeMeasurements(input: any) {
   };
 
   return {
+    chest: toNumOrNull(input.chest ?? input.bust),
     bust: toNumOrNull(input.bust),
     waist: toNumOrNull(input.waist),
     hip: toNumOrNull(input.hip),
     length: toNumOrNull(input.length),
+    shoulder: toNumOrNull(input.shoulder),
+    inseam: toNumOrNull(input.inseam),
     unit: "in",
   };
 }
@@ -43,7 +46,7 @@ function normalizeMeasurements(input: any) {
 function hasAnyMeasurement(measurements: any) {
   return Boolean(
     measurements &&
-      ["bust", "waist", "hip", "length"].some(
+      ["chest", "bust", "waist", "hip", "length", "shoulder", "inseam"].some(
         (key) => typeof measurements[key] === "number",
       ),
   );
@@ -126,12 +129,12 @@ function buildVariantMeasurements(variantDraft: any) {
     .filter((variant: any) => variant.measurements);
 }
 
-const MEASUREMENT_METAFIELD_NAMESPACE = "drippr_sizing";
+const MEASUREMENT_METAFIELD_NAMESPACE = "garment_sizing";
 
 function buildMeasurementMetafields(measurements: any) {
   if (!measurements || typeof measurements !== "object") return undefined;
 
-  const fields = ["bust", "waist", "hip", "length"] as const;
+  const fields = ["chest", "length", "shoulder", "waist", "hip", "inseam"] as const;
   const metafields = fields
     .map((key) => {
       const value = measurements[key];
@@ -225,6 +228,56 @@ const VARIANTS_BULK_UPDATE = /* GraphQL */ `
   }
 `;
 
+const PRODUCT_OPTIONS_CREATE = /* GraphQL */ `
+  mutation productOptionsCreate(
+    $productId: ID!
+    $options: [OptionCreateInput!]!
+  ) {
+    productOptionsCreate(
+      productId: $productId
+      options: $options
+      variantStrategy: LEAVE_AS_IS
+    ) {
+      product {
+        id
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const VARIANTS_BULK_CREATE = /* GraphQL */ `
+  mutation productVariantsBulkCreate(
+    $productId: ID!
+    $variants: [ProductVariantsBulkInput!]!
+  ) {
+    productVariantsBulkCreate(
+      productId: $productId
+      variants: $variants
+      strategy: REMOVE_STANDALONE_VARIANT
+    ) {
+      productVariants {
+        id
+        title
+        selectedOptions {
+          name
+          value
+        }
+        inventoryItem {
+          id
+        }
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
 const INVENTORY_SET_ON_HAND = /* GraphQL */ `
   mutation inventorySetOnHandQuantities(
     $input: InventorySetOnHandQuantitiesInput!
@@ -272,6 +325,93 @@ async function fetchCdnUrlsWithRetry(productId: string): Promise<string[]> {
   return [];
 }
 
+async function createShopifyVariants(args: {
+  productId: string;
+  variantDraft: any;
+  basePrice: number;
+  baseCompareAtPrice?: number;
+  baseSku: string;
+  tracked: boolean;
+  cost?: number;
+  locationId: string | null;
+}) {
+  const { variantDraft } = args;
+  if (!variantDraft?.options?.length || !variantDraft?.variants?.length) {
+    return null;
+  }
+
+  const optionsInput = variantDraft.options.map((option: any) => ({
+    name: option.name,
+    values: option.values.map((value: string) => ({ name: value })),
+  }));
+  const optionsResult = await shopifyGraphQL(PRODUCT_OPTIONS_CREATE, {
+    productId: args.productId,
+    options: optionsInput,
+  });
+  const optionErrors =
+    optionsResult?.data?.productOptionsCreate?.userErrors || [];
+  if (optionErrors.length) {
+    throw new Error(optionErrors.map((error: any) => error.message).join("; "));
+  }
+
+  const variantsInput = variantDraft.variants.map(
+    (variant: any, index: number) => ({
+      optionValues: variantDraft.options.map((option: any, optionIndex: number) => ({
+        optionName: option.name,
+        name: variant.optionValues[optionIndex],
+      })),
+      price: String(variant.price ?? args.basePrice),
+      ...((variant.compareAtPrice ?? args.baseCompareAtPrice) != null
+        ? { compareAtPrice: String(variant.compareAtPrice ?? args.baseCompareAtPrice) }
+        : {}),
+      ...(variant.barcode ? { barcode: variant.barcode } : {}),
+      inventoryItem: {
+        sku: variant.sku || `${args.baseSku}-${index + 1}`,
+        tracked: args.tracked,
+        ...(args.cost != null ? { cost: String(args.cost) } : {}),
+      },
+      metafields: buildMeasurementMetafields(variant.measurements),
+    }),
+  );
+
+  const variantsResult = await shopifyGraphQL(VARIANTS_BULK_CREATE, {
+    productId: args.productId,
+    variants: variantsInput,
+  });
+  const variantErrors =
+    variantsResult?.data?.productVariantsBulkCreate?.userErrors || [];
+  if (variantErrors.length) {
+    throw new Error(variantErrors.map((error: any) => error.message).join("; "));
+  }
+
+  const createdVariants =
+    variantsResult?.data?.productVariantsBulkCreate?.productVariants || [];
+  if (args.locationId) {
+    const setQuantities = createdVariants
+      .map((created: any, index: number) => ({
+        inventoryItemId: created?.inventoryItem?.id,
+        locationId: args.locationId,
+        quantity: Number(variantDraft.variants[index]?.quantity ?? 0),
+      }))
+      .filter(
+        (item: any) =>
+          item.inventoryItemId && Number.isFinite(item.quantity) && item.quantity >= 0,
+      );
+    if (setQuantities.length) {
+      const inventoryResult = await shopifyGraphQL(INVENTORY_SET_ON_HAND, {
+        input: { reason: "correction", setQuantities },
+      });
+      const inventoryErrors =
+        inventoryResult?.data?.inventorySetOnHandQuantities?.userErrors || [];
+      if (inventoryErrors.length) {
+        console.warn("variant inventory errors:", inventoryErrors);
+      }
+    }
+  }
+
+  return createdVariants;
+}
+
 /* ---------------- handler ---------------- */
 
 export default async function handler(req: any, res: any) {
@@ -311,6 +451,8 @@ export default async function handler(req: any, res: any) {
       resourceUrls = [],
       vendor,
       productType,
+      garmentCategory,
+      fitType,
       seo,
       sku: rawSku,
       variantDraft,
@@ -398,59 +540,74 @@ export default async function handler(req: any, res: any) {
       throw new Error("Product created but default variant not returned.");
     }
 
-    // --- 2) Update default variant fields ---
-    const variantsPayload: any[] = [
-      {
-        id: firstVariant.id,
-        price: String(price),
-        ...(compareAtPrice != null
-          ? { compareAtPrice: String(compareAtPrice) }
-          : {}),
-        ...(barcode ? { barcode } : {}),
-        inventoryItem: {
-          sku,
-          ...(typeof inventory.tracked === "boolean"
-            ? { tracked: Boolean(inventory.tracked) }
-            : {}),
-          ...(inventory?.cost != null && inventory.cost !== ""
-            ? { cost: String(inventory.cost) }
-            : {}),
-        },
-      },
-    ];
-
-    const updateRes = await shopifyGraphQL(VARIANTS_BULK_UPDATE, {
-      productId: product.id,
-      variants: variantsPayload,
-    });
-
-    const variantErrors =
-      updateRes?.data?.productVariantsBulkUpdate?.userErrors || [];
-    if (variantErrors.length) {
-      console.warn("productVariantsBulkUpdate errors:", variantErrors);
-    }
-
     const locationId = normalizeLocationId(process.env.SHOPIFY_LOCATION_ID);
-    const inventoryItemId = firstVariant?.inventoryItem?.id;
-    const inventoryQuantity = Number(inventory?.quantity);
-    if (
-      locationId &&
-      inventoryItemId &&
-      Number.isFinite(inventoryQuantity) &&
-      inventoryQuantity >= 0
-    ) {
-      const inventoryResult = await shopifyGraphQL(INVENTORY_SET_ON_HAND, {
-        input: {
-          reason: "correction",
-          setQuantities: [
-            { inventoryItemId, locationId, quantity: inventoryQuantity },
-          ],
+    let finalVariantNodes: any[] = [firstVariant];
+
+    if (normalizedVariantDraft?.variants?.length) {
+      finalVariantNodes =
+        (await createShopifyVariants({
+          productId: product.id,
+          variantDraft: normalizedVariantDraft,
+          basePrice: Number(price),
+          baseCompareAtPrice:
+            compareAtPrice == null ? undefined : Number(compareAtPrice),
+          baseSku: sku,
+          tracked: Boolean(inventory.tracked),
+          cost:
+            inventory?.cost == null || inventory.cost === ""
+              ? undefined
+              : Number(inventory.cost),
+          locationId,
+        })) || [firstVariant];
+    } else {
+      const variantsPayload: any[] = [
+        {
+          id: firstVariant.id,
+          price: String(price),
+          ...(compareAtPrice != null
+            ? { compareAtPrice: String(compareAtPrice) }
+            : {}),
+          ...(barcode ? { barcode } : {}),
+          inventoryItem: {
+            sku,
+            tracked: Boolean(inventory.tracked),
+            ...(inventory?.cost != null && inventory.cost !== ""
+              ? { cost: String(inventory.cost) }
+              : {}),
+          },
         },
+      ];
+      const updateRes = await shopifyGraphQL(VARIANTS_BULK_UPDATE, {
+        productId: product.id,
+        variants: variantsPayload,
       });
-      const inventoryErrors =
-        inventoryResult?.data?.inventorySetOnHandQuantities?.userErrors || [];
-      if (inventoryErrors.length) {
-        console.warn("inventorySetOnHandQuantities errors:", inventoryErrors);
+      const variantErrors =
+        updateRes?.data?.productVariantsBulkUpdate?.userErrors || [];
+      if (variantErrors.length) {
+        console.warn("productVariantsBulkUpdate errors:", variantErrors);
+      }
+
+      const inventoryItemId = firstVariant?.inventoryItem?.id;
+      const inventoryQuantity = Number(inventory?.quantity);
+      if (
+        locationId &&
+        inventoryItemId &&
+        Number.isFinite(inventoryQuantity) &&
+        inventoryQuantity >= 0
+      ) {
+        const inventoryResult = await shopifyGraphQL(INVENTORY_SET_ON_HAND, {
+          input: {
+            reason: "correction",
+            setQuantities: [
+              { inventoryItemId, locationId, quantity: inventoryQuantity },
+            ],
+          },
+        });
+        const inventoryErrors =
+          inventoryResult?.data?.inventorySetOnHandQuantities?.userErrors || [];
+        if (inventoryErrors.length) {
+          console.warn("inventorySetOnHandQuantities errors:", inventoryErrors);
+        }
       }
     }
 
@@ -463,7 +620,20 @@ export default async function handler(req: any, res: any) {
 
     // --- 4) Mirror to Firestore ---
     const now = Date.now();
-    const numericVariantId = String(firstVariant.id).split("/").pop();
+    const shopifyVariantIds = finalVariantNodes
+      .map((variant: any) => String(variant?.id || ""))
+      .filter(Boolean);
+    const shopifyVariantNumericIds = shopifyVariantIds.map(
+      (variantId: string) => variantId.split("/").pop() || "",
+    );
+    const hydratedVariantMeasurements = normalizedVariantDraft?.variants?.length
+      ? normalizedVariantDraft.variants.map((variant: any, index: number) => ({
+          variantId: finalVariantNodes[index]?.id || null,
+          title: finalVariantNodes[index]?.title || variant.title,
+          optionValues: variant.optionValues,
+          measurements: variant.measurements,
+        }))
+      : variantMeasurements;
     const shopifyProductNumericId = String(product.id).split("/").pop() || "";
     const sellerStatus = "pending";
 
@@ -479,9 +649,9 @@ export default async function handler(req: any, res: any) {
       sku,
       shopifyProductId: product.id,
       shopifyProductNumericId,
-      shopifyVariantIds: [firstVariant.id],
-      shopifyVariantNumericIds: [numericVariantId],
-      inventoryItemId: firstVariant?.inventoryItem?.id || null,
+      shopifyVariantIds,
+      shopifyVariantNumericIds,
+      inventoryItemId: finalVariantNodes[0]?.inventoryItem?.id || null,
       tags: shopifyTags,
 
       // Permanent CDN URLs only.
@@ -492,8 +662,10 @@ export default async function handler(req: any, res: any) {
       stock: inventory?.quantity ?? null,
       vendor: vendor || "DRIPPR Marketplace",
       productType: productType || null,
+      garmentCategory: garmentCategory || null,
+      fitType: fitType || null,
       variantDraft: normalizedVariantDraft,
-      variantMeasurements,
+      variantMeasurements: hydratedVariantMeasurements,
       measurements: normalizedMeasurements,
       adminNotes: null,
       createdAt: now,
@@ -526,7 +698,7 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({
       ok: true,
       productId: product.id,
-      variantId: firstVariant.id,
+      variantId: shopifyVariantIds[0] || firstVariant.id,
       firestoreId: docRef.id,
       inReview: Boolean(normalizedVariantDraft),
     });

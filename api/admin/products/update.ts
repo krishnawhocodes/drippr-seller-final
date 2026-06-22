@@ -38,20 +38,23 @@ function normalizeMeasurements(input: any) {
   };
 
   return {
+    chest: toNumOrNull(input.chest ?? input.bust),
     bust: toNumOrNull(input.bust),
     waist: toNumOrNull(input.waist),
     hip: toNumOrNull(input.hip),
     length: toNumOrNull(input.length),
+    shoulder: toNumOrNull(input.shoulder),
+    inseam: toNumOrNull(input.inseam),
     unit: "in",
   };
 }
 
-const MEASUREMENT_METAFIELD_NAMESPACE = "drippr_sizing";
+const MEASUREMENT_METAFIELD_NAMESPACE = "garment_sizing";
 
 function hasAnyMeasurement(measurements: any) {
   return Boolean(
     measurements &&
-      ["bust", "waist", "hip", "length"].some(
+      ["chest", "bust", "waist", "hip", "length", "shoulder", "inseam"].some(
         (key) => typeof measurements[key] === "number",
       ),
   );
@@ -80,7 +83,7 @@ function normalizeVariantMeasurements(input: any) {
 function readMeasurementMetafields(nodes: any[]) {
   const measurements: any = { unit: "in" };
   for (const node of nodes || []) {
-    if (!["bust", "waist", "hip", "length"].includes(node?.key)) continue;
+    if (!["chest", "waist", "hip", "length", "shoulder", "inseam"].includes(node?.key)) continue;
     const value = Number(node.value);
     measurements[node.key] = Number.isFinite(value) ? value : null;
   }
@@ -137,7 +140,7 @@ const PRODUCT_DETAILS_QUERY = /* GraphQL */ `
             name
             value
           }
-          metafields(namespace: "drippr_sizing", first: 10) {
+          metafields(namespace: "garment_sizing", first: 10) {
             nodes {
               key
               value

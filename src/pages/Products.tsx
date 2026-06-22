@@ -47,6 +47,8 @@ import {
   query,
   where,
 } from "firebase/firestore";
+import type { FitType, GarmentCategory, Variant } from "@/lib/types";
+import { measurementsForVariant } from "@/lib/sizing";
 
 /** ---------------- Types ---------------- */
 type StagedTarget = {
@@ -56,10 +58,13 @@ type StagedTarget = {
 };
 
 type ProductMeasurements = {
+  chest?: number | null;
   bust?: number | null;
   waist?: number | null;
   hip?: number | null;
   length?: number | null;
+  shoulder?: number | null;
+  inseam?: number | null;
   unit?: "in";
 };
 
@@ -100,6 +105,8 @@ type AddProductDraft = {
   handleDeliveryCharge?: boolean;
   imagePreviews?: string[]; // data URLs
   options?: VariantOption[];
+  garmentCategory?: GarmentCategory;
+  fitType?: FitType;
   measurements?: ProductMeasurements | null;
   variantRows?: Omit<VariantRow, "id">[]; // store variant data (no id)
 };
@@ -111,16 +118,8 @@ type ProductListItem = MerchantProduct & {
 };
 
 type VariantOption = { name: string; values: string[] };
-type VariantRow = {
+type VariantRow = Variant & {
   id: string;
-  options: string[]; // [opt1Val, opt2Val?, opt3Val?]
-  title: string; // "Red / M / Cotton"
-  price?: number;
-  compareAtPrice?: number;
-  sku?: string;
-  quantity?: number;
-  barcode?: string;
-  weightGrams?: number;
   measurements?: ProductMeasurements | null;
 };
 
@@ -152,10 +151,13 @@ function normSku(s: string) {
 
 function emptyMeasurements(): ProductMeasurements {
   return {
+    chest: null,
     bust: null,
     waist: null,
     hip: null,
     length: null,
+    shoulder: null,
+    inseam: null,
     unit: "in",
   };
 }
@@ -163,7 +165,7 @@ function emptyMeasurements(): ProductMeasurements {
 function hasAnyMeasurement(measurements?: ProductMeasurements | null) {
   return Boolean(
     measurements &&
-      ["bust", "waist", "hip", "length"].some(
+      ["chest", "bust", "waist", "hip", "length", "shoulder", "inseam"].some(
         (key) => typeof measurements[key as keyof ProductMeasurements] === "number",
       ),
   );
@@ -246,6 +248,9 @@ export default function Products() {
   // shadcn <Select> values (controlled)
   const [trackInventory, setTrackInventory] = useState<"yes" | "no">("yes");
   const [statusSel, setStatusSel] = useState<"active" | "draft">("active");
+  const [garmentCategory, setGarmentCategory] =
+    useState<GarmentCategory>("Tops");
+  const [fitType, setFitType] = useState<FitType>("Regular");
 
   // ----- list / search -----
   const [uid, setUid] = useState<string | null>(auth.currentUser?.uid ?? null);
@@ -303,6 +308,8 @@ export default function Products() {
       handleDeliveryCharge,
       imagePreviews,
       options,
+      garmentCategory,
+      fitType,
       measurements: buildMeasurementDraft(),
       variantRows: Object.keys(variantRows).length
         ? Object.values(variantRows).map(({ id, ...r }) => r)
@@ -323,6 +330,8 @@ export default function Products() {
     setHandleDeliveryCharge(true);
     setTrackInventory("yes");
     setStatusSel("active");
+    setGarmentCategory("Tops");
+    setFitType("Regular");
     setDraftTitle("");
     setDraftDescription("");
     setDraftVendor("");
@@ -427,6 +436,45 @@ export default function Products() {
   ]);
   const [valueInputs, setValueInputs] = useState<string[]>(["", "", ""]);
 
+  function generatedMeasurements(
+    combo: string[],
+    category: GarmentCategory = garmentCategory,
+    fit: FitType = fitType,
+  ): ProductMeasurements {
+    const enabledOptions = options.filter(
+      (option) => option.name.trim() && option.values.length > 0,
+    );
+    const sizeIndex = enabledOptions.findIndex(
+      (option) => option.name.trim().toLowerCase() === "size",
+    );
+    const generated = measurementsForVariant(
+      category,
+      fit,
+      sizeIndex >= 0 ? combo[sizeIndex] || "" : "",
+    );
+    if (!generated) return emptyMeasurements();
+    return {
+      ...emptyMeasurements(),
+      ...generated,
+      bust: generated.chest ?? null,
+      unit: "in",
+    };
+  }
+
+  function generateVariants(
+    category: GarmentCategory = garmentCategory,
+    fit: FitType = fitType,
+  ) {
+    setVariantRows((previous) =>
+      Object.fromEntries(
+        Object.entries(previous).map(([key, row]) => [
+          key,
+          { ...row, measurements: generatedMeasurements(row.options, category, fit) },
+        ]),
+      ),
+    );
+  }
+
   function setOptionName(idx: number, name: string) {
     setOptions((prev) => {
       const next = [...prev];
@@ -503,7 +551,7 @@ export default function Products() {
           quantity: undefined,
           barcode: "",
           weightGrams: undefined,
-          measurements: emptyMeasurements(),
+          measurements: generatedMeasurements(combo),
         };
       }
       return next;
@@ -541,6 +589,8 @@ export default function Products() {
     draftWaistSize,
     draftHipSize,
     draftLengthSize,
+    garmentCategory,
+    fitType,
     basePriceInput,
     trackInventory,
     statusSel,
@@ -583,6 +633,8 @@ export default function Products() {
       if (saved.barcode) setDraftBarcode(saved.barcode);
       if (saved.weightGrams != null) setDraftWeight(String(saved.weightGrams));
       if (saved.productType) setDraftProductType(saved.productType);
+      if (saved.garmentCategory) setGarmentCategory(saved.garmentCategory);
+      if (saved.fitType) setFitType(saved.fitType);
       if (saved.measurements?.bust != null)
         setDraftBustSize(String(saved.measurements.bust));
       if (saved.measurements?.waist != null)
@@ -801,6 +853,8 @@ export default function Products() {
         resourceUrls,
         vendor,
         productType,
+        garmentCategory,
+        fitType,
         status: statusSel,
         sku, // <-- send to server
         seo: { title: seoTitle, description: seoDescription },
@@ -1854,6 +1908,11 @@ export default function Products() {
 
               {/* ===== Variants (plan for Admin) ===== */}
               <VariantPlanner
+                garmentCategory={garmentCategory}
+                fitType={fitType}
+                setGarmentCategory={setGarmentCategory}
+                setFitType={setFitType}
+                generateVariants={generateVariants}
                 options={options}
                 setOptionName={setOptionName}
                 removeOptionRow={removeOptionRow}
@@ -2536,6 +2595,11 @@ export default function Products() {
                     Add more variants (sent to admin)
                   </h3>
                   <VariantPlanner
+                    garmentCategory={garmentCategory}
+                    fitType={fitType}
+                    setGarmentCategory={setGarmentCategory}
+                    setFitType={setFitType}
+                    generateVariants={generateVariants}
                     options={options}
                     setOptionName={setOptionName}
                     removeOptionRow={removeOptionRow}
@@ -2718,6 +2782,11 @@ export default function Products() {
 
 /** ---- Small reusable section for the variant plan UI ---- */
 function VariantPlanner(props: {
+  garmentCategory: GarmentCategory;
+  fitType: FitType;
+  setGarmentCategory: (category: GarmentCategory) => void;
+  setFitType: (fit: FitType) => void;
+  generateVariants: (category?: GarmentCategory, fit?: FitType) => void;
   options: VariantOption[];
   setOptionName: (i: number, name: string) => void;
   removeOptionRow: (i: number) => void;
@@ -2733,6 +2802,11 @@ function VariantPlanner(props: {
   >;
 }) {
   const {
+    garmentCategory,
+    fitType,
+    setGarmentCategory,
+    setFitType,
+    generateVariants,
     options,
     setOptionName,
     removeOptionRow,
@@ -2745,6 +2819,19 @@ function VariantPlanner(props: {
     variantRows,
     setVariantRows,
   } = props;
+
+  const measurementFields =
+    garmentCategory === "Tops"
+      ? (["chest", "length", "shoulder"] as const)
+      : (["waist", "hip", "inseam"] as const);
+  const measurementLabels: Record<string, string> = {
+    chest: "Chest (in)",
+    length: "Length (in)",
+    shoulder: "Shoulder (in)",
+    waist: "Waist (in)",
+    hip: "Hip (in)",
+    inseam: "Inseam (in)",
+  };
 
   return (
     <div className="space-y-3">
@@ -2824,25 +2911,67 @@ function VariantPlanner(props: {
         )}
       </div>
 
+      <div className="grid gap-3 rounded-md border bg-muted/20 p-3 md:grid-cols-[180px_180px_auto] md:items-end">
+        <div className="space-y-2">
+          <Label>Garment category</Label>
+          <Select
+            value={garmentCategory}
+            onValueChange={(value) => {
+              const nextCategory = value as GarmentCategory;
+              setGarmentCategory(nextCategory);
+              generateVariants(nextCategory, fitType);
+            }}
+          >
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="Tops">Tops</SelectItem>
+              <SelectItem value="Bottoms">Bottoms</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-2">
+          <Label>Fit type</Label>
+          <Select
+            value={fitType}
+            onValueChange={(value) => {
+              const nextFit = value as FitType;
+              setFitType(nextFit);
+              generateVariants(garmentCategory, nextFit);
+            }}
+          >
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="Slim">Slim</SelectItem>
+              <SelectItem value="Regular">Regular</SelectItem>
+              <SelectItem value="Oversized">Oversized</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <Button type="button" variant="secondary" onClick={() => generateVariants()}>
+          Auto-fill measurements
+        </Button>
+      </div>
+
       {/* Variants grid (new additions only) */}
       {comboKeys.length > 0 && (
         <div className="space-y-2">
           <Label>Variant combinations (to add)</Label>
           <div className="overflow-x-auto rounded-md border">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[1240px] table-fixed text-sm">
               <thead className="bg-muted/50">
                 <tr>
-                  <th className="text-left p-2">Variant</th>
-                  <th className="text-left p-2">Price (₹)</th>
-                  <th className="text-left p-2">Compare at (₹)</th>
-                  <th className="text-left p-2">SKU (optional)</th>
-                  <th className="text-left p-2">Qty</th>
-                  <th className="text-left p-2">Barcode</th>
-                  <th className="text-left p-2">Weight (g)</th>
-                  <th className="text-left p-2">Chest/Bust (in)</th>
-                  <th className="text-left p-2">Waist (in)</th>
-                  <th className="text-left p-2">Hip (in)</th>
-                  <th className="text-left p-2">Length (in)</th>
+                  <th className="w-[140px] text-left p-2">Variant</th>
+                  <th className="w-[125px] text-left p-2">Price (₹)</th>
+                  <th className="w-[140px] text-left p-2">Compare at (₹)</th>
+                  <th className="w-[160px] text-left p-2">SKU (optional)</th>
+                  <th className="w-[90px] text-left p-2">Qty</th>
+                  <th className="w-[140px] text-left p-2">Barcode</th>
+                  <th className="w-[105px] text-left p-2">Weight (g)</th>
+                  {measurementFields.map((field) => (
+                    <th key={field} className="w-[115px] text-left p-2">
+                      {measurementLabels[field]}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -2949,9 +3078,9 @@ function VariantPlanner(props: {
                           }
                         />
                       </td>
-                      {(["bust", "waist", "hip", "length"] as const).map(
+                      {measurementFields.map(
                         (field) => (
-                          <td key={field} className="p-2 min-w-[140px]">
+                          <td key={field} className="p-2">
                             <Input
                               type="number"
                               min={0}

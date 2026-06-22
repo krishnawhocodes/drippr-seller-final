@@ -2,7 +2,7 @@
 import { getAdmin } from "../_lib/firebaseAdmin.js";
 import { shopifyGraphQL } from "../_lib/shopify.js";
 
-const MEASUREMENT_METAFIELD_NAMESPACE = "drippr_sizing";
+const MEASUREMENT_METAFIELD_NAMESPACE = "garment_sizing";
 
 function normalizeMeasurements(input: any) {
   if (!input || typeof input !== "object") return null;
@@ -14,10 +14,13 @@ function normalizeMeasurements(input: any) {
   };
 
   return {
+    chest: toNumOrNull(input.chest ?? input.bust),
     bust: toNumOrNull(input.bust),
     waist: toNumOrNull(input.waist),
     hip: toNumOrNull(input.hip),
     length: toNumOrNull(input.length),
+    shoulder: toNumOrNull(input.shoulder),
+    inseam: toNumOrNull(input.inseam),
     unit: "in",
   };
 }
@@ -25,7 +28,7 @@ function normalizeMeasurements(input: any) {
 function hasAnyMeasurement(measurements: any) {
   return Boolean(
     measurements &&
-      ["bust", "waist", "hip", "length"].some(
+      ["chest", "bust", "waist", "hip", "length", "shoulder", "inseam"].some(
         (key) => typeof measurements[key] === "number",
       ),
   );
@@ -54,7 +57,7 @@ function normalizeVariantMeasurements(input: any) {
 function buildMeasurementMetafields(ownerId: string, measurements: any) {
   if (!ownerId || !measurements || typeof measurements !== "object") return [];
 
-  const fields = ["bust", "waist", "hip", "length"] as const;
+  const fields = ["chest", "length", "shoulder", "waist", "hip", "inseam"] as const;
   return fields
     .map((key) => {
       const value = measurements[key];

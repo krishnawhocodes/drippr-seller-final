@@ -6,6 +6,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 
+export { SIZING_MATRIX, measurementsForVariant } from "@/lib/sizing";
+
 type StagedTarget = {
   url: string;
   resourceUrl: string; // this is what we later pass to productCreateMedia.originalSource

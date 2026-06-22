@@ -15,6 +15,26 @@ export type Merchant = {
   };
 };
 
+export type GarmentCategory = "Tops" | "Bottoms";
+export type FitType = "Slim" | "Regular" | "Oversized";
+
+export interface Variant {
+  options: string[];
+  title: string;
+  price?: number;
+  compareAtPrice?: number;
+  sku?: string;
+  quantity?: number;
+  barcode?: string;
+  weightGrams?: number;
+  chest?: number | null;
+  length?: number | null;
+  shoulder?: number | null;
+  waist?: number | null;
+  hip?: number | null;
+  inseam?: number | null;
+}
+
 export type MerchantProduct = {
   id: string;                // Firestore doc id
   merchantId: string;
