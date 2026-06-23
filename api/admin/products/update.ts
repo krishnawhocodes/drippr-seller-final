@@ -803,6 +803,7 @@ export default async function handler(req: any, res: any) {
         "title",
         "description",
         "productType",
+        "collections",
         "tags",
         "vendor",
         "compareAtPrice",

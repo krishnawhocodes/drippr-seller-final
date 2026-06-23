@@ -33,6 +33,7 @@ export interface Variant {
   waist?: number | null;
   hip?: number | null;
   inseam?: number | null;
+  mediaUrls?: string[];
 }
 
 export type MerchantProduct = {

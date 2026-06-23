@@ -10,6 +10,7 @@ export type VariantDraft = {
     quantity?: number;
     barcode?: string;
     weightGrams?: number;
+    mediaUrls?: string[];
     measurements?: {
       bust?: number | null;
       waist?: number | null;
@@ -29,6 +30,7 @@ export type QueueProduct = {
   images?: string[];
   price?: number;
   productType?: string | null;
+  collections?: string[];
   status: "in_review" | "draft" | "active" | "rejected";
   published?: boolean;
   tags?: string[];

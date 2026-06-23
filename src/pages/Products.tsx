@@ -37,6 +37,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { auth, db } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
@@ -74,6 +82,7 @@ type MerchantProduct = {
   description?: string;
   price?: number;
   productType?: string;
+  collections?: string[];
   status?: "pending" | "approved" | "rejected" | "update_in_review" | "deleted";
   images?: string[];
   image?: string | null;
@@ -96,6 +105,8 @@ type AddProductDraft = {
   quantity?: number | null;
   vendor?: string;
   productType?: string;
+  customProductType?: boolean;
+  collections?: string[];
   tags?: string[];
   seoTitle?: string;
   seoDescription?: string;
@@ -125,6 +136,45 @@ type VariantRow = Variant & {
   id: string;
   measurements?: ProductMeasurements | null;
 };
+
+const PRODUCT_TYPE_OPTIONS = [
+  "Athleisure",
+  "Cargo Pants",
+  "Cord Set",
+  "Dress",
+  "Hood",
+  "Hoodie",
+  "Jacket",
+  "Oversize T-Shirt",
+  "Shorts",
+  "Sweater",
+  "Sweatshirts",
+  "T-Shirt",
+  "Tank Top",
+  "Top",
+  "Tops & Dresses",
+] as const;
+
+const COLLECTION_OPTIONS = [
+  "ATHLEISURE",
+  "CARGOS & PANTS",
+  "CO-RD SET",
+  "DAARCK",
+  "DAILY DRIP",
+  "FUSION",
+  "HOUSE OF RIVAEM",
+  "JACKETS",
+  "MENS ATHLEISURE",
+  "MENS LIFESTYLE & BOTTOMS",
+  "MENS T-SHIRT & SHIRTS",
+  "MINIMALISM",
+  "SHORTS & SKIRTS",
+  "STREETWEAR",
+  "SWEATSHIRT & HOODS",
+  "TEES",
+  "THRIFT",
+  "TOPS & DRESSES",
+] as const;
 
 type ExistingVariant = {
   id: string; // Shopify GID
@@ -244,6 +294,9 @@ export default function Products() {
   const [draftComparePrice, setDraftComparePrice] = useState("");
   const [draftCost, setDraftCost] = useState("");
   const [draftProductType, setDraftProductType] = useState("");
+  const [useCustomProductType, setUseCustomProductType] = useState(false);
+  const [draftCollections, setDraftCollections] = useState<string[]>([]);
+  const [customCollectionName, setCustomCollectionName] = useState("");
   const [draftBustSize, setDraftBustSize] = useState("");
   const [draftWaistSize, setDraftWaistSize] = useState("");
   const [draftHipSize, setDraftHipSize] = useState("");
@@ -262,6 +315,12 @@ export default function Products() {
     "single",
   );
   const [singleColor, setSingleColor] = useState("");
+  const [variantColorImages, setVariantColorImages] = useState<
+    Record<string, File[]>
+  >({});
+  const [variantColorImagePreviews, setVariantColorImagePreviews] = useState<
+    Record<string, string[]>
+  >({});
   const skipNextDraftAutosave = useRef(false);
 
   // ----- list / search -----
@@ -316,6 +375,8 @@ export default function Products() {
       barcode: draftBarcode || undefined,
       weightGrams: toNullableNumber(draftWeight),
       productType: draftProductType || undefined,
+      customProductType: useCustomProductType,
+      collections: draftCollections,
       basePriceInput: basePriceInput || undefined,
       trackInventory,
       statusSel,
@@ -352,6 +413,8 @@ export default function Products() {
     setFallbackSize("M");
     setVariantMode("single");
     setSingleColor("");
+    setVariantColorImages({});
+    setVariantColorImagePreviews({});
     setDraftTitle("");
     setDraftDescription("");
     setDraftVendor("");
@@ -365,6 +428,9 @@ export default function Products() {
     setDraftComparePrice("");
     setDraftCost("");
     setDraftProductType("");
+    setUseCustomProductType(false);
+    setDraftCollections([]);
+    setCustomCollectionName("");
     setDraftBustSize("");
     setDraftWaistSize("");
     setDraftHipSize("");
@@ -458,6 +524,7 @@ export default function Products() {
       description: localDraft.description,
       price: finalPrice,
       productType: localDraft.productType,
+      collections: localDraft.collections,
       status: "pending",
       images: [],
       image: localDraft.imagePreviews?.[0] ?? null,
@@ -483,7 +550,7 @@ export default function Products() {
     if (!s) return allProducts;
 
     return allProducts.filter((p) =>
-      `${p.title} ${p.productType ?? ""} ${p.sku ?? ""}`
+      `${p.title} ${p.productType ?? ""} ${(p.collections || []).join(" ")} ${p.sku ?? ""}`
         .toLowerCase()
         .includes(s),
     );
@@ -669,6 +736,8 @@ export default function Products() {
     draftComparePrice,
     draftCost,
     draftProductType,
+    useCustomProductType,
+    draftCollections,
     draftBustSize,
     draftWaistSize,
     draftHipSize,
@@ -721,7 +790,16 @@ export default function Products() {
       if (saved.cost != null) setDraftCost(String(saved.cost));
       if (saved.barcode) setDraftBarcode(saved.barcode);
       if (saved.weightGrams != null) setDraftWeight(String(saved.weightGrams));
-      if (saved.productType) setDraftProductType(saved.productType);
+      if (saved.productType) {
+        setDraftProductType(saved.productType);
+        setUseCustomProductType(
+          !PRODUCT_TYPE_OPTIONS.includes(
+            saved.productType as (typeof PRODUCT_TYPE_OPTIONS)[number],
+          ),
+        );
+      }
+      if (saved.customProductType) setUseCustomProductType(true);
+      if (saved.collections) setDraftCollections(saved.collections);
       if (saved.garmentCategory) setGarmentCategory(saved.garmentCategory);
       if (saved.fitType) setFitType(saved.fitType);
       if (saved.fallbackSize) setFallbackSize(saved.fallbackSize);
@@ -790,6 +868,41 @@ export default function Products() {
   const removeLocalImage = (index: number) => {
     setSelectedImages((s) => s.filter((_, i) => i !== index));
     setImagePreviews((s) => s.filter((_, i) => i !== index));
+  };
+
+  const addVariantColorImages = (color: string, files: File[]) => {
+    const currentFiles = variantColorImages[color] || [];
+    const filesToAdd = files.slice(0, Math.max(0, 4 - currentFiles.length));
+    if (files.length > filesToAdd.length) {
+      toast.error("You can add up to 4 images for each color.");
+    }
+    if (!filesToAdd.length) return;
+
+    setVariantColorImages((current) => ({
+      ...current,
+      [color]: [...(current[color] || []), ...filesToAdd],
+    }));
+
+    filesToAdd.forEach((file) => {
+      const reader = new FileReader();
+      reader.onloadend = () =>
+        setVariantColorImagePreviews((current) => ({
+          ...current,
+          [color]: [...(current[color] || []), String(reader.result || "")],
+        }));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const removeVariantColorImage = (color: string, index: number) => {
+    setVariantColorImages((current) => ({
+      ...current,
+      [color]: (current[color] || []).filter((_, itemIndex) => itemIndex !== index),
+    }));
+    setVariantColorImagePreviews((current) => ({
+      ...current,
+      [color]: (current[color] || []).filter((_, itemIndex) => itemIndex !== index),
+    }));
   };
 
   async function getIdToken() {
@@ -900,6 +1013,8 @@ export default function Products() {
       return showSubmitError("Quantity is required.");
     if (!vendor) return showSubmitError("Vendor name is required.");
     if (!productType) return showSubmitError("Product type is required.");
+    if (draftCollections.length === 0)
+      return showSubmitError("Select at least one collection.");
     if (!seoTitle || !seoDescription)
       return showSubmitError("SEO Title and SEO Description are required.");
     if (variantMode === "single" && !singleColor.trim())
@@ -934,6 +1049,32 @@ export default function Products() {
       const enabledOptions = options.filter(
         (o) => (o?.name || "").trim() && o.values.length > 0,
       );
+      const variantColorMediaUrls: Record<string, string[]> = {};
+      if (variantMode === "multiple") {
+        const colorFiles = Object.entries(variantColorImages).flatMap(
+          ([color, files]) => files.map((file) => ({ color, file })),
+        );
+        if (colorFiles.length) {
+          const targets = await startStagedUploads(
+            idToken,
+            colorFiles.map((item) => item.file),
+          );
+          if (targets.length !== colorFiles.length) {
+            throw new Error("Variant image upload target count mismatch");
+          }
+          for (let index = 0; index < colorFiles.length; index += 1) {
+            const item = colorFiles[index];
+            const resourceUrl = await uploadFileToShopify(
+              targets[index],
+              item.file,
+            );
+            variantColorMediaUrls[item.color] = [
+              ...(variantColorMediaUrls[item.color] || []),
+              resourceUrl,
+            ];
+          }
+        }
+      }
       let variantDraft:
         | undefined
         | {
@@ -968,6 +1109,9 @@ export default function Products() {
         enabledOptions.length > 0 &&
         Object.keys(variantRows).length > 0
       ) {
+        const colorOptionIndex = enabledOptions.findIndex(
+          (option) => option.name.trim().toLowerCase() === "color",
+        );
         const variants = Object.values(variantRows).map((v) => ({
           options: v.options,
           title: v.title,
@@ -980,6 +1124,10 @@ export default function Products() {
           measurements: hasAnyMeasurement(v.measurements)
             ? v.measurements
             : null,
+          mediaUrls:
+            colorOptionIndex >= 0
+              ? variantColorMediaUrls[v.options[colorOptionIndex]] || []
+              : [],
         }));
         variantDraft = { options: enabledOptions, variants };
       }
@@ -1001,6 +1149,7 @@ export default function Products() {
         resourceUrls,
         vendor,
         productType,
+        collections: draftCollections,
         garmentCategory,
         fitType,
         variantMode,
@@ -1052,6 +1201,9 @@ export default function Products() {
   const [eBarcode, setEBarcode] = useState("");
   const [eWeight, setEWeight] = useState<number | "">("");
   const [eProductType, setEProductType] = useState("");
+  const [eUseCustomProductType, setEUseCustomProductType] = useState(false);
+  const [eCollections, setECollections] = useState<string[]>([]);
+  const [eCustomCollectionName, setECustomCollectionName] = useState("");
   const [eVendor, setEVendor] = useState("");
   const [eTags, setETags] = useState("");
   const [eBustSize, setEBustSize] = useState<number | "">("");
@@ -1191,6 +1343,16 @@ export default function Products() {
     setEBarcode("");
     setEWeight("");
     setEProductType(p.productType || "");
+    setEUseCustomProductType(
+      Boolean(
+        p.productType &&
+          !PRODUCT_TYPE_OPTIONS.includes(
+            p.productType as (typeof PRODUCT_TYPE_OPTIONS)[number],
+          ),
+      ),
+    );
+    setECollections(p.collections || []);
+    setECustomCollectionName("");
     setEVendor(p.vendor || "");
     setETags((p.tags || []).join(", "));
     setEBustSize(
@@ -1265,6 +1427,12 @@ export default function Products() {
         payload.description = eDescription.trim();
       if (eProductType.trim() !== (editing.productType || ""))
         payload.productType = eProductType.trim();
+      if (
+        JSON.stringify(eCollections) !==
+        JSON.stringify(editing.collections || [])
+      ) {
+        payload.collections = eCollections;
+      }
       if (eVendor.trim() !== (editing.vendor || ""))
         payload.vendor = eVendor.trim();
       const newTags = eTags
@@ -2185,14 +2353,45 @@ export default function Products() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="product-type">Product Type</Label>
-                  <Input
-                    id="product-type"
-                    required
-                    name="product-type"
-                    placeholder="T-Shirts"
-                    value={draftProductType}
-                    onChange={(e) => setDraftProductType(e.target.value)}
-                  />
+                  <Select
+                    value={
+                      useCustomProductType ? "__custom__" : draftProductType
+                    }
+                    onValueChange={(value) => {
+                      const custom = value === "__custom__";
+                      setUseCustomProductType(custom);
+                      setDraftProductType(custom ? "" : value);
+                    }}
+                  >
+                    <SelectTrigger id="product-type">
+                      <SelectValue placeholder="Select product type" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-72">
+                      {PRODUCT_TYPE_OPTIONS.map((option) => (
+                        <SelectItem key={option} value={option}>
+                          {option}
+                        </SelectItem>
+                      ))}
+                      <SelectItem value="__custom__">Add your own…</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {useCustomProductType && (
+                    <Input
+                      name="product-type"
+                      placeholder="Enter custom product type"
+                      value={draftProductType}
+                      onChange={(event) =>
+                        setDraftProductType(event.target.value)
+                      }
+                    />
+                  )}
+                  {!useCustomProductType && (
+                    <input
+                      type="hidden"
+                      name="product-type"
+                      value={draftProductType}
+                    />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="vendor">
@@ -2207,6 +2406,92 @@ export default function Products() {
                     onChange={(e) => setDraftVendor(e.target.value)}
                   />
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Collections / Store Categories *</Label>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-auto min-h-10 w-full justify-between whitespace-normal text-left"
+                    >
+                      <span>
+                        {draftCollections.length
+                          ? draftCollections.join(", ")
+                          : "Select one or more collections"}
+                      </span>
+                      <span className="ml-3 text-muted-foreground">⌄</span>
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    align="start"
+                    className="max-h-80 w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto"
+                  >
+                    <DropdownMenuLabel>Shopify collections</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    {COLLECTION_OPTIONS.map((collectionName) => (
+                      <DropdownMenuCheckboxItem
+                        key={collectionName}
+                        checked={draftCollections.includes(collectionName)}
+                        onSelect={(event) => event.preventDefault()}
+                        onCheckedChange={(checked) =>
+                          setDraftCollections((current) =>
+                            checked
+                              ? [...new Set([...current, collectionName])]
+                              : current.filter(
+                                  (item) => item !== collectionName,
+                                ),
+                          )
+                        }
+                      >
+                        {collectionName}
+                      </DropdownMenuCheckboxItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="Add your own collection"
+                    value={customCollectionName}
+                    onChange={(event) =>
+                      setCustomCollectionName(event.target.value)
+                    }
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      const customName = customCollectionName.trim();
+                      if (!customName) return;
+                      setDraftCollections((current) => [
+                        ...new Set([...current, customName]),
+                      ]);
+                      setCustomCollectionName("");
+                    }}
+                  >
+                    Add
+                  </Button>
+                </div>
+                {draftCollections.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {draftCollections.map((collectionName) => (
+                      <Badge
+                        key={collectionName}
+                        variant="outline"
+                        className="cursor-pointer"
+                        onClick={() =>
+                          setDraftCollections((current) =>
+                            current.filter((item) => item !== collectionName),
+                          )
+                        }
+                      >
+                        {collectionName} ×
+                      </Badge>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="min-w-0 space-y-2">
@@ -2239,6 +2524,9 @@ export default function Products() {
                 comboKeys={comboKeys}
                 variantRows={variantRows}
                 setVariantRows={setVariantRows}
+                variantColorImagePreviews={variantColorImagePreviews}
+                onAddVariantColorImages={addVariantColorImages}
+                onRemoveVariantColorImage={removeVariantColorImage}
               />
               )}
 
@@ -2381,7 +2669,8 @@ export default function Products() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Product</TableHead>
-                    <TableHead>Category</TableHead>
+                    <TableHead>Product Type</TableHead>
+                    <TableHead>Collections</TableHead>
                     <TableHead>Price</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
@@ -2431,6 +2720,11 @@ export default function Products() {
                           </div>
                         </TableCell>
                         <TableCell>{p.productType || "-"}</TableCell>
+                        <TableCell className="max-w-[260px]">
+                          {p.collections?.length
+                            ? p.collections.join(", ")
+                            : "-"}
+                        </TableCell>
                         <TableCell>
                           {p.price != null
                             ? `₹${Number(p.price).toLocaleString()}`
@@ -2525,10 +2819,123 @@ export default function Products() {
                   </div>
                   <div className="space-y-2">
                     <Label>Product Type</Label>
+                    <Select
+                      value={
+                        eUseCustomProductType ? "__custom__" : eProductType
+                      }
+                      onValueChange={(value) => {
+                        const custom = value === "__custom__";
+                        setEUseCustomProductType(custom);
+                        setEProductType(custom ? "" : value);
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select product type" />
+                      </SelectTrigger>
+                      <SelectContent className="max-h-72">
+                        {PRODUCT_TYPE_OPTIONS.map((option) => (
+                          <SelectItem key={option} value={option}>
+                            {option}
+                          </SelectItem>
+                        ))}
+                        <SelectItem value="__custom__">
+                          Add your own…
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {eUseCustomProductType && (
+                      <Input
+                        placeholder="Enter custom product type"
+                        value={eProductType}
+                        onChange={(event) =>
+                          setEProductType(event.target.value)
+                        }
+                      />
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Collections / Store Categories</Label>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-auto min-h-10 w-full justify-between whitespace-normal text-left"
+                      >
+                        <span>
+                          {eCollections.length
+                            ? eCollections.join(", ")
+                            : "Select one or more collections"}
+                        </span>
+                        <span className="ml-3 text-muted-foreground">⌄</span>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      align="start"
+                      className="max-h-80 w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto"
+                    >
+                      <DropdownMenuLabel>Shopify collections</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      {COLLECTION_OPTIONS.map((collectionName) => (
+                        <DropdownMenuCheckboxItem
+                          key={collectionName}
+                          checked={eCollections.includes(collectionName)}
+                          onSelect={(event) => event.preventDefault()}
+                          onCheckedChange={(checked) =>
+                            setECollections((current) =>
+                              checked
+                                ? [...new Set([...current, collectionName])]
+                                : current.filter(
+                                    (item) => item !== collectionName,
+                                  ),
+                            )
+                          }
+                        >
+                          {collectionName}
+                        </DropdownMenuCheckboxItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <div className="flex gap-2">
                     <Input
-                      value={eProductType}
-                      onChange={(e) => setEProductType(e.target.value)}
+                      placeholder="Add your own collection"
+                      value={eCustomCollectionName}
+                      onChange={(event) =>
+                        setECustomCollectionName(event.target.value)
+                      }
                     />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => {
+                        const customName = eCustomCollectionName.trim();
+                        if (!customName) return;
+                        setECollections((current) => [
+                          ...new Set([...current, customName]),
+                        ]);
+                        setECustomCollectionName("");
+                      }}
+                    >
+                      Add
+                    </Button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {eCollections.map((collectionName) => (
+                      <Badge
+                        key={collectionName}
+                        variant="outline"
+                        className="cursor-pointer"
+                        onClick={() =>
+                          setECollections((current) =>
+                            current.filter((item) => item !== collectionName),
+                          )
+                        }
+                      >
+                        {collectionName} ×
+                      </Badge>
+                    ))}
                   </div>
                 </div>
 
@@ -3174,6 +3581,9 @@ function VariantPlanner(props: {
   setVariantRows: React.Dispatch<
     React.SetStateAction<Record<string, VariantRow>>
   >;
+  variantColorImagePreviews?: Record<string, string[]>;
+  onAddVariantColorImages?: (color: string, files: File[]) => void;
+  onRemoveVariantColorImage?: (color: string, index: number) => void;
 }) {
   const {
     garmentCategory,
@@ -3192,7 +3602,14 @@ function VariantPlanner(props: {
     comboKeys,
     variantRows,
     setVariantRows,
+    variantColorImagePreviews,
+    onAddVariantColorImages,
+    onRemoveVariantColorImage,
   } = props;
+
+  const colorOption = options.find(
+    (option) => option.name.trim().toLowerCase() === "color",
+  );
 
   const measurementFields =
     garmentCategory === "Tops"
@@ -3284,6 +3701,66 @@ function VariantPlanner(props: {
           </Button>
         )}
       </div>
+
+      {colorOption?.values.length && onAddVariantColorImages ? (
+        <div className="space-y-3 rounded-md border p-3">
+          <div>
+            <Label>Images for each color variant</Label>
+            <p className="text-xs text-muted-foreground">
+              Add up to 4 images per color. Shopify will link these images to
+              every size variant using that color.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {colorOption.values.map((color) => (
+              <div key={color} className="space-y-2 rounded-md bg-muted/30 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">{color}</span>
+                  <label className="cursor-pointer text-sm font-medium text-primary hover:underline">
+                    Add photos
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/jpg,image/webp"
+                      multiple
+                      className="hidden"
+                      onChange={(event) => {
+                        onAddVariantColorImages(
+                          color,
+                          Array.from(event.target.files || []),
+                        );
+                        event.target.value = "";
+                      }}
+                    />
+                  </label>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {(variantColorImagePreviews?.[color] || []).map(
+                    (preview, index) => (
+                      <div key={`${color}-${index}`} className="relative">
+                        <img
+                          src={preview}
+                          alt={`${color} variant ${index + 1}`}
+                          className="h-16 w-16 rounded-md border object-cover"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onRemoveVariantColorImage?.(color, index)
+                          }
+                          className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-xs text-destructive-foreground"
+                          aria-label={`Remove ${color} image ${index + 1}`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ),
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid gap-3 rounded-md border bg-muted/20 p-3 md:grid-cols-[180px_180px_auto] md:items-end">
         <div className="space-y-2">

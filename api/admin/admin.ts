@@ -182,6 +182,60 @@ const PRODUCT_BY_SKU_QUERY = /* GraphQL */ `
   }
 `;
 
+const COLLECTIONS_QUERY = /* GraphQL */ `
+  query collectionsForOrganization {
+    collections(first: 250) {
+      nodes {
+        id
+        title
+      }
+    }
+  }
+`;
+
+const COLLECTION_CREATE = /* GraphQL */ `
+  mutation collectionCreate($input: CollectionInput!) {
+    collectionCreate(input: $input) {
+      collection {
+        id
+        title
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const COLLECTION_ADD_PRODUCTS = /* GraphQL */ `
+  mutation collectionAddProducts($id: ID!, $productIds: [ID!]!) {
+    collectionAddProducts(id: $id, productIds: $productIds) {
+      collection {
+        id
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const COLLECTION_REMOVE_PRODUCTS = /* GraphQL */ `
+  mutation collectionRemoveProducts($id: ID!, $productIds: [ID!]!) {
+    collectionRemoveProducts(id: $id, productIds: $productIds) {
+      job {
+        id
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
 const INVENTORY_SET_ON_HAND = /* GraphQL */ `
   mutation inventorySetOnHandQuantities(
     $input: InventorySetOnHandQuantitiesInput!
@@ -250,6 +304,100 @@ async function recoverShopifyProductIdBySku(qdoc: any) {
   );
 }
 
+function normalizeCollectionTitles(input: unknown) {
+  return Array.isArray(input)
+    ? [...new Set(input.map((value) => String(value).trim()).filter(Boolean))]
+    : [];
+}
+
+async function syncShopifyCollections(args: {
+  productId: string;
+  previousTitles: string[];
+  desiredTitles: string[];
+  removeDeselected: boolean;
+}) {
+  const collectionsResult = await shopifyGraphQL(COLLECTIONS_QUERY, {});
+  const collectionNodes = Array.isArray(
+    collectionsResult?.data?.collections?.nodes,
+  )
+    ? collectionsResult.data.collections.nodes
+    : [];
+  const collectionsByTitle = new Map<string, { id: string; title: string }>();
+  for (const collection of collectionNodes) {
+    if (collection?.id && collection?.title) {
+      collectionsByTitle.set(String(collection.title).trim().toLowerCase(), {
+        id: String(collection.id),
+        title: String(collection.title).trim(),
+      });
+    }
+  }
+
+  for (const title of args.desiredTitles) {
+    const key = title.toLowerCase();
+    if (collectionsByTitle.has(key)) continue;
+    const createResult = await shopifyGraphQL(COLLECTION_CREATE, {
+      input: { title },
+    });
+    throwUserErrors(createResult, "data.collectionCreate");
+    const created = createResult?.data?.collectionCreate?.collection;
+    if (!created?.id) {
+      throw new Error(`Shopify did not create collection: ${title}`);
+    }
+    collectionsByTitle.set(key, {
+      id: String(created.id),
+      title: String(created.title || title),
+    });
+  }
+
+  for (const title of args.desiredTitles) {
+    const collection = collectionsByTitle.get(title.toLowerCase());
+    if (!collection) continue;
+    const addResult = await shopifyGraphQL(COLLECTION_ADD_PRODUCTS, {
+      id: collection.id,
+      productIds: [args.productId],
+    });
+    const addErrors = (
+      addResult?.data?.collectionAddProducts?.userErrors || []
+    ).filter(
+      (error: any) =>
+        !/already|included/i.test(String(error?.message || "")),
+    );
+    if (addErrors.length) {
+      throw new Error(
+        addErrors.map((error: any) => error.message).join("; "),
+      );
+    }
+  }
+
+  if (args.removeDeselected) {
+    const desiredKeys = new Set(
+      args.desiredTitles.map((title) => title.toLowerCase()),
+    );
+    for (const title of args.previousTitles) {
+      if (desiredKeys.has(title.toLowerCase())) continue;
+      const collection = collectionsByTitle.get(title.toLowerCase());
+      if (!collection) continue;
+      const removeResult = await shopifyGraphQL(COLLECTION_REMOVE_PRODUCTS, {
+        id: collection.id,
+        productIds: [args.productId],
+      });
+      const removeErrors = (
+        removeResult?.data?.collectionRemoveProducts?.userErrors || []
+      ).filter(
+        (error: any) =>
+          !/not.*collection|not included/i.test(
+            String(error?.message || ""),
+          ),
+      );
+      if (removeErrors.length) {
+        throw new Error(
+          removeErrors.map((error: any) => error.message).join("; "),
+        );
+      }
+    }
+  }
+}
+
 async function updateShopifyProduct(productInput: Record<string, any>) {
   try {
     const result = await shopifyGraphQL(PRODUCT_UPDATE, {
@@ -316,6 +464,20 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
     productInput.tags = [...new Set([...existingMerchantTags, ...requestedTags])];
 
   await updateShopifyProduct(productInput);
+
+  const desiredCollections = normalizeCollectionTitles(
+    pendingUpdates.collections !== undefined
+      ? pendingUpdates.collections
+      : qdoc.collections,
+  );
+  if (desiredCollections.length) {
+    await syncShopifyCollections({
+      productId,
+      previousTitles: normalizeCollectionTitles(qdoc.collections),
+      desiredTitles: desiredCollections,
+      removeDeselected: qdoc.collectionsSynced === true,
+    });
+  }
 
   const defaultVariantId = normalizeShopifyGid(
     Array.isArray(qdoc.shopifyVariantIds)
@@ -388,7 +550,12 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
     }
   }
 
-  return { productId, inventoryItemId, warnings };
+  return {
+    productId,
+    inventoryItemId,
+    warnings,
+    collections: desiredCollections,
+  };
 }
 
 function changeSummaryForQueueItem(item: any) {
@@ -636,6 +803,8 @@ export default async function handler(req: any, res: any) {
               shopifyResult.productId.split("/").pop() ||
               qdoc.shopifyProductNumericId ||
               null,
+            collections: shopifyResult.collections,
+            collectionsSynced: shopifyResult.collections.length > 0,
             inventoryItemId:
               shopifyResult.inventoryItemId || qdoc.inventoryItemId || null,
             pendingUpdates: null,

@@ -1,6 +1,7 @@
 // pages/api/admin/products/create.ts
 import { getAdmin } from "../../_lib/firebaseAdmin.js";
 import { shopifyGraphQL } from "../../_lib/shopify.js";
+import type { DocumentReference } from "firebase-admin/firestore";
 
 /* ---------------- helpers: sku ---------------- */
 function normSku(raw: string): string {
@@ -20,6 +21,13 @@ function normalizeLocationId(value: unknown) {
   return raw.startsWith("gid://shopify/Location/")
     ? raw
     : `gid://shopify/Location/${raw}`;
+}
+
+function runtimeEnv(name: string) {
+  const runtime = globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  };
+  return runtime.process?.env?.[name];
 }
 
 function normalizeMeasurements(input: any) {
@@ -103,6 +111,11 @@ function normalizeVariantDraft(input: any) {
               variant?.weightGrams == null || variant.weightGrams === ""
                 ? undefined
                 : Number(variant.weightGrams),
+            mediaUrls: Array.isArray(variant?.mediaUrls)
+              ? variant.mediaUrls
+                  .map((url: unknown) => String(url).trim())
+                  .filter(Boolean)
+              : [],
             measurements: hasAnyMeasurement(normalizedMeasurements)
               ? normalizedMeasurements
               : null,
@@ -365,6 +378,7 @@ async function createShopifyVariants(args: {
         ? { compareAtPrice: String(variant.compareAtPrice ?? args.baseCompareAtPrice) }
         : {}),
       ...(variant.barcode ? { barcode: variant.barcode } : {}),
+      ...(variant.mediaUrls?.length ? { mediaSrc: variant.mediaUrls } : {}),
       inventoryItem: {
         sku: variant.sku || `${args.baseSku}-${index + 1}`,
         tracked: args.tracked,
@@ -419,7 +433,7 @@ export default async function handler(req: any, res: any) {
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
-  let claimedSkuRef: FirebaseFirestore.DocumentReference | null = null;
+  let claimedSkuRef: DocumentReference | null = null;
 
   try {
     const { adminAuth, adminDb } = getAdmin();
@@ -451,6 +465,7 @@ export default async function handler(req: any, res: any) {
       resourceUrls = [],
       vendor,
       productType,
+      collections = [],
       garmentCategory,
       fitType,
       variantMode,
@@ -541,7 +556,7 @@ export default async function handler(req: any, res: any) {
       throw new Error("Product created but default variant not returned.");
     }
 
-    const locationId = normalizeLocationId(process.env.SHOPIFY_LOCATION_ID);
+    const locationId = normalizeLocationId(runtimeEnv("SHOPIFY_LOCATION_ID"));
     let finalVariantNodes: any[] = [firstVariant];
 
     if (normalizedVariantDraft?.variants?.length) {
@@ -663,6 +678,10 @@ export default async function handler(req: any, res: any) {
       stock: inventory?.quantity ?? null,
       vendor: vendor || "DRIPPR Marketplace",
       productType: productType || null,
+      collections: (Array.isArray(collections) ? collections : [])
+        .map((collectionName: unknown) => String(collectionName).trim())
+        .filter(Boolean),
+      collectionsSynced: false,
       garmentCategory: garmentCategory || null,
       fitType: fitType || null,
       variantMode: variantMode === "multiple" ? "multiple" : "single",
