@@ -108,6 +108,8 @@ type AddProductDraft = {
   garmentCategory?: GarmentCategory;
   fitType?: FitType;
   fallbackSize?: string;
+  variantMode?: "single" | "multiple";
+  singleColor?: string;
   measurements?: ProductMeasurements | null;
   variantRows?: Omit<VariantRow, "id">[]; // store variant data (no id)
 };
@@ -246,6 +248,8 @@ export default function Products() {
   const [draftWaistSize, setDraftWaistSize] = useState("");
   const [draftHipSize, setDraftHipSize] = useState("");
   const [draftLengthSize, setDraftLengthSize] = useState("");
+  const [draftShoulderSize, setDraftShoulderSize] = useState("");
+  const [draftInseamSize, setDraftInseamSize] = useState("");
 
   // shadcn <Select> values (controlled)
   const [trackInventory, setTrackInventory] = useState<"yes" | "no">("yes");
@@ -254,6 +258,10 @@ export default function Products() {
     useState<GarmentCategory>("Tops");
   const [fitType, setFitType] = useState<FitType>("Regular");
   const [fallbackSize, setFallbackSize] = useState("M");
+  const [variantMode, setVariantMode] = useState<"single" | "multiple">(
+    "single",
+  );
+  const [singleColor, setSingleColor] = useState("");
   const skipNextDraftAutosave = useRef(false);
 
   // ----- list / search -----
@@ -284,6 +292,8 @@ export default function Products() {
       waist: toNullableNumber(draftWaistSize),
       hip: toNullableNumber(draftHipSize),
       length: toNullableNumber(draftLengthSize),
+      shoulder: toNullableNumber(draftShoulderSize),
+      inseam: toNullableNumber(draftInseamSize),
       unit: "in",
     };
   }
@@ -315,6 +325,8 @@ export default function Products() {
       garmentCategory,
       fitType,
       fallbackSize,
+      variantMode,
+      singleColor: singleColor.trim() || undefined,
       measurements: buildMeasurementDraft(),
       variantRows: Object.keys(variantRows).length
         ? Object.values(variantRows).map(({ id, ...r }) => r)
@@ -338,6 +350,8 @@ export default function Products() {
     setGarmentCategory("Tops");
     setFitType("Regular");
     setFallbackSize("M");
+    setVariantMode("single");
+    setSingleColor("");
     setDraftTitle("");
     setDraftDescription("");
     setDraftVendor("");
@@ -355,6 +369,8 @@ export default function Products() {
     setDraftWaistSize("");
     setDraftHipSize("");
     setDraftLengthSize("");
+    setDraftShoulderSize("");
+    setDraftInseamSize("");
     form?.reset();
   }
 
@@ -529,6 +545,12 @@ export default function Products() {
     setDraftBustSize(generated.chest == null ? "" : String(generated.chest));
     setDraftWaistSize(generated.waist == null ? "" : String(generated.waist));
     setDraftHipSize(generated.hip == null ? "" : String(generated.hip));
+    setDraftShoulderSize(
+      generated.shoulder == null ? "" : String(generated.shoulder),
+    );
+    setDraftInseamSize(
+      generated.inseam == null ? "" : String(generated.inseam),
+    );
     const garmentLength = generated.length ?? generated.inseam;
     setDraftLengthSize(garmentLength == null ? "" : String(garmentLength));
   }
@@ -651,9 +673,13 @@ export default function Products() {
     draftWaistSize,
     draftHipSize,
     draftLengthSize,
+    draftShoulderSize,
+    draftInseamSize,
     garmentCategory,
     fitType,
     fallbackSize,
+    variantMode,
+    singleColor,
     basePriceInput,
     trackInventory,
     statusSel,
@@ -699,6 +725,8 @@ export default function Products() {
       if (saved.garmentCategory) setGarmentCategory(saved.garmentCategory);
       if (saved.fitType) setFitType(saved.fitType);
       if (saved.fallbackSize) setFallbackSize(saved.fallbackSize);
+      if (saved.variantMode) setVariantMode(saved.variantMode);
+      if (saved.singleColor) setSingleColor(saved.singleColor);
       if (saved.measurements?.bust != null)
         setDraftBustSize(String(saved.measurements.bust));
       if (saved.measurements?.waist != null)
@@ -707,6 +735,10 @@ export default function Products() {
         setDraftHipSize(String(saved.measurements.hip));
       if (saved.measurements?.length != null)
         setDraftLengthSize(String(saved.measurements.length));
+      if (saved.measurements?.shoulder != null)
+        setDraftShoulderSize(String(saved.measurements.shoulder));
+      if (saved.measurements?.inseam != null)
+        setDraftInseamSize(String(saved.measurements.inseam));
 
       // Restore selects
       if (saved.trackInventory) setTrackInventory(saved.trackInventory);
@@ -849,6 +881,8 @@ export default function Products() {
       waist: toNullableNumber(String(form.get("waist-size") ?? "")),
       hip: toNullableNumber(String(form.get("hip-size") ?? "")),
       length: toNullableNumber(String(form.get("length-size") ?? "")),
+      shoulder: toNullableNumber(String(form.get("shoulder-size") ?? "")),
+      inseam: toNullableNumber(String(form.get("inseam-size") ?? "")),
       unit: "in",
     };
 
@@ -868,6 +902,17 @@ export default function Products() {
     if (!productType) return showSubmitError("Product type is required.");
     if (!seoTitle || !seoDescription)
       return showSubmitError("SEO Title and SEO Description are required.");
+    if (variantMode === "single" && !singleColor.trim())
+      return showSubmitError("Color is required for the single variant.");
+    if (
+      variantMode === "multiple" &&
+      (options.every((option) => option.values.length === 0) ||
+        Object.keys(variantRows).length === 0)
+    ) {
+      return showSubmitError(
+        "Add at least one complete variant combination before submitting.",
+      );
+    }
 
     try {
       setBusy(true);
@@ -896,7 +941,33 @@ export default function Products() {
             variants: Omit<VariantRow, "id">[];
           } = undefined;
 
-      if (enabledOptions.length > 0 && Object.keys(variantRows).length > 0) {
+      if (variantMode === "single") {
+        const color = singleColor.trim();
+        variantDraft = {
+          options: [
+            { name: "Size", values: [fallbackSize] },
+            { name: "Color", values: [color] },
+          ],
+          variants: [
+            {
+              options: [fallbackSize, color],
+              title: `${fallbackSize} / ${color}`,
+              price,
+              compareAtPrice,
+              sku,
+              quantity,
+              barcode,
+              weightGrams,
+              measurements: hasAnyMeasurement(measurements)
+                ? measurements
+                : null,
+            },
+          ],
+        };
+      } else if (
+        enabledOptions.length > 0 &&
+        Object.keys(variantRows).length > 0
+      ) {
         const variants = Object.values(variantRows).map((v) => ({
           options: v.options,
           title: v.title,
@@ -932,10 +1003,11 @@ export default function Products() {
         productType,
         garmentCategory,
         fitType,
+        variantMode,
         status: statusSel,
         sku, // <-- send to server
         seo: { title: seoTitle, description: seoDescription },
-        measurements,
+        measurements: variantMode === "single" ? measurements : null,
         variantDraft,
       };
 
@@ -1890,20 +1962,61 @@ export default function Products() {
                 </div>
               </div>
 
+              <div className="space-y-3 border-t pt-4">
+                <div>
+                  <h3 className="font-semibold">Product variant setup</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Choose one setup. Only the selected setup will be sent to
+                    Shopify and Firestore.
+                  </p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => setVariantMode("single")}
+                    className={`rounded-lg border p-4 text-left transition-colors ${
+                      variantMode === "single"
+                        ? "border-primary bg-primary/5"
+                        : "border-border hover:bg-muted/40"
+                    }`}
+                  >
+                    <span className="block font-medium">Single variant</span>
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      One size and color with one set of measurements.
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVariantMode("multiple")}
+                    className={`rounded-lg border p-4 text-left transition-colors ${
+                      variantMode === "multiple"
+                        ? "border-primary bg-primary/5"
+                        : "border-border hover:bg-muted/40"
+                    }`}
+                  >
+                    <span className="block font-medium">Multiple variants</span>
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      Multiple size/color combinations with measurements per
+                      variant.
+                    </span>
+                  </button>
+                </div>
+              </div>
+
               {/* Product Measurements */}
+              {variantMode === "single" && (
               <div className="space-y-4 border-t pt-4">
                 <div>
                   <h3 className="font-semibold">
-                    Fallback Product Measurements
+                    Single Variant Details &amp; Measurements
                   </h3>
                   <p className="text-xs text-muted-foreground">
-                    Optional. Prefer size-wise measurements in the variant
-                    table below. Use this only when a product has no size
-                    variants.
+                    This creates one real Shopify variant and stores its size,
+                    color, inventory, and garment measurements.
                   </p>
                 </div>
 
-                <div className="grid gap-3 rounded-md border bg-muted/20 p-3 sm:grid-cols-2 lg:grid-cols-[150px_170px_170px_auto] lg:items-end">
+                <div className="grid gap-3 rounded-md border bg-muted/20 p-3 sm:grid-cols-2 lg:grid-cols-[130px_1fr_150px_150px_auto] lg:items-end">
                   <div className="space-y-2">
                     <Label>Size</Label>
                     <Select
@@ -1920,6 +2033,15 @@ export default function Products() {
                         ))}
                       </SelectContent>
                     </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="single-variant-color">Color</Label>
+                    <Input
+                      id="single-variant-color"
+                      placeholder="e.g. Black"
+                      value={singleColor}
+                      onChange={(event) => setSingleColor(event.target.value)}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>Garment category</Label>
@@ -1964,8 +2086,9 @@ export default function Products() {
                 </div>
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {garmentCategory === "Tops" && (
                   <div className="space-y-2">
-                    <Label htmlFor="bust-size">Bust Size (in)</Label>
+                    <Label htmlFor="bust-size">Chest/Bust (in)</Label>
                     <Input
                       id="bust-size"
                       name="bust-size"
@@ -1977,6 +2100,7 @@ export default function Products() {
                       onChange={(e) => setDraftBustSize(e.target.value)}
                     />
                   </div>
+                  )}
 
                   <div className="space-y-2">
                     <Label htmlFor="waist-size">Waist Size (in)</Label>
@@ -1992,6 +2116,7 @@ export default function Products() {
                     />
                   </div>
 
+                  {garmentCategory === "Bottoms" && (
                   <div className="space-y-2">
                     <Label htmlFor="hip-size">Hip Size (in)</Label>
                     <Input
@@ -2005,6 +2130,39 @@ export default function Products() {
                       onChange={(e) => setDraftHipSize(e.target.value)}
                     />
                   </div>
+                  )}
+
+                  {garmentCategory === "Tops" && (
+                  <div className="space-y-2">
+                    <Label htmlFor="shoulder-size">Shoulder (in)</Label>
+                    <Input
+                      id="shoulder-size"
+                      name="shoulder-size"
+                      type="number"
+                      min={0}
+                      step="0.1"
+                      placeholder="e.g. 17"
+                      value={draftShoulderSize}
+                      onChange={(e) => setDraftShoulderSize(e.target.value)}
+                    />
+                  </div>
+                  )}
+
+                  {garmentCategory === "Bottoms" && (
+                  <div className="space-y-2">
+                    <Label htmlFor="inseam-size">Inseam (in)</Label>
+                    <Input
+                      id="inseam-size"
+                      name="inseam-size"
+                      type="number"
+                      min={0}
+                      step="0.1"
+                      placeholder="e.g. 30"
+                      value={draftInseamSize}
+                      onChange={(e) => setDraftInseamSize(e.target.value)}
+                    />
+                  </div>
+                  )}
 
                   <div className="space-y-2">
                     <Label htmlFor="length-size">Length Size (in)</Label>
@@ -2021,6 +2179,7 @@ export default function Products() {
                   </div>
                 </div>
               </div>
+              )}
 
               {/* Product meta */}
               <div className="grid grid-cols-2 gap-4">
@@ -2062,6 +2221,7 @@ export default function Products() {
               </div>
 
               {/* ===== Variants (plan for Admin) ===== */}
+              {variantMode === "multiple" && (
               <VariantPlanner
                 garmentCategory={garmentCategory}
                 fitType={fitType}
@@ -2080,6 +2240,7 @@ export default function Products() {
                 variantRows={variantRows}
                 setVariantRows={setVariantRows}
               />
+              )}
 
               {/* SEO (required) */}
               <div className="space-y-4 border-t pt-4">
