@@ -208,6 +208,40 @@ const VARIANTS_BULK_DELETE = /* GraphQL */ `
   }
 `;
 
+const PRODUCT_CREATE_MEDIA = /* GraphQL */ `
+  mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+    productCreateMedia(productId: $productId, media: $media) {
+      media {
+        id
+      }
+      mediaUserErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const PRODUCT_VARIANT_APPEND_MEDIA = /* GraphQL */ `
+  mutation productVariantAppendMedia(
+    $productId: ID!
+    $variantMedia: [ProductVariantAppendMediaInput!]!
+  ) {
+    productVariantAppendMedia(
+      productId: $productId
+      variantMedia: $variantMedia
+    ) {
+      productVariants {
+        id
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
 const PRODUCT_INVENTORY_QUERY = /* GraphQL */ `
   query productInventory($id: ID!) {
     product(id: $id) {
@@ -485,6 +519,70 @@ async function updateShopifyProduct(productInput: Record<string, any>) {
   }
 }
 
+async function applyVariantMediaUpdates(
+  productId: string,
+  input: unknown,
+) {
+  const groups = Array.isArray(input)
+    ? input
+        .map((group: any) => ({
+          color: String(group?.color || "").trim(),
+          variantIds: Array.isArray(group?.variantIds)
+            ? group.variantIds
+                .map((id: unknown) => normalizeShopifyGid(id, "ProductVariant"))
+                .filter(Boolean)
+            : [],
+          resourceUrls: Array.isArray(group?.resourceUrls)
+            ? group.resourceUrls.map((url: unknown) => String(url).trim()).filter(Boolean)
+            : [],
+        }))
+        .filter((group) => group.variantIds.length && group.resourceUrls.length)
+    : [];
+  if (!groups.length) return { colors: 0, variants: 0, media: 0 };
+
+  const resourceUrls = [
+    ...new Set(groups.flatMap((group) => group.resourceUrls)),
+  ];
+  const createResult = await shopifyGraphQL(PRODUCT_CREATE_MEDIA, {
+    productId,
+    media: resourceUrls.map((url) => ({
+      originalSource: url,
+      mediaContentType: "IMAGE",
+    })),
+  });
+  const mediaErrors = createResult?.data?.productCreateMedia?.mediaUserErrors || [];
+  if (mediaErrors.length) {
+    throw new Error(mediaErrors.map((error: any) => error.message).join("; "));
+  }
+  const createdMedia = createResult?.data?.productCreateMedia?.media || [];
+  const mediaIdByUrl = new Map<string, string>();
+  resourceUrls.forEach((url, index) => {
+    const mediaId = String(createdMedia[index]?.id || "").trim();
+    if (mediaId) mediaIdByUrl.set(url, mediaId);
+  });
+  if (mediaIdByUrl.size !== resourceUrls.length) {
+    throw new Error("Shopify did not return every uploaded variant photo ID.");
+  }
+
+  const variantMedia = groups.flatMap((group) => {
+    const mediaIds = group.resourceUrls
+      .map((url) => mediaIdByUrl.get(url))
+      .filter(Boolean);
+    return group.variantIds.map((variantId) => ({ variantId, mediaIds }));
+  });
+  const appendResult = await shopifyGraphQL(PRODUCT_VARIANT_APPEND_MEDIA, {
+    productId,
+    variantMedia,
+  });
+  throwUserErrors(appendResult, "data.productVariantAppendMedia");
+
+  return {
+    colors: groups.length,
+    variants: variantMedia.length,
+    media: resourceUrls.length,
+  };
+}
+
 async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
   const productId =
     resolveShopifyProductId(qdoc) ||
@@ -583,6 +681,10 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
       approvedVariantDraft.variants.length > 1);
   const locationId = normalizeLocationId(process.env.SHOPIFY_LOCATION_ID);
   const warnings: string[] = [];
+  const variantMediaSync = await applyVariantMediaUpdates(
+    productId,
+    pendingUpdates.variantMediaUpdates,
+  );
   if (
     !isMultipleVariantProduct &&
     locationId &&
@@ -621,6 +723,7 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
     inventoryItemId,
     warnings,
     collections: desiredCollections,
+    variantMediaSync,
   };
 }
 
@@ -929,6 +1032,11 @@ export default async function handler(req: any, res: any) {
               ...variantSizingSync,
               verifiedAt: Date.now(),
             },
+            variantMediaSync: {
+              ...shopifyResult.variantMediaSync,
+              verifiedAt: Date.now(),
+            },
+            variantMediaUpdates: null,
             variantMeasurements: approvedVariantMeasurements,
             inventoryItemId:
               shopifyResult.inventoryItemId || qdoc.inventoryItemId || null,

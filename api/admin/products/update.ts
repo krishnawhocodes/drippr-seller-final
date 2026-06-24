@@ -148,10 +148,15 @@ const PRODUCT_DETAILS_QUERY = /* GraphQL */ `
           }
         }
       }
-      images(first: 100) {
+      images(first: 25) {
         nodes {
           id
           url
+          variants(first: 20) {
+            nodes {
+              id
+            }
+          }
         }
       }
     }
@@ -551,6 +556,20 @@ export default async function handler(req: any, res: any) {
             const p = r?.data?.product;
 
             if (p) {
+              const mediaUrlsByVariant = new Map<string, string[]>();
+              for (const image of p.images?.nodes || []) {
+                const imageUrl = String(image?.url || "").trim();
+                if (!imageUrl) continue;
+                for (const variant of image?.variants?.nodes || []) {
+                  const variantId = String(variant?.id || "").trim();
+                  if (!variantId) continue;
+                  mediaUrlsByVariant.set(variantId, [
+                    ...(mediaUrlsByVariant.get(variantId) || []),
+                    imageUrl,
+                  ]);
+                }
+              }
+
               productOptions = (p.options || []).map((o: any) => ({
                 name: o.name || "",
                 values: Array.isArray(o.values)
@@ -576,6 +595,7 @@ export default async function handler(req: any, res: any) {
                   measurements: readMeasurementMetafields(
                     v.metafields?.nodes || [],
                   ),
+                  mediaUrls: mediaUrlsByVariant.get(String(v.id)) || [],
                 };
               });
 
@@ -810,6 +830,7 @@ export default async function handler(req: any, res: any) {
         "barcode",
         "weightGrams",
         "removeVariantIds",
+        "variantMediaUpdates",
       ] as const;
 
       for (const field of reviewFields) {

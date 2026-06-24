@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -176,12 +176,90 @@ function VariantDraftPreview({ variantDraft }: { variantDraft?: VariantDraft | n
   );
 }
 
+const MEASUREMENT_KEYS = ["chest", "bust", "waist", "hip", "length", "shoulder", "inseam"];
+
+function MeasurementValues({ value }: { value: any }) {
+  const rows = MEASUREMENT_KEYS.filter(
+    (key) => typeof value?.[key] === "number",
+  ).map((key) => ({
+    key,
+    label:
+      key === "bust"
+        ? "Chest / Bust"
+        : key.charAt(0).toUpperCase() + key.slice(1),
+    value: value[key],
+  }));
+  if (!rows.length) return <span className="text-muted-foreground">—</span>;
+  return (
+    <div className="grid gap-1.5">
+      {rows.map((row) => (
+        <div key={row.key} className="flex justify-between gap-4 rounded bg-background/70 px-2 py-1">
+          <span className="text-muted-foreground">{row.label}</span>
+          <span className="font-medium">{row.value} in</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function VariantMeasurementComparison({ change }: { change: ChangeVal }) {
+  const previous = Array.isArray(change.old) ? change.old : [];
+  const requested = Array.isArray(change.new) ? change.new : [];
+  const getKey = (variant: any, index: number) =>
+    String(variant?.variantId || variant?.id || variant?.title || variant?.optionValues?.join("|") || index);
+  const previousByKey = new Map(
+    previous.map((variant, index) => [getKey(variant, index), variant]),
+  );
+  if (!requested.length) return <span className="text-muted-foreground">No requested measurement changes</span>;
+
+  return (
+    <div className="space-y-3">
+      {requested.map((variant, index) => {
+        const key = getKey(variant, index);
+        const oldVariant = previousByKey.get(key);
+        const label = variant?.title || variant?.optionValues?.join(" / ") || `Variant ${index + 1}`;
+        return (
+          <div key={key} className="rounded-md border bg-background p-3">
+            <div className="mb-2 font-semibold">{label}</div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Previous</div>
+                <MeasurementValues value={oldVariant?.measurements} />
+              </div>
+              <div>
+                <div className="mb-1 text-xs font-medium uppercase tracking-wide text-emerald-700">Requested</div>
+                <MeasurementValues value={variant?.measurements} />
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function ChangesTable({ base }: { base?: Record<string, ChangeVal> }) {
   if (!base || !Object.keys(base).length) return null;
-  const displayValue = (value: any) => {
+  const displayValue = (field: string, value: any): ReactNode => {
     if (value == null || value === "") return "—";
+    if (field === "measurements") return <MeasurementValues value={value} />;
+    if (field === "variantDraft") return "New combinations are shown in the variant table above.";
+    if (field === "variantMediaUpdates") {
+      const updates = Array.isArray(value) ? value : [];
+      return updates.length
+        ? updates.map((item) => `${item.color || "Variant"}: ${(item.resourceUrls || []).length} new photo(s)`).join(", ")
+        : "—";
+    }
+    if (field === "removeVariantIds" && Array.isArray(value)) {
+      return `${value.length} variant${value.length === 1 ? "" : "s"} selected for removal`;
+    }
     if (Array.isArray(value)) return value.join(", ") || "—";
-    if (typeof value === "object") return JSON.stringify(value, null, 2);
+    if (typeof value === "object") {
+      const entries = Object.entries(value).filter(([key]) => key !== "unit");
+      return entries.length
+        ? entries.map(([key, item]) => `${key}: ${String(item ?? "—")}`).join(", ")
+        : "—";
+    }
     return String(value);
   };
   return (
@@ -197,17 +275,26 @@ function ChangesTable({ base }: { base?: Record<string, ChangeVal> }) {
             </tr>
           </thead>
           <tbody>
-            {Object.entries(base).map(([k, v]) => (
-              <tr key={k} className="border-t bg-amber-50/60">
-                <td className="p-2 font-medium capitalize">{k.replace(/_/g, " ")}</td>
-                <td className="p-2 text-muted-foreground line-through decoration-destructive/70 whitespace-pre-wrap">
-                  {displayValue(v.old)}
-                </td>
-                <td className="p-2 font-semibold text-emerald-800 bg-emerald-50 underline decoration-2 underline-offset-4 whitespace-pre-wrap">
-                  {displayValue(v.new)}
-                </td>
-              </tr>
-            ))}
+            {Object.entries(base).map(([k, v]) =>
+              k === "variantMeasurements" ? (
+                <tr key={k} className="border-t bg-amber-50/60">
+                  <td className="p-2 align-top font-medium">Variant measurements</td>
+                  <td colSpan={2} className="p-3">
+                    <VariantMeasurementComparison change={v} />
+                  </td>
+                </tr>
+              ) : (
+                <tr key={k} className="border-t bg-amber-50/60">
+                  <td className="p-2 font-medium capitalize">{k.replace(/_/g, " ")}</td>
+                  <td className="p-2 text-muted-foreground line-through decoration-destructive/70 whitespace-pre-wrap">
+                    {displayValue(k, v.old)}
+                  </td>
+                  <td className="p-2 font-semibold text-emerald-800 bg-emerald-50 whitespace-pre-wrap">
+                    {displayValue(k, v.new)}
+                  </td>
+                </tr>
+              ),
+            )}
           </tbody>
         </table>
       </div>

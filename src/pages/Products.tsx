@@ -185,6 +185,7 @@ type ExistingVariant = {
   sku?: string;
   barcode?: string;
   measurements?: ProductMeasurements | null;
+  mediaUrls?: string[];
 };
 
 /** ---------------- Utils ---------------- */
@@ -851,18 +852,16 @@ export default function Products() {
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    const remainingSlots = 5 - selectedImages.length;
-    const filesToAdd = files.slice(0, remainingSlots);
-    if (files.length > remainingSlots) {
-      toast.error(`You can only upload ${remainingSlots} more image(s)`);
-    }
-    setSelectedImages([...selectedImages, ...filesToAdd]);
-    filesToAdd.forEach((file) => {
-      const reader = new FileReader();
-      reader.onloadend = () =>
-        setImagePreviews((prev) => [...prev, reader.result as string]);
-      reader.readAsDataURL(file);
-    });
+    const file = files[0];
+    if (!file) return;
+    setSelectedImages([file]);
+    setImagePreviews([]);
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setImagePreviews([String(reader.result || "")]);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
   };
 
   const removeLocalImage = (index: number) => {
@@ -872,9 +871,9 @@ export default function Products() {
 
   const addVariantColorImages = (color: string, files: File[]) => {
     const currentFiles = variantColorImages[color] || [];
-    const filesToAdd = files.slice(0, Math.max(0, 4 - currentFiles.length));
+    const filesToAdd = files.slice(0, Math.max(0, 5 - currentFiles.length));
     if (files.length > filesToAdd.length) {
-      toast.error("You can add up to 4 images for each color.");
+      toast.error("You can add up to 5 images for each color.");
     }
     if (!filesToAdd.length) return;
 
@@ -944,6 +943,40 @@ export default function Products() {
     return target.resourceUrl;
   }
 
+  async function uploadPendingReviewImage(idToken: string, file: File) {
+    const signResponse = await fetch("/api/admin/products/update", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({ op: "mediaSign" }),
+    });
+    const signJson = await signResponse.json().catch(() => ({}));
+    if (!signResponse.ok || !signJson.ok) {
+      throw new Error(signJson.error || "Failed to prepare variant photo upload");
+    }
+
+    const uploadForm = new FormData();
+    uploadForm.append("file", file);
+    uploadForm.append("fileName", file.name);
+    uploadForm.append("publicKey", signJson.publicKey);
+    uploadForm.append("signature", signJson.auth.signature);
+    uploadForm.append("token", signJson.auth.token);
+    uploadForm.append("expire", String(signJson.auth.expire));
+    if (signJson.folder) uploadForm.append("folder", signJson.folder);
+
+    const uploadResponse = await fetch(
+      "https://upload.imagekit.io/api/v1/files/upload",
+      { method: "POST", body: uploadForm },
+    );
+    const uploadJson = await uploadResponse.json().catch(() => ({}));
+    if (!uploadResponse.ok || !uploadJson.url) {
+      throw new Error(uploadJson.message || "Variant photo upload failed");
+    }
+    return String(uploadJson.url);
+  }
+
   /** ====== ADD submit ====== */
   const showSubmitError = (message: string) => {
     setSubmitFeedback(message);
@@ -1000,8 +1033,8 @@ export default function Products() {
     };
 
     // --- required checks per your request ---
-    if (selectedImages.length === 0)
-      return showSubmitError("Please add at least one new product image.");
+    if (variantMode === "single" && selectedImages.length === 0)
+      return showSubmitError("Please add one photo for the single variant.");
     if (!title) return showSubmitError("Product title is required.");
     if (!description) return showSubmitError("Product description is required.");
     if (!Number.isFinite(price) || price <= 0)
@@ -1043,12 +1076,27 @@ export default function Products() {
     ) {
       return showSubmitError("Enter a quantity for every variant.");
     }
+    if (variantMode === "multiple") {
+      const colorOption = options.find(
+        (option) => option.name.trim().toLowerCase() === "color",
+      );
+      if (!colorOption?.values.length) {
+        return showSubmitError("Add a Color option for variant-wise photos.");
+      }
+      const missingColor = colorOption.values.find(
+        (color) => !(variantColorImages[color] || []).length,
+      );
+      if (missingColor) {
+        return showSubmitError(`Add at least one photo for ${missingColor}.`);
+      }
+    }
 
     try {
       setBusy(true);
       const idToken = await getIdToken();
 
-      const localFiles = selectedImages.slice(0, 5);
+      const localFiles =
+        variantMode === "single" ? selectedImages.slice(0, 1) : [];
       let resourceUrls: string[] = [];
       if (localFiles.length) {
         const targets = await startStagedUploads(idToken, localFiles);
@@ -1244,6 +1292,9 @@ export default function Products() {
   const [existingVariants, setExistingVariants] = useState<ExistingVariant[]>(
     [],
   );
+  const [existingProductOptions, setExistingProductOptions] = useState<
+    VariantOption[]
+  >([]);
   const [removeVariantIds, setRemoveVariantIds] = useState<
     Record<string, boolean>
   >({});
@@ -1253,10 +1304,75 @@ export default function Products() {
   const [variantMeasurementEdits, setVariantMeasurementEdits] = useState<
     Record<string, ProductMeasurements>
   >({});
+  const [editColorImageFiles, setEditColorImageFiles] = useState<
+    Record<string, File[]>
+  >({});
+  const [editColorImagePreviews, setEditColorImagePreviews] = useState<
+    Record<string, string[]>
+  >({});
   const [imagesLive, setImagesLive] = useState<string[]>([]);
   const [imageAddFiles, setImageAddFiles] = useState<File[]>([]);
   const [imageBusy, setImageBusy] = useState(false);
   const [deleteSel, setDeleteSel] = useState<Record<string, boolean>>({}); // url -> selected
+
+  const editColorGroups = useMemo(() => {
+    const colorIndex = existingProductOptions.findIndex(
+      (option) => option.name.trim().toLowerCase() === "color",
+    );
+    const groups = new Map<
+      string,
+      { label: string; variantIds: string[]; existingUrls: string[] }
+    >();
+    for (const variant of existingVariants) {
+      const label =
+        colorIndex >= 0
+          ? variant.optionValues[colorIndex] || variant.title
+          : variant.optionValues.join(" / ") || variant.title;
+      const current = groups.get(label) || {
+        label,
+        variantIds: [],
+        existingUrls: [],
+      };
+      current.variantIds.push(variant.id);
+      current.existingUrls.push(...(variant.mediaUrls || []));
+      current.existingUrls = [...new Set(current.existingUrls)];
+      groups.set(label, current);
+    }
+    return [...groups.values()];
+  }, [existingProductOptions, existingVariants]);
+
+  function addEditColorImages(color: string, files: File[]) {
+    const currentFiles = editColorImageFiles[color] || [];
+    const filesToAdd = files.slice(0, Math.max(0, 5 - currentFiles.length));
+    if (files.length > filesToAdd.length) {
+      toast.error("You can add up to 5 new photos for each colour.");
+    }
+    if (!filesToAdd.length) return;
+    setEditColorImageFiles((current) => ({
+      ...current,
+      [color]: [...(current[color] || []), ...filesToAdd],
+    }));
+    filesToAdd.forEach((file) => {
+      const reader = new FileReader();
+      reader.onloadend = () =>
+        setEditColorImagePreviews((current) => ({
+          ...current,
+          [color]: [...(current[color] || []), String(reader.result || "")],
+        }));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function removeEditColorImage(color: string, index: number) {
+    setEditColorImageFiles((current) => ({
+      ...current,
+      [color]: (current[color] || []).filter((_, itemIndex) => itemIndex !== index),
+    }));
+    setEditColorImagePreviews((current) => ({
+      ...current,
+      [color]: (current[color] || []).filter((_, itemIndex) => itemIndex !== index),
+    }));
+  }
 
   function markRemove(vid: string, checked: boolean) {
     setRemoveVariantIds((prev) => ({ ...prev, [vid]: checked }));
@@ -1319,10 +1435,14 @@ export default function Products() {
             sku: v.sku || undefined,
             barcode: v.barcode || undefined,
             measurements: v.measurements || null,
+            mediaUrls: Array.isArray(v.mediaUrls) ? v.mediaUrls : [],
           }))
         : [];
 
       setExistingVariants(variants);
+      setExistingProductOptions(
+        Array.isArray(prod.productOptions) ? prod.productOptions : [],
+      );
       setRemoveVariantIds({});
       setVariantQuickEdits({});
       setVariantMeasurementEdits(
@@ -1383,6 +1503,9 @@ export default function Products() {
       typeof p.measurements?.length === "number" ? p.measurements.length : "",
     );
     setImageAddFiles([]);
+    setEditColorImageFiles({});
+    setEditColorImagePreviews({});
+    setExistingProductOptions([]);
     setDeleteSel({});
     setVariantMeasurementEdits({});
     setIsEditOpen(true);
@@ -1400,6 +1523,7 @@ export default function Products() {
     if (!editing) return;
 
     try {
+      setImageBusy(true);
       const idToken = await getIdToken();
 
       const payload: any = { id: editing.id };
@@ -1524,6 +1648,31 @@ export default function Products() {
         };
       }
 
+      const pendingColorFiles = editColorGroups.flatMap((group) =>
+        (editColorImageFiles[group.label] || []).map((file) => ({
+          group,
+          file,
+        })),
+      );
+      if (pendingColorFiles.length) {
+        const resourceUrlsByColor: Record<string, string[]> = {};
+        for (let index = 0; index < pendingColorFiles.length; index += 1) {
+          const item = pendingColorFiles[index];
+          const resourceUrl = await uploadPendingReviewImage(idToken, item.file);
+          resourceUrlsByColor[item.group.label] = [
+            ...(resourceUrlsByColor[item.group.label] || []),
+            resourceUrl,
+          ];
+        }
+        payload.variantMediaUpdates = editColorGroups
+          .filter((group) => resourceUrlsByColor[group.label]?.length)
+          .map((group) => ({
+            color: group.label,
+            variantIds: group.variantIds,
+            resourceUrls: resourceUrlsByColor[group.label],
+          }));
+      }
+
       const r = await fetch("/api/admin/products/update", {
         method: "POST",
         headers: {
@@ -1546,6 +1695,8 @@ export default function Products() {
     } catch (err: any) {
       console.error(err);
       toast.error(err?.message || "Failed to update product");
+    } finally {
+      setImageBusy(false);
     }
   };
 
@@ -1911,52 +2062,6 @@ export default function Products() {
               noValidate
               className="min-w-0 space-y-8"
             >
-              {/* Product Images (required) */}
-              <div className="space-y-2">
-                <Label>
-                  Product Images (Min 1, Max 5){" "}
-                  <span className="text-destructive">*</span>
-                </Label>
-                <div className="grid grid-cols-5 gap-4">
-                  {imagePreviews.map((preview, index) => (
-                    <div key={index} className="relative aspect-square">
-                      <img
-                        src={preview}
-                        alt={`Preview ${index + 1}`}
-                        className="w-full h-full object-cover rounded-md border"
-                      />
-                      <Button
-                        type="button"
-                        variant="destructive"
-                        size="icon"
-                        className="absolute -top-2 -right-2 h-6 w-6 rounded-full"
-                        onClick={() => removeLocalImage(index)}
-                        title="Remove"
-                      >
-                        <X className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  ))}
-                  {selectedImages.length < 5 && (
-                    <label className="aspect-square border-2 border-dashed rounded-md flex items-center justify-center cursor-pointer hover:bg-muted/50 transition-colors">
-                      <div className="text-center">
-                        <Upload className="h-6 w-6 mx-auto mb-2 text-muted-foreground" />
-                        <span className="text-xs text-muted-foreground">
-                          Upload
-                        </span>
-                      </div>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        multiple
-                        className="hidden"
-                        onChange={handleImageSelect}
-                      />
-                    </label>
-                  )}
-                </div>
-              </div>
-
               {/* Basic Info */}
               <div className="space-y-2">
                 <Label htmlFor="title">Product Title *</Label>
@@ -2205,6 +2310,50 @@ export default function Products() {
                     This creates one real Shopify variant and stores its size,
                     color, inventory, and garment measurements.
                   </p>
+                </div>
+
+                <div className="rounded-lg border bg-muted/20 p-4">
+                  <div className="mb-3">
+                    <Label>
+                      Single variant photo <span className="text-destructive">*</span>
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      Upload one clear primary photo for this product.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-4">
+                    {imagePreviews.map((preview, index) => (
+                      <div key={preview} className="relative h-28 w-28">
+                        <img
+                          src={preview}
+                          alt="Single variant preview"
+                          className="h-full w-full rounded-md border object-cover"
+                        />
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="icon"
+                          className="absolute -right-2 -top-2 h-6 w-6 rounded-full"
+                          onClick={() => removeLocalImage(index)}
+                          title="Remove photo"
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ))}
+                    <label className="flex h-28 w-40 cursor-pointer flex-col items-center justify-center rounded-md border-2 border-dashed hover:bg-muted/50">
+                      <Upload className="mb-2 h-5 w-5 text-muted-foreground" />
+                      <span className="text-sm font-medium">
+                        {selectedImages.length ? "Replace photo" : "Upload photo"}
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/jpg,image/webp"
+                        className="hidden"
+                        onChange={handleImageSelect}
+                      />
+                    </label>
+                  </div>
                 </div>
 
                 <div className="grid gap-3 rounded-md border bg-muted/20 p-3 sm:grid-cols-2 lg:grid-cols-[130px_1fr_150px_150px_auto] lg:items-end">
@@ -3194,31 +3343,86 @@ export default function Products() {
                   </div>
                 </div>
 
-                {/* Images (live) */}
+                {/* Variant images */}
                 <div className="border-t pt-4 space-y-3">
-                  <h3 className="font-semibold">Product Images (live)</h3>
+                  <div>
+                    <h3 className="font-semibold">Photos by colour variant</h3>
+                    <p className="text-xs text-muted-foreground">
+                      New photos are sent with this update for admin approval.
+                      Each set is linked to every size using that colour.
+                    </p>
+                  </div>
+
+                  {loadingDetails ? (
+                    <div className="text-sm text-muted-foreground">Loading variant photos…</div>
+                  ) : editColorGroups.length === 0 ? (
+                    <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                      No Shopify variants were found for photo assignment.
+                    </div>
+                  ) : (
+                    <div className="grid gap-4 md:grid-cols-2">
+                      {editColorGroups.map((group) => (
+                        <div key={group.label} className="space-y-3 rounded-lg border p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="font-medium">{group.label}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {group.variantIds.length} size variant{group.variantIds.length === 1 ? "" : "s"}
+                              </div>
+                            </div>
+                            <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted/50">
+                              <ImagePlus className="h-4 w-4" />
+                              Add photos
+                              <input
+                                type="file"
+                                accept="image/png,image/jpeg,image/jpg,image/webp"
+                                multiple
+                                className="hidden"
+                                onChange={(event) => {
+                                  addEditColorImages(group.label, Array.from(event.target.files || []));
+                                  event.target.value = "";
+                                }}
+                              />
+                            </label>
+                          </div>
+                          {group.existingUrls.length > 0 && (
+                            <div>
+                              <div className="mb-2 text-xs font-medium text-muted-foreground">Currently linked</div>
+                              <div className="flex flex-wrap gap-2">
+                                {group.existingUrls.map((url) => (
+                                  <img key={url} src={url} alt={`${group.label} current variant`} className="h-16 w-16 rounded-md border object-cover" />
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {(editColorImagePreviews[group.label] || []).length > 0 && (
+                            <div>
+                              <div className="mb-2 text-xs font-medium text-emerald-700">Pending approval</div>
+                              <div className="flex flex-wrap gap-2">
+                                {(editColorImagePreviews[group.label] || []).map((preview, index) => (
+                                  <div key={`${group.label}-${index}`} className="relative">
+                                    <img src={preview} alt={`${group.label} pending variant ${index + 1}`} className="h-16 w-16 rounded-md border border-emerald-300 object-cover" />
+                                    <button
+                                      type="button"
+                                      onClick={() => removeEditColorImage(group.label, index)}
+                                      className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-xs text-destructive-foreground"
+                                      aria-label={`Remove pending ${group.label} photo ${index + 1}`}
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <h4 className="border-t pt-3 text-sm font-medium">All current Shopify images</h4>
 
                   <div className="flex items-center gap-2">
-                    <Label className="inline-flex items-center gap-2 px-3 py-2 border rounded-md cursor-pointer">
-                      <ImagePlus className="h-4 w-4" />
-                      <span>Choose files</span>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        multiple
-                        className="hidden"
-                        onChange={onEditChooseImages}
-                      />
-                    </Label>
-                    <Button
-                      type="button"
-                      onClick={onEditAttachImages}
-                      disabled={imageBusy || imageAddFiles.length === 0}
-                    >
-                      {imageBusy
-                        ? "Adding…"
-                        : `Add selected images (${imageAddFiles.length})`}
-                    </Button>
                     <Button
                       type="button"
                       variant="destructive"
@@ -3728,10 +3932,12 @@ function VariantPlanner(props: {
       {colorOption?.values.length && onAddVariantColorImages ? (
         <div className="space-y-3 rounded-md border p-3">
           <div>
-            <Label>Images for each color variant</Label>
+            <Label>
+              Photos for each colour <span className="text-destructive">*</span>
+            </Label>
             <p className="text-xs text-muted-foreground">
-              Add up to 4 images per color. Shopify will link these images to
-              every size variant using that color.
+              Add 1–5 photos per colour. Shopify links each set to every size
+              using that colour, so customers never see another colour's photos.
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
