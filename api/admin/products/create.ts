@@ -179,7 +179,7 @@ const PRODUCT_CREATE = /* GraphQL */ `
         title
         handle
         status
-        media(first: 10) {
+        media(first: 100) {
           edges {
             node {
               mediaContentType
@@ -291,6 +291,26 @@ const VARIANTS_BULK_CREATE = /* GraphQL */ `
   }
 `;
 
+const PRODUCT_VARIANT_APPEND_MEDIA = /* GraphQL */ `
+  mutation productVariantAppendMedia(
+    $productId: ID!
+    $variantMedia: [ProductVariantAppendMediaInput!]!
+  ) {
+    productVariantAppendMedia(
+      productId: $productId
+      variantMedia: $variantMedia
+    ) {
+      productVariants {
+        id
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
 const INVENTORY_SET_ON_HAND = /* GraphQL */ `
   mutation inventorySetOnHandQuantities(
     $input: InventorySetOnHandQuantitiesInput!
@@ -378,7 +398,6 @@ async function createShopifyVariants(args: {
         ? { compareAtPrice: String(variant.compareAtPrice ?? args.baseCompareAtPrice) }
         : {}),
       ...(variant.barcode ? { barcode: variant.barcode } : {}),
-      ...(variant.mediaUrls?.length ? { mediaSrc: variant.mediaUrls } : {}),
       inventoryItem: {
         sku: variant.sku || `${args.baseSku}-${index + 1}`,
         tracked: args.tracked,
@@ -424,6 +443,49 @@ async function createShopifyVariants(args: {
   }
 
   return createdVariants;
+}
+
+async function associateVariantMedia(args: {
+  productId: string;
+  variantDraft: any;
+  createdVariants: any[];
+  mediaIdBySource: Map<string, string>;
+}) {
+  const variantMedia = args.createdVariants
+    .map((variant: any) => {
+      const createdOptionKey = Array.isArray(variant?.selectedOptions)
+        ? variant.selectedOptions
+            .map((option: any) => String(option?.value || "").trim())
+            .join("|")
+        : "";
+      const matchingDraft = (args.variantDraft?.variants || []).find(
+        (draftVariant: any) =>
+          (draftVariant.optionValues || draftVariant.options || [])
+            .map((value: unknown) => String(value).trim())
+            .join("|") === createdOptionKey,
+      );
+      const mediaIds = [
+        ...new Set(
+          (matchingDraft?.mediaUrls || [])
+            .map((url: string) => args.mediaIdBySource.get(url))
+            .filter(Boolean),
+        ),
+      ];
+      return variant?.id && mediaIds.length
+        ? { variantId: variant.id, mediaIds }
+        : null;
+    })
+    .filter(Boolean);
+
+  if (!variantMedia.length) return;
+  const result = await shopifyGraphQL(PRODUCT_VARIANT_APPEND_MEDIA, {
+    productId: args.productId,
+    variantMedia,
+  });
+  const errors = result?.data?.productVariantAppendMedia?.userErrors || [];
+  if (errors.length) {
+    throw new Error(errors.map((error: any) => error.message).join("; "));
+  }
 }
 
 /* ---------------- handler ---------------- */
@@ -508,13 +570,27 @@ export default async function handler(req: any, res: any) {
       metafields: buildMeasurementMetafields(normalizedMeasurements),
     };
 
-    const mediaInput =
-      Array.isArray(resourceUrls) && resourceUrls.length
-        ? resourceUrls.slice(0, 10).map((url: string) => ({
-            originalSource: url,
-            mediaContentType: "IMAGE" as const,
-          }))
-        : undefined;
+    const baseMediaUrls = Array.isArray(resourceUrls)
+      ? resourceUrls.map((url: unknown) => String(url).trim()).filter(Boolean)
+      : [];
+    const variantMediaUrls = (normalizedVariantDraft?.variants || []).flatMap(
+      (variant: any) =>
+        Array.isArray(variant.mediaUrls) ? variant.mediaUrls : [],
+    );
+    const allMediaSources = [
+      ...new Set([...baseMediaUrls, ...variantMediaUrls]),
+    ].slice(0, 100);
+    const mediaSourceEntries = allMediaSources.map((url, index) => ({
+      url,
+      alt: `drippr-media-${index + 1}`,
+    }));
+    const mediaInput = mediaSourceEntries.length
+      ? mediaSourceEntries.map((entry) => ({
+          originalSource: entry.url,
+          mediaContentType: "IMAGE" as const,
+          alt: entry.alt,
+        }))
+      : undefined;
 
     // --- SKU claim per merchant ---
     const docRef = adminDb.collection("merchantProducts").doc();
@@ -556,6 +632,21 @@ export default async function handler(req: any, res: any) {
       throw new Error("Product created but default variant not returned.");
     }
 
+    const createdMediaEdges = Array.isArray(product?.media?.edges)
+      ? product.media.edges
+      : [];
+    const sourceByAlt = new Map(
+      mediaSourceEntries.map((entry) => [entry.alt, entry.url]),
+    );
+    const mediaIdBySource = new Map<string, string>();
+    createdMediaEdges.forEach((edge: any, index: number) => {
+      const mediaId = String(edge?.node?.id || "").trim();
+      const altText = String(edge?.node?.image?.altText || "").trim();
+      const sourceUrl =
+        sourceByAlt.get(altText) || mediaSourceEntries[index]?.url || null;
+      if (mediaId && sourceUrl) mediaIdBySource.set(sourceUrl, mediaId);
+    });
+
     const locationId = normalizeLocationId(runtimeEnv("SHOPIFY_LOCATION_ID"));
     let finalVariantNodes: any[] = [firstVariant];
 
@@ -575,6 +666,13 @@ export default async function handler(req: any, res: any) {
               : Number(inventory.cost),
           locationId,
         })) || [firstVariant];
+
+      await associateVariantMedia({
+        productId: product.id,
+        variantDraft: normalizedVariantDraft,
+        createdVariants: finalVariantNodes,
+        mediaIdBySource,
+      });
     } else {
       const variantsPayload: any[] = [
         {
@@ -652,6 +750,19 @@ export default async function handler(req: any, res: any) {
       : variantMeasurements;
     const shopifyProductNumericId = String(product.id).split("/").pop() || "";
     const sellerStatus = "pending";
+    const isMultipleVariantProduct =
+      variantMode === "multiple" ||
+      (normalizedVariantDraft?.variants?.length || 0) > 1;
+    const totalVariantStock = isMultipleVariantProduct
+      ? (normalizedVariantDraft?.variants || []).reduce(
+          (total: number, variant: any) =>
+            total +
+            (Number.isFinite(Number(variant.quantity))
+              ? Number(variant.quantity)
+              : 0),
+          0,
+        )
+      : Number(inventory?.quantity ?? 0);
 
     const mirrorDoc = {
       id: docRef.id,
@@ -675,7 +786,7 @@ export default async function handler(req: any, res: any) {
       images: cdnUrls,
       imageUrls: cdnUrls,
 
-      stock: inventory?.quantity ?? null,
+      stock: Number.isFinite(totalVariantStock) ? totalVariantStock : null,
       vendor: vendor || "DRIPPR Marketplace",
       productType: productType || null,
       collections: (Array.isArray(collections) ? collections : [])
@@ -684,7 +795,7 @@ export default async function handler(req: any, res: any) {
       collectionsSynced: false,
       garmentCategory: garmentCategory || null,
       fitType: fitType || null,
-      variantMode: variantMode === "multiple" ? "multiple" : "single",
+      variantMode: isMultipleVariantProduct ? "multiple" : "single",
       variantDraft: normalizedVariantDraft,
       variantMeasurements: hydratedVariantMeasurements,
       measurements: normalizedMeasurements,

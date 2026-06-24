@@ -520,9 +520,21 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
   const approvedStock = Number(
     pendingUpdates.stock !== undefined ? pendingUpdates.stock : qdoc.stock,
   );
+  const approvedVariantDraft =
+    pendingUpdates.variantDraft || qdoc.variantDraft || null;
+  const isMultipleVariantProduct =
+    pendingUpdates.variantMode === "multiple" ||
+    qdoc.variantMode === "multiple" ||
+    (Array.isArray(approvedVariantDraft?.variants) &&
+      approvedVariantDraft.variants.length > 1);
   const locationId = normalizeLocationId(process.env.SHOPIFY_LOCATION_ID);
   const warnings: string[] = [];
-  if (locationId && Number.isFinite(approvedStock) && approvedStock >= 0) {
+  if (
+    !isMultipleVariantProduct &&
+    locationId &&
+    Number.isFinite(approvedStock) &&
+    approvedStock >= 0
+  ) {
     if (!inventoryItemId) {
       const inventoryQuery = await shopifyGraphQL(PRODUCT_INVENTORY_QUERY, {
         id: productId,

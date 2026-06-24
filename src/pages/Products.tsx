@@ -974,7 +974,7 @@ export default function Products() {
     const barcode = String(form.get("barcode") || "").trim() || undefined;
     const weightGrams = Number(form.get("weight") || 0) || undefined;
     const quantityRaw = String(form.get("quantity") ?? "");
-    const quantity = quantityRaw === "" ? NaN : Number(quantityRaw);
+    const quantity = quantityRaw === "" ? null : Number(quantityRaw);
 
     const vendor = String(form.get("vendor") || "").trim();
     const productType =
@@ -1009,8 +1009,12 @@ export default function Products() {
     if (Number.isNaN(compareAtPrice))
       return showSubmitError("Compare at Price is required.");
     if (!sku) return showSubmitError("SKU is required.");
-    if (Number.isNaN(quantity))
-      return showSubmitError("Quantity is required.");
+    if (
+      variantMode === "single" &&
+      (quantity === null || !Number.isFinite(quantity) || quantity < 0)
+    ) {
+      return showSubmitError("Quantity is required for the single variant.");
+    }
     if (!vendor) return showSubmitError("Vendor name is required.");
     if (!productType) return showSubmitError("Product type is required.");
     if (draftCollections.length === 0)
@@ -1027,6 +1031,17 @@ export default function Products() {
       return showSubmitError(
         "Add at least one complete variant combination before submitting.",
       );
+    }
+    if (
+      variantMode === "multiple" &&
+      Object.values(variantRows).some(
+        (row) =>
+          row.quantity == null ||
+          !Number.isFinite(Number(row.quantity)) ||
+          Number(row.quantity) < 0,
+      )
+    ) {
+      return showSubmitError("Enter a quantity for every variant.");
     }
 
     try {
@@ -1140,7 +1155,7 @@ export default function Products() {
         barcode,
         weightGrams,
         inventory: {
-          quantity,
+          quantity: variantMode === "single" ? quantity : null,
           tracked: trackInventory === "yes",
           cost,
         },
@@ -2098,9 +2113,11 @@ export default function Products() {
 
               {/* Inventory (base) */}
               <div className="grid grid-cols-2 gap-4">
+                {variantMode === "single" ? (
                 <div className="space-y-2">
                   <Label htmlFor="quantity">
-                    Quantity <span className="text-destructive">*</span>
+                    Single Variant Quantity{" "}
+                    <span className="text-destructive">*</span>
                   </Label>
                   <Input
                     id="quantity"
@@ -2113,6 +2130,12 @@ export default function Products() {
                     onChange={(e) => setDraftQuantity(e.target.value)}
                   />
                 </div>
+                ) : (
+                  <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
+                    Enter inventory separately for every variant in the table
+                    below. No base quantity will be applied.
+                  </div>
+                )}
                 <div className="space-y-2">
                   <Label htmlFor="track-inventory">Track Inventory</Label>
                   <Select
