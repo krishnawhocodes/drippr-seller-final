@@ -54,6 +54,26 @@ function normalizeVariantMeasurements(input: any) {
     .filter((item: any) => item.variantId || item.optionValues.length);
 }
 
+function mergeVariantMeasurementRecords(current: any, incoming: any) {
+  const merged = new Map<string, any>();
+  const keyFor = (variant: any) =>
+    String(variant.variantId || "").trim() ||
+    (variant.optionValues || [])
+      .map((value: string) => value.toLowerCase())
+      .join("|");
+
+  for (const variant of normalizeVariantMeasurements(current)) {
+    merged.set(keyFor(variant), variant);
+  }
+  for (const variant of normalizeVariantMeasurements(incoming)) {
+    merged.set(keyFor(variant), {
+      ...(merged.get(keyFor(variant)) || {}),
+      ...variant,
+    });
+  }
+  return [...merged.values()];
+}
+
 function buildMeasurementMetafields(ownerId: string, measurements: any) {
   if (!ownerId || !measurements || typeof measurements !== "object") return [];
 
@@ -90,6 +110,40 @@ const METAFIELDS_SET = /* GraphQL */ `
     }
   }
 `;
+
+const VARIANT_SIZING_VERIFY = /* GraphQL */ `
+  query variantSizingVerify($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on ProductVariant {
+        id
+        metafields(first: 10, namespace: "garment_sizing") {
+          nodes {
+            key
+            value
+          }
+        }
+      }
+    }
+  }
+`;
+
+function chunkItems<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function setMetafieldsInBatches(metafields: any[]) {
+  for (const batch of chunkItems(metafields, 25)) {
+    const result = await shopifyGraphQL(METAFIELDS_SET, { metafields: batch });
+    const errors = result?.data?.metafieldsSet?.userErrors || [];
+    if (errors.length) {
+      throw new Error(errors.map((error: any) => error.message).join("; "));
+    }
+  }
+}
 
 const PRODUCT_UPDATE = /* GraphQL */ `
   mutation productUpdate($product: ProductUpdateInput!) {
@@ -603,16 +657,26 @@ async function syncMeasurementsToShopify(
   );
   if (!metafields.length) return;
 
-  const result = await shopifyGraphQL(METAFIELDS_SET, { metafields });
-  const errors = result?.data?.metafieldsSet?.userErrors || [];
-  if (errors.length) {
-    throw new Error(errors.map((error: any) => error.message).join("; "));
-  }
+  await setMetafieldsInBatches(metafields);
 }
 
 async function syncVariantMeasurementsToShopify(variantMeasurements: any[]) {
   const normalized = normalizeVariantMeasurements(variantMeasurements);
-  const metafields = normalized.flatMap((variant) => {
+  const variantsWithSizing = normalized.filter((variant) =>
+    hasAnyMeasurement(variant.measurements),
+  );
+  const variantsWithoutIds = variantsWithSizing.filter(
+    (variant) => !normalizeShopifyGid(variant.variantId, "ProductVariant"),
+  );
+  if (variantsWithoutIds.length) {
+    throw new Error(
+      `Missing Shopify variant IDs for: ${variantsWithoutIds
+        .map((variant) => variant.title || variant.optionValues.join(" / "))
+        .join(", ")}`,
+    );
+  }
+
+  const metafields = variantsWithSizing.flatMap((variant) => {
     const variantId = normalizeShopifyGid(
       variant.variantId,
       "ProductVariant",
@@ -622,13 +686,56 @@ async function syncVariantMeasurementsToShopify(variantMeasurements: any[]) {
       : [];
   });
 
-  if (!metafields.length) return;
+  if (!metafields.length) return { variants: 0, metafields: 0 };
 
-  const result = await shopifyGraphQL(METAFIELDS_SET, { metafields });
-  const errors = result?.data?.metafieldsSet?.userErrors || [];
-  if (errors.length) {
-    throw new Error(errors.map((error: any) => error.message).join("; "));
+  await setMetafieldsInBatches(metafields);
+
+  const expectedByVariant = new Map<string, Map<string, number>>();
+  for (const metafield of metafields) {
+    const expected = expectedByVariant.get(metafield.ownerId) || new Map();
+    expected.set(metafield.key, Number(metafield.value));
+    expectedByVariant.set(metafield.ownerId, expected);
   }
+
+  const actualByVariant = new Map<string, Map<string, number>>();
+  const variantIds = [...expectedByVariant.keys()];
+  for (const idBatch of chunkItems(variantIds, 100)) {
+    const verifyResult = await shopifyGraphQL(VARIANT_SIZING_VERIFY, {
+      ids: idBatch,
+    });
+    for (const node of verifyResult?.data?.nodes || []) {
+      if (!node?.id) continue;
+      actualByVariant.set(
+        String(node.id),
+        new Map(
+          (node.metafields?.nodes || []).map((metafield: any) => [
+            String(metafield.key),
+            Number(metafield.value),
+          ]),
+        ),
+      );
+    }
+  }
+
+  const missing: string[] = [];
+  for (const [variantId, expected] of expectedByVariant) {
+    const actual = actualByVariant.get(variantId);
+    for (const [key, value] of expected) {
+      if (!actual || actual.get(key) !== value) {
+        missing.push(`${variantId.split("/").pop()}:${key}`);
+      }
+    }
+  }
+  if (missing.length) {
+    throw new Error(
+      `Shopify did not persist these garment sizing metafields: ${missing.join(", ")}`,
+    );
+  }
+
+  return {
+    variants: expectedByVariant.size,
+    metafields: metafields.length,
+  };
 }
 
 // Helpers
@@ -772,12 +879,12 @@ export default async function handler(req: any, res: any) {
           pendingUpdates.measurements !== undefined
             ? pendingUpdates.measurements
             : qdoc.measurements;
-        const approvedVariantMeasurements =
-          pendingUpdates.variantMeasurements !== undefined
-            ? pendingUpdates.variantMeasurements
-            : qdoc.variantMeasurements ||
-              pendingUpdates.variantDraft?.variants ||
-              qdoc.variantDraft?.variants;
+        const approvedVariantMeasurements = mergeVariantMeasurementRecords(
+          qdoc.variantMeasurements || qdoc.variantDraft?.variants || [],
+          pendingUpdates.variantMeasurements ||
+            pendingUpdates.variantDraft?.variants ||
+            [],
+        );
 
         const shopifyResult = await applyApprovedChangesToShopify(
           qdoc,
@@ -794,13 +901,14 @@ export default async function handler(req: any, res: any) {
             `Product approved, but product measurement sync failed: ${String(error?.message || error)}`,
           );
         }
+        let variantSizingSync = { variants: 0, metafields: 0 };
         try {
-          await syncVariantMeasurementsToShopify(
+          variantSizingSync = await syncVariantMeasurementsToShopify(
             approvedVariantMeasurements || [],
           );
         } catch (error: any) {
-          warnings.push(
-            `Product approved, but variant measurement sync failed: ${String(error?.message || error)}`,
+          throw new Error(
+            `Approval stopped because Shopify variant sizing sync failed: ${String(error?.message || error)}`,
           );
         }
 
@@ -817,6 +925,11 @@ export default async function handler(req: any, res: any) {
               null,
             collections: shopifyResult.collections,
             collectionsSynced: shopifyResult.collections.length > 0,
+            variantSizingSync: {
+              ...variantSizingSync,
+              verifiedAt: Date.now(),
+            },
+            variantMeasurements: approvedVariantMeasurements,
             inventoryItemId:
               shopifyResult.inventoryItemId || qdoc.inventoryItemId || null,
             pendingUpdates: null,
