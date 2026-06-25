@@ -1,13 +1,12 @@
 // src/pages/admin/OrdersMonitor.tsx
 import { useEffect, useMemo, useState } from "react";
-import DashboardLayout from "@/components/DashboardLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Search, Eye, ClipboardList, Clock, Download, Truck } from "lucide-react";
-import { assignPickup } from "@/lib/adminApi";
+import { assignPickup, ordersList } from "@/lib/adminApi";
 
 import {
   Table,
@@ -26,9 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
-import { auth, db } from "@/lib/firebase";
-import { onAuthStateChanged } from "firebase/auth";
-import { collection, limit, onSnapshot, orderBy, query } from "firebase/firestore";
+import { auth } from "@/lib/firebase";
 import {
   addBusinessHours,
   getRemainingBusinessTime,
@@ -122,9 +119,6 @@ function fmtCountdown(ms: number) {
 }
 
 export default function AdminOrdersMonitor() {
-  const [uid, setUid] = useState<string | null>(auth.currentUser?.uid ?? null);
-
-
   const [planningOrder, setPlanningOrder] = useState<any | null>(null);
   const [isPlanOpen, setIsPlanOpen] = useState(false);
   const [orders, setOrders] = useState<OrderDoc[]>([]);
@@ -151,35 +145,28 @@ export default function AdminOrdersMonitor() {
   const [trackingUrl, setTrackingUrl] = useState("");
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUid(u?.uid ?? null));
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
   // 🔥 Admin global watcher: all orders (recent N)
   useEffect(() => {
-    if (!uid) return;
-
-    const q = query(collection(db, "orders"), orderBy("createdAt", "desc"), limit(500));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const rows: OrderDoc[] = [];
-        snap.forEach((d) => rows.push({ id: d.id, ...(d.data() as any) }));
-        setOrders(rows);
-      },
-      (err) => {
+    let cancelled = false;
+    ordersList({ limit: 500 })
+      .then((result) => {
+        if (!cancelled) {
+          setOrders(Array.isArray(result.items) ? result.items : []);
+        }
+      })
+      .catch((err) => {
         console.error(err);
-        toast.error("Failed to load orders");
-      }
-    );
+        if (!cancelled) toast.error("Failed to load orders");
+      });
 
-    return () => unsub();
-  }, [uid]);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // keep selected fresh
   useEffect(() => {

@@ -748,6 +748,30 @@ function changeSummaryForQueueItem(item: any) {
   };
 }
 
+function startOfMonth(d = new Date()) {
+  const x = new Date(d);
+  x.setDate(1);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function startNDaysAgo(n: number) {
+  const x = new Date();
+  x.setHours(0, 0, 0, 0);
+  x.setDate(x.getDate() - (n - 1));
+  return x;
+}
+
+function keyOfDate(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+function labelOfDate(d: Date) {
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 async function syncMeasurementsToShopify(
   shopifyProductId: string | undefined,
   measurements: any,
@@ -898,6 +922,119 @@ export default async function handler(req: any, res: any) {
 
     // ---------- ACTIONS ----------
     switch (action) {
+      case "admin.me": {
+        return res.status(200).json({
+          ok: true,
+          uid: me.uid,
+          email: me.email || null,
+          admin: true,
+        });
+      }
+
+      case "settings.publication.get": {
+        const snap = await adminDb.collection("adminSettings").doc("shopify").get();
+        return res.status(200).json({
+          ok: true,
+          publicationId: snap.exists ? snap.data()?.publicationId || null : null,
+        });
+      }
+
+      case "settings.publication.set": {
+        const publicationId = String(body.publicationId || "").trim() || null;
+        await adminDb.collection("adminSettings").doc("shopify").set(
+          {
+            publicationId,
+            updatedAt: Date.now(),
+            updatedBy: me.uid,
+          },
+          { merge: true },
+        );
+        return res.status(200).json({ ok: true, publicationId });
+      }
+
+      case "dashboard.overview": {
+        const [productsSnap, merchantsSnap, supportSnap, ordersSnap] =
+          await Promise.all([
+            adminDb.collection("merchantProducts").limit(1000).get(),
+            adminDb.collection("merchants").limit(1000).get(),
+            adminDb.collection("supportRequests").limit(1000).get(),
+            adminDb.collection("orders").limit(1000).get(),
+          ]);
+
+        const reviewStatuses = new Set([
+          "pending",
+          "in_review",
+          "update_in_review",
+        ]);
+        const productsInReview = productsSnap.docs.filter((doc) =>
+          reviewStatuses.has(String(doc.data()?.status || "")),
+        ).length;
+        const activeSellers = merchantsSnap.docs.filter(
+          (doc) => doc.data()?.enabled !== false,
+        ).length;
+        const openTickets = supportSnap.docs.filter((doc) =>
+          ["pending", "processing", "under_processing"].includes(
+            String(doc.data()?.status || ""),
+          ),
+        ).length;
+
+        const start30 = startNDaysAgo(30);
+        const startMonth = startOfMonth();
+        const monthStartMs = startMonth.getTime();
+        const dayKeys: string[] = [];
+        const dayLabels: Record<string, string> = {};
+        const ordersCount: Record<string, number> = {};
+        const revenueSum: Record<string, number> = {};
+
+        for (let i = 0; i < 30; i++) {
+          const d = new Date(start30.getTime());
+          d.setDate(start30.getDate() + i);
+          const key = keyOfDate(d);
+          dayKeys.push(key);
+          dayLabels[key] = labelOfDate(d);
+          ordersCount[key] = 0;
+          revenueSum[key] = 0;
+        }
+
+        let mtdRevenue = 0;
+        let mtdOrders = 0;
+        ordersSnap.docs.forEach((doc) => {
+          const data = doc.data() as any;
+          const createdAtMs = Number(data.createdAt || 0);
+          const subtotal = Number(data.subtotal || 0);
+          if (!createdAtMs) return;
+
+          const key = keyOfDate(new Date(createdAtMs));
+          if (key in ordersCount) {
+            ordersCount[key] += 1;
+            revenueSum[key] += subtotal;
+          }
+          if (createdAtMs >= monthStartMs) {
+            mtdOrders += 1;
+            mtdRevenue += subtotal;
+          }
+        });
+
+        return res.status(200).json({
+          ok: true,
+          overview: {
+            productsInReview,
+            activeSellers,
+            openTickets,
+            mtdOrders,
+            mtdRevenue,
+            ordersSeries: dayKeys.map((key) => ({
+              day: dayLabels[key],
+              orders: ordersCount[key] || 0,
+            })),
+            revenueSeries: dayKeys.map((key) => ({
+              day: dayLabels[key],
+              revenue: Number((revenueSum[key] || 0).toFixed(2)),
+            })),
+          },
+        });
+      }
+
       // -------------------- MERCHANTS --------------------
       case "merchants.list": {
         // optional search "q"
@@ -928,6 +1065,20 @@ export default async function handler(req: any, res: any) {
           { merge: true },
         );
         return res.status(200).json({ ok: true });
+      }
+
+      case "orders.list": {
+        const limit = Math.min(Number(req.query.limit ?? body.limit ?? 500), 1000);
+        const snap = await adminDb
+          .collection("orders")
+          .orderBy("createdAt", "desc")
+          .limit(limit)
+          .get();
+        const items = snap.docs.map((doc) => ({
+          id: doc.id,
+          ...(doc.data() as any),
+        }));
+        return res.status(200).json({ ok: true, items });
       }
 
       // -------------------- PRODUCT QUEUE --------------------

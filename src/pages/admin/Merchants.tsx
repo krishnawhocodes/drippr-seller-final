@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import DashboardLayout from "@/components/DashboardLayout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -14,15 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { Search } from "lucide-react";
 
-import { db } from "@/lib/firebase";
-import {
-  collection,
-  doc,
-  onSnapshot,
-  orderBy,
-  query,
-  updateDoc,
-} from "firebase/firestore";
+import { listMerchants, updateMerchant } from "@/lib/adminApi";
 
 // If you already have a shared Merchant type, you can remove this and import yours.
 type Merchant = {
@@ -55,25 +46,25 @@ export default function Merchants() {
   const [search, setSearch] = useState("");
   const [selectedMerchant, setSelectedMerchant] = useState<Merchant | null>(null);
 
-  // Live Firestore subscription
   useEffect(() => {
-    const qRef = query(collection(db, "merchants"), orderBy("createdAt", "desc"));
-    const unsub = onSnapshot(
-      qRef,
-      (snap) => {
-        const rows: Merchant[] = [];
-        snap.forEach((d) => rows.push({ uid: d.id, ...(d.data() as any) }));
-        setMerchants(rows);
-        setLoading(false);
-      },
-      (err) => {
+    let cancelled = false;
+    setLoading(true);
+    listMerchants()
+      .then((result) => {
+        if (cancelled) return;
+        setMerchants(Array.isArray(result.items) ? result.items : []);
+      })
+      .catch((err) => {
         console.error(err);
-        toast.error("Failed to load merchants");
-        setLoading(false);
-      }
-    );
-    
-    return () => unsub();
+        if (!cancelled) toast.error("Failed to load merchants");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Client-side filter (name/email/store/phone)
@@ -91,10 +82,15 @@ export default function Merchants() {
     e.stopPropagation(); // don't open the sheet
     try {
       const newEnabled = !Boolean(merchant.enabled);
-      await updateDoc(doc(db, "merchants", merchant.uid), {
+      await updateMerchant(merchant.uid, {
         enabled: newEnabled,
         updatedAt: Date.now(),
       });
+      setMerchants((items) =>
+        items.map((item) =>
+          item.uid === merchant.uid ? { ...item, enabled: newEnabled } : item,
+        ),
+      );
       toast.success(`${merchant.storeName || merchant.name || merchant.email} ${newEnabled ? "enabled" : "disabled"} successfully.`);
     } catch (err: any) {
       console.error(err);

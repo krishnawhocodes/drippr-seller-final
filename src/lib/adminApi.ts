@@ -1,8 +1,7 @@
 // --- Admin check hook (Firestore-based) ---
 import { useEffect, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
-import { auth, db } from "@/lib/firebase";
-import { doc, getDoc, setDoc, serverTimestamp, onSnapshot } from "firebase/firestore";
+import { auth } from "@/lib/firebase";
 
 import { QueueProduct, Merchant, SupportTicket, AdminOverview } from "@/types/admin";
 
@@ -17,29 +16,25 @@ export function useIsAdmin(): boolean {
   const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
-    let unsubAdmin: (() => void) | undefined;
+    let cancelled = false;
 
     const unsubAuth = onAuthStateChanged(auth, (u) => {
-      // clear previous listener
-      if (unsubAdmin) {
-        unsubAdmin();
-        unsubAdmin = undefined;
-      }
       if (!u) {
         setIsAdmin(false);
         return;
       }
-      const ref = doc(db, "admins", u.uid);
-      unsubAdmin = onSnapshot(
-        ref,
-        (snap) => setIsAdmin(snap.exists() && snap.get("enabled") !== false),
-        () => setIsAdmin(false)
-      );
+      adminMe()
+        .then(() => {
+          if (!cancelled) setIsAdmin(true);
+        })
+        .catch(() => {
+          if (!cancelled) setIsAdmin(false);
+        });
     });
 
     return () => {
+      cancelled = true;
       unsubAuth();
-      if (unsubAdmin) unsubAdmin();
     };
   }, []);
 
@@ -71,9 +66,8 @@ let _publicationIdCache: string | null | undefined; // undefined => not fetched 
 export async function getPublicationId(): Promise<string | null> {
   if (_publicationIdCache !== undefined) return _publicationIdCache ?? null;
 
-  const ref = doc(db, "adminSettings", "shopify");
-  const snap = await getDoc(ref);
-  const val = (snap.exists() ? (snap.data().publicationId as string | null | undefined) : null) ?? null;
+  const result = await call("settings.publication.get");
+  const val = (result.publicationId as string | null | undefined) ?? null;
 
   _publicationIdCache = val;
   return val;
@@ -84,12 +78,10 @@ export async function getPublicationId(): Promise<string | null> {
  * Returns unsubscribe() like any Firestore onSnapshot.
  */
 export function watchPublicationId(cb: (id: string | null) => void) {
-  const ref = doc(db, "adminSettings", "shopify");
-  return onSnapshot(ref, (snap) => {
-    const val = (snap.exists() ? (snap.data().publicationId as string | null | undefined) : null) ?? null;
-    _publicationIdCache = val;
-    cb(val);
-  });
+  getPublicationId()
+    .then(cb)
+    .catch(() => cb(null));
+  return () => {};
 }
 
 /**
@@ -97,20 +89,9 @@ export function watchPublicationId(cb: (id: string | null) => void) {
  * Saves admin uid + timestamp for audit.
  */
 export async function setPublicationId(id: string | null): Promise<void> {
-  const uid = auth.currentUser?.uid ?? null;
-  const ref = doc(db, "adminSettings", "shopify");
-
-  await setDoc(
-    ref,
-    {
-      publicationId: (id ?? "").trim() || null,
-      updatedAt: serverTimestamp(),
-      updatedBy: uid,
-    },
-    { merge: true }
-  );
-
-  _publicationIdCache = (id ?? "").trim() || null;
+  const publicationId = (id ?? "").trim() || null;
+  await call("settings.publication.set", { publicationId });
+  _publicationIdCache = publicationId;
 }
 
 
@@ -141,6 +122,13 @@ export const listMerchants = (params: { q?: string } = {}) =>
 
 export const updateMerchant = (uid: string, patch: Record<string, any>) =>
   call("merchants.update", { uid, patch });
+
+export const adminMe = () => call("admin.me");
+
+export const dashboardOverview = () => call("dashboard.overview");
+
+export const ordersList = (params: { limit?: number } = {}) =>
+  call("orders.list", params);
 
 export const queueList = (params: { status?: string; limit?: number } = {}) =>
   call("queue.list", params);
