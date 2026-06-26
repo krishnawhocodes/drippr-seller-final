@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -377,7 +377,7 @@ export default function Products() {
       weightGrams: toNullableNumber(draftWeight),
       productType: draftProductType || undefined,
       customProductType: useCustomProductType,
-      collections: draftCollections,
+      collections: [],
       basePriceInput: basePriceInput || undefined,
       trackInventory,
       statusSel,
@@ -646,14 +646,28 @@ export default function Products() {
   function addValue(idx: number) {
     const raw = (valueInputs[idx] || "").trim();
     if (!raw) return;
+    const optionName = (options[idx]?.name || "").trim().toLowerCase();
     const values = raw
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
+    const normalizedValues =
+      optionName === "size"
+        ? values.map((value) => value.toUpperCase())
+        : values;
+    if (
+      optionName === "size" &&
+      normalizedValues.some(
+        (value) => !GARMENT_SIZES.includes(value as (typeof GARMENT_SIZES)[number]),
+      )
+    ) {
+      toast.error("Use short size codes only, e.g. S, M, L, XL.");
+      return;
+    }
     setOptions((prev) => {
       const next = [...prev];
       const existing = new Set(next[idx].values);
-      values.forEach((v) => existing.add(v));
+      normalizedValues.forEach((v) => existing.add(v));
       next[idx] = { ...next[idx], values: Array.from(existing) };
       return next;
     });
@@ -738,7 +752,6 @@ export default function Products() {
     draftCost,
     draftProductType,
     useCustomProductType,
-    draftCollections,
     draftBustSize,
     draftWaistSize,
     draftHipSize,
@@ -771,82 +784,80 @@ export default function Products() {
   //   set(true);
   // };
 
-  const handleAddProduct = async () => {
-    // 1. Try to load draft
-    const saved = await loadAddProductDraft(uid);
-
-    // 2. If draft exists, restore state
-    if (saved) {
-      if (saved.title) setDraftTitle(saved.title);
-      if (saved.description) setDraftDescription(saved.description);
-      if (saved.vendor) setDraftVendor(saved.vendor);
-      if (saved.sku) setDraftSku(saved.sku);
-      if (saved.tags) setDraftTags(saved.tags.join(", "));
-      if (saved.seoTitle) setDraftSeoTitle(saved.seoTitle);
-      if (saved.seoDescription) setDraftSeoDesc(saved.seoDescription);
-      if (saved.basePriceInput) setBasePriceInput(saved.basePriceInput);
-      if (saved.quantity != null) setDraftQuantity(String(saved.quantity));
-      if (saved.compareAtPrice != null)
-        setDraftComparePrice(String(saved.compareAtPrice));
-      if (saved.cost != null) setDraftCost(String(saved.cost));
-      if (saved.barcode) setDraftBarcode(saved.barcode);
-      if (saved.weightGrams != null) setDraftWeight(String(saved.weightGrams));
-      if (saved.productType) {
-        setDraftProductType(saved.productType);
-        setUseCustomProductType(
-          !PRODUCT_TYPE_OPTIONS.includes(
-            saved.productType as (typeof PRODUCT_TYPE_OPTIONS)[number],
-          ),
-        );
-      }
-      if (saved.customProductType) setUseCustomProductType(true);
-      if (saved.collections) setDraftCollections(saved.collections);
-      if (saved.garmentCategory) setGarmentCategory(saved.garmentCategory);
-      if (saved.fitType) setFitType(saved.fitType);
-      if (saved.fallbackSize) setFallbackSize(saved.fallbackSize);
-      if (saved.variantMode) setVariantMode(saved.variantMode);
-      if (saved.singleColor) setSingleColor(saved.singleColor);
-      if (saved.measurements?.bust != null)
-        setDraftBustSize(String(saved.measurements.bust));
-      if (saved.measurements?.waist != null)
-        setDraftWaistSize(String(saved.measurements.waist));
-      if (saved.measurements?.hip != null)
-        setDraftHipSize(String(saved.measurements.hip));
-      if (saved.measurements?.length != null)
-        setDraftLengthSize(String(saved.measurements.length));
-      if (saved.measurements?.shoulder != null)
-        setDraftShoulderSize(String(saved.measurements.shoulder));
-      if (saved.measurements?.inseam != null)
-        setDraftInseamSize(String(saved.measurements.inseam));
-
-      // Restore selects
-      if (saved.trackInventory) setTrackInventory(saved.trackInventory);
-      if (saved.statusSel) setStatusSel(saved.statusSel);
-      if (typeof saved.handleDeliveryCharge === "boolean")
-        setHandleDeliveryCharge(saved.handleDeliveryCharge);
-
-      // Restore variants
-      if (saved.options) setOptions(saved.options);
-      if (saved.variantRows) {
-        const rowsMap: Record<string, VariantRow> = {};
-        saved.variantRows.forEach((r) => {
-          // Reconstruct ID based on options logic in main component
-          const key = r.options.join("|");
-          rowsMap[key] = { ...r, id: key };
-        });
-        setVariantRows(rowsMap);
-      }
-      // Restore Images (previews only, as File objects cannot be restored from localStorage)
-      if (saved.imagePreviews) setImagePreviews(saved.imagePreviews);
-      setLocalDraft(saved);
-
-      toast.success("Draft restored");
+  const restoreAddDraft = (saved: AddProductDraft) => {
+    clearAddProductFormState();
+    if (saved.title) setDraftTitle(saved.title);
+    if (saved.description) setDraftDescription(saved.description);
+    if (saved.vendor) setDraftVendor(saved.vendor);
+    if (saved.sku) setDraftSku(saved.sku);
+    if (saved.tags) setDraftTags(saved.tags.join(", "));
+    if (saved.seoTitle) setDraftSeoTitle(saved.seoTitle);
+    if (saved.seoDescription) setDraftSeoDesc(saved.seoDescription);
+    if (saved.basePriceInput) setBasePriceInput(saved.basePriceInput);
+    if (saved.quantity != null) setDraftQuantity(String(saved.quantity));
+    if (saved.compareAtPrice != null)
+      setDraftComparePrice(String(saved.compareAtPrice));
+    if (saved.cost != null) setDraftCost(String(saved.cost));
+    if (saved.barcode) setDraftBarcode(saved.barcode);
+    if (saved.weightGrams != null) setDraftWeight(String(saved.weightGrams));
+    if (saved.productType) {
+      setDraftProductType(saved.productType);
+      setUseCustomProductType(
+        !PRODUCT_TYPE_OPTIONS.includes(
+          saved.productType as (typeof PRODUCT_TYPE_OPTIONS)[number],
+        ),
+      );
     }
-
-    setIsAddProductOpen(true);
+    if (saved.customProductType) setUseCustomProductType(true);
+    if (saved.garmentCategory) setGarmentCategory(saved.garmentCategory);
+    if (saved.fitType) setFitType(saved.fitType);
+    if (saved.fallbackSize) setFallbackSize(saved.fallbackSize);
+    if (saved.variantMode) setVariantMode(saved.variantMode);
+    if (saved.singleColor) setSingleColor(saved.singleColor);
+    if (saved.measurements?.bust != null)
+      setDraftBustSize(String(saved.measurements.bust));
+    if (saved.measurements?.waist != null)
+      setDraftWaistSize(String(saved.measurements.waist));
+    if (saved.measurements?.hip != null)
+      setDraftHipSize(String(saved.measurements.hip));
+    if (saved.measurements?.length != null)
+      setDraftLengthSize(String(saved.measurements.length));
+    if (saved.measurements?.shoulder != null)
+      setDraftShoulderSize(String(saved.measurements.shoulder));
+    if (saved.measurements?.inseam != null)
+      setDraftInseamSize(String(saved.measurements.inseam));
+    if (saved.trackInventory) setTrackInventory(saved.trackInventory);
+    if (saved.statusSel) setStatusSel(saved.statusSel);
+    if (typeof saved.handleDeliveryCharge === "boolean")
+      setHandleDeliveryCharge(saved.handleDeliveryCharge);
+    if (saved.options) setOptions(saved.options);
+    if (saved.variantRows) {
+      const rowsMap: Record<string, VariantRow> = {};
+      saved.variantRows.forEach((r) => {
+        const key = r.options.join("|");
+        rowsMap[key] = { ...r, id: key };
+      });
+      setVariantRows(rowsMap);
+    }
+    if (saved.imagePreviews) setImagePreviews(saved.imagePreviews);
+    setLocalDraft(saved);
   };
 
+  const handleAddProduct = () => {
+    skipNextDraftAutosave.current = true;
+    clearAddProductFormState();
+    setSubmitFeedback(null);
+    setIsAddProductOpen(true);
+  };
   const handleAddDialogOpenChange = (open: boolean) => {
+    if (!open && isAddProductOpen && uid) {
+      const draft = readCurrentAddDraft();
+      saveAddProductDraft(uid, () => draft);
+      setLocalDraft(draft);
+      skipNextDraftAutosave.current = true;
+      clearAddProductFormState();
+      toast.success("Progress saved as a local draft.");
+    }
     setIsAddProductOpen(open);
   };
 
@@ -1038,9 +1049,9 @@ export default function Products() {
     if (!title) return showSubmitError("Product title is required.");
     if (!description) return showSubmitError("Product description is required.");
     if (!Number.isFinite(price) || price <= 0)
-      return showSubmitError("Please enter a valid base price.");
+      return showSubmitError("Please enter a valid selling price.");
     if (Number.isNaN(compareAtPrice))
-      return showSubmitError("Compare at Price is required.");
+      return showSubmitError("MRP is required.");
     if (!sku) return showSubmitError("SKU is required.");
     if (
       variantMode === "single" &&
@@ -1050,8 +1061,6 @@ export default function Products() {
     }
     if (!vendor) return showSubmitError("Vendor name is required.");
     if (!productType) return showSubmitError("Product type is required.");
-    if (draftCollections.length === 0)
-      return showSubmitError("Select at least one collection.");
     if (!seoTitle || !seoDescription)
       return showSubmitError("SEO Title and SEO Description are required.");
     if (variantMode === "single" && !singleColor.trim())
@@ -1212,7 +1221,7 @@ export default function Products() {
         resourceUrls,
         vendor,
         productType,
-        collections: draftCollections,
+        collections: [],
         garmentCategory,
         fitType,
         variantMode,
@@ -1566,12 +1575,6 @@ export default function Products() {
         payload.description = eDescription.trim();
       if (eProductType.trim() !== (editing.productType || ""))
         payload.productType = eProductType.trim();
-      if (
-        JSON.stringify(eCollections) !==
-        JSON.stringify(editing.collections || [])
-      ) {
-        payload.collections = eCollections;
-      }
       if (eVendor.trim() !== (editing.vendor || ""))
         payload.vendor = eVendor.trim();
       const newTags = eTags
@@ -2088,182 +2091,12 @@ export default function Products() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="price">Base Price (₹) *</Label>
-                  <Input
-                    id="price"
-                    name="price"
-                    type="number"
-                    placeholder="999"
-                    min={0}
-                    step="0.01"
-                    required
-                    value={basePriceInput}
-                    onChange={(e) => setBasePriceInput(e.target.value)}
-                  />
-
-                  {/* DELIVERY CHARGE CHECKBOX */}
-                  <label className="inline-flex items-center gap-2 mt-2">
-                    <input
-                      type="checkbox"
-                      checked={handleDeliveryCharge}
-                      onChange={(e) =>
-                        setHandleDeliveryCharge(e.target.checked)
-                      }
-                      className="h-4 w-4"
-                    />
-                    <span className="text-sm">
-                      Pass the delivery charge to the customer
-                    </span>
-                  </label>
-
-                  {/* FINAL BASE PRICE DISPLAY */}
-                  <div className="mt-2 text-sm">
-                    <span className="text-muted-foreground">
-                      Final base price:{" "}
-                    </span>
-                    <span className="font-medium">
-                      {/* compute final price for display (treat empty as 0) */}
-                      ₹
-                      {(
-                        Number(basePriceInput || 0) +
-                        (handleDeliveryCharge ? 100 : 0)
-                      ).toLocaleString(undefined, {
-                        minimumFractionDigits: 0,
-                        maximumFractionDigits: 2,
-                      })}
-                    </span>
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      (
-                      {handleDeliveryCharge
-                        ? "+₹100 delivery"
-                        : "no delivery added"}
-                      )
-                    </span>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="compare-price">
-                    Compare at Price (₹){" "}
-                    <span className="text-destructive">*</span>
-                  </Label>
-                  <Input
-                    id="compare-price"
-                    name="compare-price"
-                    type="number"
-                    placeholder="1499"
-                    min={0}
-                    step="0.01"
-                    required
-                    value={draftComparePrice}
-                    onChange={(e) => setDraftComparePrice(e.target.value)}
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="cost">Cost per Item (₹)</Label>
-                  <Input
-                    id="cost"
-                    name="cost"
-                    type="number"
-                    placeholder="500"
-                    min={0}
-                    step="0.01"
-                    value={draftCost}
-                    onChange={(e) => setDraftCost(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="sku">
-                    SKU <span className="text-destructive">*</span>
-                  </Label>
-                  <Input
-                    id="sku"
-                    name="sku"
-                    placeholder="UNIQ-SKU-123"
-                    required
-                    value={draftSku}
-                    onChange={(e) => setDraftSku(e.target.value)}
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="barcode">Barcode (ISBN, UPC, etc.)</Label>
-                  <Input
-                    id="barcode"
-                    name="barcode"
-                    placeholder="123456789"
-                    value={draftBarcode}
-                    onChange={(e) => setDraftBarcode(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="weight">Weight (grams)</Label>
-                  <Input
-                    id="weight"
-                    name="weight"
-                    type="number"
-                    placeholder="500"
-                    min={0}
-                    value={draftWeight}
-                    onChange={(e) => setDraftWeight(e.target.value)}
-                  />
-                </div>
-              </div>
-
-              {/* Inventory (base) */}
-              <div className="grid grid-cols-2 gap-4">
-                {variantMode === "single" ? (
-                <div className="space-y-2">
-                  <Label htmlFor="quantity">
-                    Single Variant Quantity{" "}
-                    <span className="text-destructive">*</span>
-                  </Label>
-                  <Input
-                    id="quantity"
-                    name="quantity"
-                    type="number"
-                    placeholder="100"
-                    min={0}
-                    required
-                    value={draftQuantity}
-                    onChange={(e) => setDraftQuantity(e.target.value)}
-                  />
-                </div>
-                ) : (
-                  <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
-                    Enter inventory separately for every variant in the table
-                    below. No base quantity will be applied.
-                  </div>
-                )}
-                <div className="space-y-2">
-                  <Label htmlFor="track-inventory">Track Inventory</Label>
-                  <Select
-                    value={trackInventory}
-                    onValueChange={(v) => setTrackInventory(v as any)}
-                  >
-                    <SelectTrigger id="track-inventory">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="yes">Yes</SelectItem>
-                      <SelectItem value="no">No</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
               <div className="space-y-3 border-t pt-4">
                 <div>
                   <h3 className="font-semibold">Product variant setup</h3>
                   <p className="text-xs text-muted-foreground">
-                    Choose one setup. Only the selected setup will be sent to
-                    Shopify and Firestore.
+                    Choose one setup. Only the selected setup will be sent for
+                    admin review.
                   </p>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -2307,7 +2140,7 @@ export default function Products() {
                     Single Variant Details &amp; Measurements
                   </h3>
                   <p className="text-xs text-muted-foreground">
-                    This creates one real Shopify variant and stores its size,
+                    This creates one product option and stores its size,
                     color, inventory, and garment measurements.
                   </p>
                 </div>
@@ -2423,6 +2256,23 @@ export default function Products() {
                   <Button type="button" variant="secondary" onClick={() => autofillFallbackMeasurements()}>
                     Auto-fill size
                   </Button>
+                </div>
+
+                <div className="max-w-sm space-y-2">
+                  <Label htmlFor="quantity">
+                    Single Variant Quantity{" "}
+                    <span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    id="quantity"
+                    name="quantity"
+                    type="number"
+                    placeholder="100"
+                    min={0}
+                    required
+                    value={draftQuantity}
+                    onChange={(e) => setDraftQuantity(e.target.value)}
+                  />
                 </div>
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -2544,7 +2394,7 @@ export default function Products() {
                           {option}
                         </SelectItem>
                       ))}
-                      <SelectItem value="__custom__">Add your own…</SelectItem>
+                      <SelectItem value="__custom__">Add your ownâ€¦</SelectItem>
                     </SelectContent>
                   </Select>
                   {useCustomProductType && (
@@ -2578,92 +2428,6 @@ export default function Products() {
                     onChange={(e) => setDraftVendor(e.target.value)}
                   />
                 </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Collections / Store Categories *</Label>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="h-auto min-h-10 w-full justify-between whitespace-normal text-left"
-                    >
-                      <span>
-                        {draftCollections.length
-                          ? draftCollections.join(", ")
-                          : "Select one or more collections"}
-                      </span>
-                      <span className="ml-3 text-muted-foreground">⌄</span>
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent
-                    align="start"
-                    className="max-h-80 w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto"
-                  >
-                    <DropdownMenuLabel>Shopify collections</DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    {COLLECTION_OPTIONS.map((collectionName) => (
-                      <DropdownMenuCheckboxItem
-                        key={collectionName}
-                        checked={draftCollections.includes(collectionName)}
-                        onSelect={(event) => event.preventDefault()}
-                        onCheckedChange={(checked) =>
-                          setDraftCollections((current) =>
-                            checked
-                              ? [...new Set([...current, collectionName])]
-                              : current.filter(
-                                  (item) => item !== collectionName,
-                                ),
-                          )
-                        }
-                      >
-                        {collectionName}
-                      </DropdownMenuCheckboxItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="Add your own collection"
-                    value={customCollectionName}
-                    onChange={(event) =>
-                      setCustomCollectionName(event.target.value)
-                    }
-                  />
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={() => {
-                      const customName = customCollectionName.trim();
-                      if (!customName) return;
-                      setDraftCollections((current) => [
-                        ...new Set([...current, customName]),
-                      ]);
-                      setCustomCollectionName("");
-                    }}
-                  >
-                    Add
-                  </Button>
-                </div>
-                {draftCollections.length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {draftCollections.map((collectionName) => (
-                      <Badge
-                        key={collectionName}
-                        variant="outline"
-                        className="cursor-pointer"
-                        onClick={() =>
-                          setDraftCollections((current) =>
-                            current.filter((item) => item !== collectionName),
-                          )
-                        }
-                      >
-                        {collectionName} ×
-                      </Badge>
-                    ))}
-                  </div>
-                )}
               </div>
 
               <div className="min-w-0 space-y-2">
@@ -2702,6 +2466,149 @@ export default function Products() {
               />
               )}
 
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="price">Selling Price ({"\u20B9"}) *</Label>
+                  <Input
+                    id="price"
+                    name="price"
+                    type="number"
+                    placeholder="999"
+                    min={0}
+                    step="0.01"
+                    required
+                    value={basePriceInput}
+                    onChange={(e) => setBasePriceInput(e.target.value)}
+                  />
+
+                  {/* DELIVERY CHARGE CHECKBOX */}
+                  <label className="inline-flex items-center gap-2 mt-2">
+                    <input
+                      type="checkbox"
+                      checked={handleDeliveryCharge}
+                      onChange={(e) =>
+                        setHandleDeliveryCharge(e.target.checked)
+                      }
+                      className="h-4 w-4"
+                    />
+                    <span className="text-sm">
+                      Pass the delivery charge to the customer
+                    </span>
+                  </label>
+
+                  {/* FINAL BASE PRICE DISPLAY */}
+                  <div className="mt-2 text-sm">
+                    <span className="text-muted-foreground">
+                      Final selling price:{" "}
+                    </span>
+                    <span className="font-medium">
+                      {/* compute final price for display (treat empty as 0) */}
+                      â‚¹
+                      {(
+                        Number(basePriceInput || 0) +
+                        (handleDeliveryCharge ? 100 : 0)
+                      ).toLocaleString(undefined, {
+                        minimumFractionDigits: 0,
+                        maximumFractionDigits: 2,
+                      })}
+                    </span>
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      (
+                      {handleDeliveryCharge
+                        ? "+â‚¹100 delivery"
+                        : "no delivery added"}
+                      )
+                    </span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="compare-price">
+                    MRP ({"\u20B9"}){" "}
+                    <span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    id="compare-price"
+                    name="compare-price"
+                    type="number"
+                    placeholder="1499"
+                    min={0}
+                    step="0.01"
+                    required
+                    value={draftComparePrice}
+                    onChange={(e) => setDraftComparePrice(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="cost">Cost per Item ({"\u20B9"})</Label>
+                  <Input
+                    id="cost"
+                    name="cost"
+                    type="number"
+                    placeholder="500"
+                    min={0}
+                    step="0.01"
+                    value={draftCost}
+                    onChange={(e) => setDraftCost(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="sku">
+                    SKU <span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    id="sku"
+                    name="sku"
+                    placeholder="UNIQ-SKU-123"
+                    required
+                    value={draftSku}
+                    onChange={(e) => setDraftSku(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="barcode">Barcode (ISBN, UPC, etc.)</Label>
+                  <Input
+                    id="barcode"
+                    name="barcode"
+                    placeholder="123456789"
+                    value={draftBarcode}
+                    onChange={(e) => setDraftBarcode(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="weight">Weight (grams)</Label>
+                  <Input
+                    id="weight"
+                    name="weight"
+                    type="number"
+                    placeholder="500"
+                    min={0}
+                    value={draftWeight}
+                    onChange={(e) => setDraftWeight(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="track-inventory">Track Inventory</Label>
+                <Select
+                  value={trackInventory}
+                  onValueChange={(v) => setTrackInventory(v as any)}
+                >
+                  <SelectTrigger id="track-inventory">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="yes">Yes</SelectItem>
+                    <SelectItem value="no">No</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
               {/* SEO (required) */}
               <div className="space-y-4 border-t pt-4">
                 <h3 className="font-semibold">
@@ -2749,7 +2656,7 @@ export default function Products() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  If variants are provided, the server will send the product for{" "}
+                  If variants are provided, the product will be sent for{" "}
                   <b>Review</b> and mark it's status as <b>In review</b>.
                 </p>
               </div>
@@ -2786,7 +2693,7 @@ export default function Products() {
                   disabled={busy}
                   onClick={handleSubmitForReviewClick}
                 >
-                  {busy ? "Submitting…" : "Submit for review"}
+                  {busy ? "Submittingâ€¦" : "Submit for review"}
                 </Button>
                 </div>
               </div>
@@ -2899,7 +2806,7 @@ export default function Products() {
                         </TableCell>
                         <TableCell>
                           {p.price != null
-                            ? `₹${Number(p.price).toLocaleString()}`
+                            ? `â‚¹${Number(p.price).toLocaleString()}`
                             : "-"}
                         </TableCell>
                         <TableCell>
@@ -2912,7 +2819,13 @@ export default function Products() {
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  onClick={handleAddProduct}
+                                  onClick={() => {
+                                    if (p.draft) {
+                                      restoreAddDraft(p.draft);
+                                      setIsAddProductOpen(true);
+                                      toast.success("Draft restored");
+                                    }
+                                  }}
                                   title="Edit local draft"
                                 >
                                   <Edit className="h-4 w-4" />
@@ -3011,7 +2924,7 @@ export default function Products() {
                           </SelectItem>
                         ))}
                         <SelectItem value="__custom__">
-                          Add your own…
+                          Add your ownâ€¦
                         </SelectItem>
                       </SelectContent>
                     </Select>
@@ -3028,320 +2941,12 @@ export default function Products() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label>Collections / Store Categories</Label>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-auto min-h-10 w-full justify-between whitespace-normal text-left"
-                      >
-                        <span>
-                          {eCollections.length
-                            ? eCollections.join(", ")
-                            : "Select one or more collections"}
-                        </span>
-                        <span className="ml-3 text-muted-foreground">⌄</span>
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent
-                      align="start"
-                      className="max-h-80 w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto"
-                    >
-                      <DropdownMenuLabel>Shopify collections</DropdownMenuLabel>
-                      <DropdownMenuSeparator />
-                      {COLLECTION_OPTIONS.map((collectionName) => (
-                        <DropdownMenuCheckboxItem
-                          key={collectionName}
-                          checked={eCollections.includes(collectionName)}
-                          onSelect={(event) => event.preventDefault()}
-                          onCheckedChange={(checked) =>
-                            setECollections((current) =>
-                              checked
-                                ? [...new Set([...current, collectionName])]
-                                : current.filter(
-                                    (item) => item !== collectionName,
-                                  ),
-                            )
-                          }
-                        >
-                          {collectionName}
-                        </DropdownMenuCheckboxItem>
-                      ))}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="Add your own collection"
-                      value={eCustomCollectionName}
-                      onChange={(event) =>
-                        setECustomCollectionName(event.target.value)
-                      }
-                    />
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() => {
-                        const customName = eCustomCollectionName.trim();
-                        if (!customName) return;
-                        setECollections((current) => [
-                          ...new Set([...current, customName]),
-                        ]);
-                        setECustomCollectionName("");
-                      }}
-                    >
-                      Add
-                    </Button>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {eCollections.map((collectionName) => (
-                      <Badge
-                        key={collectionName}
-                        variant="outline"
-                        className="cursor-pointer"
-                        onClick={() =>
-                          setECollections((current) =>
-                            current.filter((item) => item !== collectionName),
-                          )
-                        }
-                      >
-                        {collectionName} ×
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Description</Label>
-                  <Textarea
-                    value={eDescription}
-                    onChange={(e) => setEDescription(e.target.value)}
-                    rows={4}
-                  />
-                </div>
-
-                {/* Global quick (for single-variant products) */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Price (₹) — pushes live immediately</Label>
-                    <Input
-                      type="number"
-                      min={0}
-                      step="0.01"
-                      value={ePrice}
-                      onChange={(e) =>
-                        setEPrice(
-                          e.target.value === "" ? "" : Number(e.target.value),
-                        )
-                      }
-                      placeholder="Leave unchanged to keep current"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Stock (Qty) — pushes live immediately</Label>
-                    <Input
-                      type="number"
-                      min={0}
-                      value={eStock}
-                      onChange={(e) =>
-                        setEStock(
-                          e.target.value === "" ? "" : Number(e.target.value),
-                        )
-                      }
-                      placeholder="Leave unchanged to keep current"
-                    />
-                  </div>
-                </div>
-
-                {/* Other review fields */}
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="space-y-2">
-                    <Label>Compare at (₹)</Label>
-                    <Input
-                      type="number"
-                      min={0}
-                      step={0.01}
-                      value={eCompareAt}
-                      onChange={(e) =>
-                        setECompareAt(
-                          e.target.value === "" ? "" : Number(e.target.value),
-                        )
-                      }
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Barcode</Label>
-                    <Input
-                      value={eBarcode}
-                      onChange={(e) => setEBarcode(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Weight (grams)</Label>
-                    <Input
-                      type="number"
-                      min={0}
-                      value={eWeight}
-                      onChange={(e) =>
-                        setEWeight(
-                          e.target.value === "" ? "" : Number(e.target.value),
-                        )
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-4 border-t pt-4">
-                  <div>
-                    <h3 className="font-semibold">
-                      Fallback Product Measurements
-                    </h3>
-                    <p className="text-xs text-muted-foreground">
-                      Optional fallback for products without size variants.
-                      Size-wise variant measurements below are used first for AI
-                      fit verification.
-                    </p>
-                  </div>
-
-                  <div className="grid gap-3 rounded-md border bg-muted/20 p-3 sm:grid-cols-2 lg:grid-cols-[150px_170px_170px_auto] lg:items-end">
-                    <div className="space-y-2">
-                      <Label>Size</Label>
-                      <Select
-                        value={fallbackSize}
-                        onValueChange={(value) => {
-                          setFallbackSize(value);
-                          autofillEditFallbackMeasurements(value, garmentCategory, fitType);
-                        }}
-                      >
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          {GARMENT_SIZES.map((size) => (
-                            <SelectItem key={size} value={size}>{size}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Garment category</Label>
-                      <Select
-                        value={garmentCategory}
-                        onValueChange={(value) => {
-                          const category = value as GarmentCategory;
-                          setGarmentCategory(category);
-                          autofillEditFallbackMeasurements(fallbackSize, category, fitType);
-                          generateVariants(category, fitType);
-                        }}
-                      >
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="Tops">Tops</SelectItem>
-                          <SelectItem value="Bottoms">Bottoms</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Fit type</Label>
-                      <Select
-                        value={fitType}
-                        onValueChange={(value) => {
-                          const fit = value as FitType;
-                          setFitType(fit);
-                          autofillEditFallbackMeasurements(fallbackSize, garmentCategory, fit);
-                          generateVariants(garmentCategory, fit);
-                        }}
-                      >
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="Slim">Slim</SelectItem>
-                          <SelectItem value="Regular">Regular</SelectItem>
-                          <SelectItem value="Oversized">Oversized</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <Button type="button" variant="secondary" onClick={() => autofillEditFallbackMeasurements()}>
-                      Auto-fill size
-                    </Button>
-                  </div>
-
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="space-y-2">
-                      <Label>Bust Size (in)</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        step="0.1"
-                        value={eBustSize}
-                        onChange={(e) =>
-                          setEBustSize(
-                            e.target.value === "" ? "" : Number(e.target.value),
-                          )
-                        }
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label>Waist Size (in)</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        step="0.1"
-                        value={eWaistSize}
-                        onChange={(e) =>
-                          setEWaistSize(
-                            e.target.value === "" ? "" : Number(e.target.value),
-                          )
-                        }
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label>Hip Size (in)</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        step="0.1"
-                        value={eHipSize}
-                        onChange={(e) =>
-                          setEHipSize(
-                            e.target.value === "" ? "" : Number(e.target.value),
-                          )
-                        }
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label>Length Size (in)</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        step="0.1"
-                        value={eLengthSize}
-                        onChange={(e) =>
-                          setELengthSize(
-                            e.target.value === "" ? "" : Number(e.target.value),
-                          )
-                        }
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Vendor</Label>
-                    <Input
-                      value={eVendor}
-                      onChange={(e) => setEVendor(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-2">
                     <Label>Tags (comma-separated)</Label>
                     <Input
                       value={eTags}
                       onChange={(e) => setETags(e.target.value)}
                     />
                   </div>
-                </div>
 
                 {/* Variant images */}
                 <div className="border-t pt-4 space-y-3">
@@ -3354,10 +2959,10 @@ export default function Products() {
                   </div>
 
                   {loadingDetails ? (
-                    <div className="text-sm text-muted-foreground">Loading variant photos…</div>
+                    <div className="text-sm text-muted-foreground">Loading variant photosâ€¦</div>
                   ) : editColorGroups.length === 0 ? (
                     <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-                      No Shopify variants were found for photo assignment.
+                      No live variants were found for photo assignment.
                     </div>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2">
@@ -3408,7 +3013,7 @@ export default function Products() {
                                       className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-xs text-destructive-foreground"
                                       aria-label={`Remove pending ${group.label} photo ${index + 1}`}
                                     >
-                                      ×
+                                      Ã—
                                     </button>
                                   </div>
                                 ))}
@@ -3420,7 +3025,7 @@ export default function Products() {
                     </div>
                   )}
 
-                  <h4 className="border-t pt-3 text-sm font-medium">All current Shopify images</h4>
+                  <h4 className="border-t pt-3 text-sm font-medium">All current product images</h4>
 
                   <div className="flex items-center gap-2">
                     <Button
@@ -3432,13 +3037,13 @@ export default function Products() {
                       }
                     >
                       <ImageMinus className="h-4 w-4 mr-2" />
-                      {imageBusy ? "Removing…" : "Remove selected"}
+                      {imageBusy ? "Removingâ€¦" : "Remove selected"}
                     </Button>
                   </div>
 
                   {loadingDetails ? (
                     <div className="text-sm text-muted-foreground">
-                      Loading images…
+                      Loading imagesâ€¦
                     </div>
                   ) : imagesLive.length === 0 ? (
                     <div className="text-sm text-muted-foreground">
@@ -3482,7 +3087,7 @@ export default function Products() {
                   </h3>
                   {loadingDetails ? (
                     <div className="text-sm text-muted-foreground">
-                      Loading variants…
+                      Loading variantsâ€¦
                     </div>
                   ) : existingVariants.length === 0 ? (
                     <div className="text-sm text-muted-foreground">
@@ -3496,7 +3101,7 @@ export default function Products() {
                             <th className="text-left p-2">Variant</th>
                             <th className="text-left p-2">SKU</th>
                             <th className="text-left p-2">Barcode</th>
-                            <th className="text-left p-2">Price (₹)</th>
+                            <th className="text-left p-2">Price (â‚¹)</th>
                             <th className="text-left p-2">Stock</th>
                             <th className="text-left p-2">Chest/Bust (in)</th>
                             <th className="text-left p-2">Waist (in)</th>
@@ -3517,8 +3122,8 @@ export default function Products() {
                                 <td className="p-2">
                                   {v.optionValues?.join(" / ") || v.title}
                                 </td>
-                                <td className="p-2">{v.sku || "—"}</td>
-                                <td className="p-2">{v.barcode || "—"}</td>
+                                <td className="p-2">{v.sku || "â€”"}</td>
+                                <td className="p-2">{v.barcode || "â€”"}</td>
                                 <td className="p-2 w-[160px]">
                                   <Input
                                     type="number"
@@ -3597,7 +3202,7 @@ export default function Products() {
                   </p>
                 </div>
 
-                {/* Add more variants (planner → review) */}
+                {/* Add more variants (planner â†’ review) */}
                 <div className="border-t pt-4">
                   <h3 className="font-semibold mb-2">
                     Add more variants (sent to admin)
@@ -3653,12 +3258,12 @@ export default function Products() {
                   <div>
                     <span className="font-medium">Price:</span>{" "}
                     {deleteTarget.price != null
-                      ? `₹${deleteTarget.price}`
+                      ? `â‚¹${deleteTarget.price}`
                       : "-"}
                   </div>
                   <div>
                     <span className="font-medium">SKU:</span>{" "}
-                    {deleteTarget.sku || "—"}
+                    {deleteTarget.sku || "â€”"}
                   </div>
                 </div>
                 <p className="text-sm">
@@ -3721,7 +3326,7 @@ export default function Products() {
                   >
                     download from here
                   </a>
-                  . The first sheet’s first row must be headers. See the sample
+                  . The first sheetâ€™s first row must be headers. See the sample
                   file{" "}
                   <a
                     href="https://seller.drippr.in/download/DRIPPR_Bulk_Template_Sample_D1.xlsx"
@@ -3777,7 +3382,7 @@ export default function Products() {
                   onClick={runBulkUpload}
                   disabled={!bulkFile || bulkRunning}
                 >
-                  {bulkRunning ? "Uploading…" : "Start upload"}
+                  {bulkRunning ? "Uploadingâ€¦" : "Start upload"}
                 </Button>
               </div>
             </div>
@@ -3890,7 +3495,7 @@ function VariantPlanner(props: {
                   onClick={() => removeValue(idx, v)}
                   title="Click to remove"
                 >
-                  {v} <span className="ml-1 opacity-60">×</span>
+                  {v} <span className="ml-1 opacity-60">Ã—</span>
                 </Badge>
               ))}
             </div>
@@ -3904,7 +3509,11 @@ function VariantPlanner(props: {
                     prev.map((v, i) => (i === idx ? e.target.value : v)),
                   )
                 }
-                placeholder="Enter values (comma separated), press Add"
+                placeholder={
+                  opt.name.trim().toLowerCase() === "size"
+                    ? "Add sizes comma separated, e.g. S, M, L. Use M only, not medium."
+                    : "Enter values (comma separated), press Add"
+                }
               />
               <Button
                 type="button"
@@ -3936,7 +3545,7 @@ function VariantPlanner(props: {
               Photos for each colour <span className="text-destructive">*</span>
             </Label>
             <p className="text-xs text-muted-foreground">
-              Add 1–5 photos per colour. Shopify links each set to every size
+              Add 1â€“5 photos per colour. Each set is linked to every size
               using that colour, so customers never see another colour's photos.
             </p>
           </div>
@@ -3979,7 +3588,7 @@ function VariantPlanner(props: {
                           className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-xs text-destructive-foreground"
                           aria-label={`Remove ${color} image ${index + 1}`}
                         >
-                          ×
+                          Ã—
                         </button>
                       </div>
                     ),
@@ -4041,8 +3650,8 @@ function VariantPlanner(props: {
               <thead className="bg-muted/50">
                 <tr>
                   <th className="w-[140px] text-left p-2">Variant</th>
-                  <th className="w-[125px] text-left p-2">Price (₹)</th>
-                  <th className="w-[140px] text-left p-2">Compare at (₹)</th>
+                  <th className="w-[125px] text-left p-2">Price (â‚¹)</th>
+                  <th className="w-[140px] text-left p-2">Compare at (â‚¹)</th>
                   <th className="w-[160px] text-left p-2">SKU (optional)</th>
                   <th className="w-[90px] text-left p-2">Qty</th>
                   <th className="w-[140px] text-left p-2">Barcode</th>
@@ -4202,3 +3811,10 @@ function VariantPlanner(props: {
     </div>
   );
 }
+
+
+
+
+
+
+

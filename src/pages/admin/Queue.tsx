@@ -15,6 +15,14 @@ import {
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
@@ -67,6 +75,7 @@ type QueueProduct = {
   description?: string;
   price?: number;
   productType?: string | null;
+  collections?: string[];
   status: QueueStatus;
   tags?: string[];
   images?: string[];
@@ -79,6 +88,26 @@ type QueueProduct = {
 };
 
 const PLACEHOLDER = "https://placehold.co/96x96?text=IMG";
+const COLLECTION_OPTIONS = [
+  "ATHLEISURE",
+  "CARGOS & PANTS",
+  "CO-RD SET",
+  "DAARCK",
+  "DAILY DRIP",
+  "FUSION",
+  "HOUSE OF RIVAEM",
+  "JACKETS",
+  "MENS ATHLEISURE",
+  "MENS LIFESTYLE & BOTTOMS",
+  "MENS T-SHIRT & SHIRTS",
+  "MINIMALISM",
+  "SHORTS & SKIRTS",
+  "STREETWEAR",
+  "SWEATSHIRT & HOODS",
+  "TEES",
+  "THRIFT",
+  "TOPS & DRESSES",
+] as const;
 
 // ---------- helpers ----------
 const formatMoneyINR = (n?: number | string) =>
@@ -354,6 +383,13 @@ export default function ProductQueue() {
   const [selected, setSelected] = useState<QueueProduct | null>(null);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
+  const [approvalCollections, setApprovalCollections] = useState<string[]>([]);
+  const [customCollectionName, setCustomCollectionName] = useState("");
+
+  useEffect(() => {
+    setApprovalCollections(selected?.collections || []);
+    setCustomCollectionName("");
+  }, [selected?.id]);
 
   // debounce search
   useEffect(() => {
@@ -390,9 +426,13 @@ export default function ProductQueue() {
   }, [fetchQueue]);
 
   const approve = async (product: QueueProduct) => {
+    if (!approvalCollections.length) {
+      toast.error("Select at least one collection before approving.");
+      return;
+    }
     try {
       setActionBusy(true);
-      const result = await queueApprove(product.id); // backend handles both new + update approvals
+      const result = await queueApprove(product.id, undefined, approvalCollections); // backend handles both new + update approvals
       toast.success(
         product.status === "update_in_review"
           ? `${product.title} update approved`
@@ -649,6 +689,93 @@ export default function ProductQueue() {
                     <VariantChanges variants={selected.changeSummary?.variants} />
                   </div>
                 )}
+
+                <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                  <div>
+                    <h4 className="font-semibold">Store collections</h4>
+                    <p className="text-xs text-muted-foreground">
+                      Select where this product should appear before approving.
+                    </p>
+                  </div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-auto min-h-10 w-full justify-between whitespace-normal text-left"
+                      >
+                        <span>
+                          {approvalCollections.length
+                            ? approvalCollections.join(", ")
+                            : "Select one or more collections"}
+                        </span>
+                        <span className="ml-3 text-muted-foreground">⌄</span>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      align="start"
+                      className="max-h-80 w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto"
+                    >
+                      <DropdownMenuLabel>Store collections</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      {COLLECTION_OPTIONS.map((collectionName) => (
+                        <DropdownMenuCheckboxItem
+                          key={collectionName}
+                          checked={approvalCollections.includes(collectionName)}
+                          onSelect={(event) => event.preventDefault()}
+                          onCheckedChange={(checked) =>
+                            setApprovalCollections((current) =>
+                              checked
+                                ? [...new Set([...current, collectionName])]
+                                : current.filter((item) => item !== collectionName),
+                            )
+                          }
+                        >
+                          {collectionName}
+                        </DropdownMenuCheckboxItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Add your own collection"
+                      value={customCollectionName}
+                      onChange={(event) => setCustomCollectionName(event.target.value)}
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => {
+                        const customName = customCollectionName.trim();
+                        if (!customName) return;
+                        setApprovalCollections((current) => [
+                          ...new Set([...current, customName]),
+                        ]);
+                        setCustomCollectionName("");
+                      }}
+                    >
+                      Add
+                    </Button>
+                  </div>
+                  {approvalCollections.length ? (
+                    <div className="flex flex-wrap gap-2">
+                      {approvalCollections.map((collectionName) => (
+                        <Badge
+                          key={collectionName}
+                          variant="outline"
+                          className="cursor-pointer"
+                          onClick={() =>
+                            setApprovalCollections((current) =>
+                              current.filter((item) => item !== collectionName),
+                            )
+                          }
+                        >
+                          {collectionName} ×
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
 
                 {/* Actions */}
                 <div className="flex gap-2 pt-4">

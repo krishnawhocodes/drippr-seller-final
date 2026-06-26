@@ -133,8 +133,11 @@ export const ordersList = (params: { limit?: number } = {}) =>
 export const queueList = (params: { status?: string; limit?: number } = {}) =>
   call("queue.list", params);
 
-export const queueApprove = (id: string, note?: string) =>
-  call("queue.approve", { id, note });
+export const queueApprove = (
+  id: string,
+  note?: string,
+  collections?: string[],
+) => call("queue.approve", { id, note, collections });
 
 export const queueReject = (id: string, reason?: string) =>
   call("queue.reject", { id, reason });

@@ -1117,7 +1117,11 @@ export default async function handler(req: any, res: any) {
       }
 
       case "queue.approve": {
-        const { id, note } = body as { id: string; note?: string };
+        const { id, note, collections } = body as {
+          id: string;
+          note?: string;
+          collections?: string[];
+        };
         if (!id) return res.status(400).json({ ok: false, error: "id required" });
 
         const ref = adminDb.collection("merchantProducts").doc(id);
@@ -1129,20 +1133,30 @@ export default async function handler(req: any, res: any) {
           qdoc.pendingUpdates && typeof qdoc.pendingUpdates === "object"
             ? qdoc.pendingUpdates
             : {};
+        const approvalUpdates = {
+          ...pendingUpdates,
+          ...(Array.isArray(collections)
+            ? {
+                collections: collections
+                  .map((collection) => String(collection || "").trim())
+                  .filter(Boolean),
+              }
+            : {}),
+        };
         const approvedMeasurements =
-          pendingUpdates.measurements !== undefined
-            ? pendingUpdates.measurements
+          approvalUpdates.measurements !== undefined
+            ? approvalUpdates.measurements
             : qdoc.measurements;
         const approvedVariantMeasurements = mergeVariantMeasurementRecords(
           qdoc.variantMeasurements || qdoc.variantDraft?.variants || [],
-          pendingUpdates.variantMeasurements ||
-            pendingUpdates.variantDraft?.variants ||
+          approvalUpdates.variantMeasurements ||
+            approvalUpdates.variantDraft?.variants ||
             [],
         );
 
         const shopifyResult = await applyApprovedChangesToShopify(
           qdoc,
-          pendingUpdates,
+          approvalUpdates,
         );
         const warnings = [...(shopifyResult.warnings || [])];
         try {
@@ -1168,7 +1182,7 @@ export default async function handler(req: any, res: any) {
 
         await ref.set(
           {
-            ...pendingUpdates,
+            ...approvalUpdates,
             status: "approved",
             published: true,
             shopifyStatus: "ACTIVE",
