@@ -95,6 +95,9 @@ type MerchantProduct = {
 };
 
 type AddProductDraft = {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
   title?: string;
   description?: string;
   basePriceInput?: string;
@@ -227,7 +230,16 @@ function hasAnyMeasurement(measurements?: ProductMeasurements | null) {
 
 // ---------------- Draft helpers ----------------
 function getAddProductDraftKey(uid: string | null) {
+  return `addProductDrafts:${uid ?? "anonymous"}`;
+}
+
+function getLegacyAddProductDraftKey(uid: string | null) {
   return `addProductDraft:${uid ?? "anonymous"}`;
+}
+
+function createDraftId() {
+  return globalThis.crypto?.randomUUID?.() ??
+    `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 async function saveAddProductDraft(
@@ -238,33 +250,75 @@ async function saveAddProductDraft(
   try {
     const key = getAddProductDraftKey(uid);
     const draft = stateReader();
-    localStorage.setItem(key, JSON.stringify(draft));
-    // no need to await
+    if (!draft.id) return;
+    const existing = await loadAddProductDrafts(uid);
+    const now = Date.now();
+    const current = existing.find((item) => item.id === draft.id);
+    const saved: AddProductDraft = {
+      ...current,
+      ...draft,
+      id: draft.id,
+      createdAt: current?.createdAt ?? draft.createdAt ?? now,
+      updatedAt: now,
+    };
+    localStorage.setItem(
+      key,
+      JSON.stringify([
+        saved,
+        ...existing.filter((item) => item.id !== saved.id),
+      ]),
+    );
   } catch (err) {
     console.warn("Failed to save add product draft", err);
   }
 }
 
-async function loadAddProductDraft(
+async function loadAddProductDrafts(
   uid: string | null,
-): Promise<AddProductDraft | null> {
-  if (!uid) return null;
+): Promise<AddProductDraft[]> {
+  if (!uid) return [];
   try {
     const key = getAddProductDraftKey(uid);
     const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    return JSON.parse(raw) as AddProductDraft;
+    if (raw) {
+      const drafts = JSON.parse(raw) as AddProductDraft[];
+      return Array.isArray(drafts) ? drafts : [];
+    }
+
+    const legacyKey = getLegacyAddProductDraftKey(uid);
+    const legacyRaw = localStorage.getItem(legacyKey);
+    if (!legacyRaw) return [];
+    const legacy = JSON.parse(legacyRaw) as Partial<AddProductDraft>;
+    const now = Date.now();
+    const migrated: AddProductDraft = {
+      ...legacy,
+      id: createDraftId(),
+      createdAt: now,
+      updatedAt: now,
+    };
+    localStorage.setItem(key, JSON.stringify([migrated]));
+    localStorage.removeItem(legacyKey);
+    return [migrated];
   } catch (err) {
     console.warn("Failed to load add product draft", err);
-    return null;
+    return [];
   }
 }
 
-function clearAddProductDraft(uid: string | null) {
+async function clearAddProductDraft(uid: string | null, draftId?: string | null) {
   if (!uid) return;
   try {
     const key = getAddProductDraftKey(uid);
-    localStorage.removeItem(key);
+    if (!draftId) {
+      localStorage.removeItem(key);
+      localStorage.removeItem(getLegacyAddProductDraftKey(uid));
+      return;
+    }
+    const existing = await loadAddProductDrafts(uid);
+    localStorage.setItem(
+      key,
+      JSON.stringify(existing.filter((draft) => draft.id !== draftId)),
+    );
   } catch (err) {
     console.warn("Failed to clear add product draft", err);
   }
@@ -323,11 +377,12 @@ export default function Products() {
     Record<string, string[]>
   >({});
   const skipNextDraftAutosave = useRef(false);
+  const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
 
   // ----- list / search -----
   const [uid, setUid] = useState<string | null>(auth.currentUser?.uid ?? null);
   const [products, setProducts] = useState<MerchantProduct[]>([]);
-  const [localDraft, setLocalDraft] = useState<AddProductDraft | null>(null);
+  const [localDrafts, setLocalDrafts] = useState<AddProductDraft[]>([]);
   const [search, setSearch] = useState("");
 
   // --- Bulk upload dialog state (kept as-is) ---
@@ -359,7 +414,11 @@ export default function Products() {
   }
 
   function readCurrentAddDraft(): AddProductDraft {
+    const now = Date.now();
     return {
+      id: activeDraftId ?? createDraftId(),
+      createdAt: now,
+      updatedAt: now,
       title: draftTitle || undefined,
       description: draftDescription || undefined,
       vendor: draftVendor || undefined,
@@ -443,8 +502,13 @@ export default function Products() {
 
   function handleClearAddProductForm() {
     skipNextDraftAutosave.current = true;
-    clearAddProductDraft(uid);
-    setLocalDraft(null);
+    if (activeDraftId) {
+      void clearAddProductDraft(uid, activeDraftId);
+      setLocalDrafts((drafts) =>
+        drafts.filter((draft) => draft.id !== activeDraftId),
+      );
+    }
+    setActiveDraftId(null);
     clearAddProductFormState(
       document.getElementById("add-product-form") as HTMLFormElement | null,
     );
@@ -459,7 +523,12 @@ export default function Products() {
 
     const draft = readCurrentAddDraft();
     await saveAddProductDraft(uid, () => draft);
-    setLocalDraft(draft);
+    setLocalDrafts((drafts) => [
+      draft,
+      ...drafts.filter((item) => item.id !== draft.id),
+    ]);
+    setActiveDraftId(null);
+    clearAddProductFormState();
     setIsAddProductOpen(false);
     toast.success("Draft saved locally. You can reopen it from Products.");
   }
@@ -486,12 +555,12 @@ export default function Products() {
 
   useEffect(() => {
     if (!uid) {
-      setLocalDraft(null);
+      setLocalDrafts([]);
       return;
     }
 
-    loadAddProductDraft(uid).then((draft) => {
-      setLocalDraft(draft);
+    loadAddProductDrafts(uid).then((drafts) => {
+      setLocalDrafts(drafts);
     });
   }, [uid]);
 
@@ -510,42 +579,44 @@ export default function Products() {
     return () => unsub();
   }, [uid]);
 
-  const localDraftProduct = useMemo<ProductListItem | null>(() => {
-    if (!localDraft || !localDraft.title?.trim()) return null;
+  const localDraftProducts = useMemo<ProductListItem[]>(
+    () =>
+      localDrafts
+        .filter((draft) => draft.title?.trim())
+        .map((draft) => {
+          const basePrice = Number(draft.basePriceInput || 0);
+          const finalPrice =
+            Number.isFinite(basePrice) && basePrice > 0
+              ? basePrice + (draft.handleDeliveryCharge ? 100 : 0)
+              : undefined;
 
-    const basePrice = Number(localDraft.basePriceInput || 0);
-    const finalPrice =
-      Number.isFinite(basePrice) && basePrice > 0
-        ? basePrice + (localDraft.handleDeliveryCharge ? 100 : 0)
-        : undefined;
-
-    return {
-      id: "__local_draft__",
-      title: localDraft.title || "Untitled local draft",
-      description: localDraft.description,
-      price: finalPrice,
-      productType: localDraft.productType,
-      collections: localDraft.collections,
-      status: "pending",
-      images: [],
-      image: localDraft.imagePreviews?.[0] ?? null,
-      sku: localDraft.sku,
-      tags: localDraft.tags,
-      vendor: localDraft.vendor,
-      measurements: localDraft.measurements,
-      isLocalDraft: true,
-      imagePreview: localDraft.imagePreviews?.[0] ?? null,
-      draft: localDraft,
-    };
-  }, [localDraft]);
+          return {
+            id: `__local_draft__:${draft.id}`,
+            title: draft.title || "Untitled local draft",
+            description: draft.description,
+            price: finalPrice,
+            productType: draft.productType,
+            collections: draft.collections,
+            status: "pending",
+            images: [],
+            image: draft.imagePreviews?.[0] ?? null,
+            sku: draft.sku,
+            tags: draft.tags,
+            vendor: draft.vendor,
+            measurements: draft.measurements,
+            isLocalDraft: true,
+            imagePreview: draft.imagePreviews?.[0] ?? null,
+            draft,
+          };
+        }),
+    [localDrafts],
+  );
 
   const filtered = useMemo<ProductListItem[]>(() => {
     const remoteProducts: ProductListItem[] = products.filter(
       (p) => p.status !== "deleted",
     );
-    const allProducts = localDraftProduct
-      ? [localDraftProduct, ...remoteProducts]
-      : remoteProducts;
+    const allProducts = [...localDraftProducts, ...remoteProducts];
 
     const s = search.trim().toLowerCase();
     if (!s) return allProducts;
@@ -555,7 +626,7 @@ export default function Products() {
         .toLowerCase()
         .includes(s),
     );
-  }, [products, search, localDraftProduct]);
+  }, [products, search, localDraftProducts]);
 
   /** ====== Variants builder state (used by Add & Edit) ====== */
   const [options, setOptions] = useState<VariantOption[]>([
@@ -731,7 +802,10 @@ export default function Products() {
       }
       const draft = readCurrentAddDraft();
       saveAddProductDraft(uid, () => draft);
-      setLocalDraft(draft);
+      setLocalDrafts((drafts) => [
+        draft,
+        ...drafts.filter((item) => item.id !== draft.id),
+      ]);
     }, 500);
 
     return () => clearTimeout(timeout);
@@ -770,6 +844,7 @@ export default function Products() {
     imagePreviews,
     options,
     variantRows,
+    activeDraftId,
   ]);
 
   /** ====== helpers ====== */
@@ -840,12 +915,13 @@ export default function Products() {
       setVariantRows(rowsMap);
     }
     if (saved.imagePreviews) setImagePreviews(saved.imagePreviews);
-    setLocalDraft(saved);
+    setActiveDraftId(saved.id);
   };
 
   const handleAddProduct = () => {
     skipNextDraftAutosave.current = true;
     clearAddProductFormState();
+    setActiveDraftId(createDraftId());
     setSubmitFeedback(null);
     setIsAddProductOpen(true);
   };
@@ -853,8 +929,12 @@ export default function Products() {
     if (!open && isAddProductOpen && uid) {
       const draft = readCurrentAddDraft();
       saveAddProductDraft(uid, () => draft);
-      setLocalDraft(draft);
+      setLocalDrafts((drafts) => [
+        draft,
+        ...drafts.filter((item) => item.id !== draft.id),
+      ]);
       skipNextDraftAutosave.current = true;
+      setActiveDraftId(null);
       clearAddProductFormState();
       toast.success("Progress saved as a local draft.");
     }
@@ -1248,8 +1328,11 @@ export default function Products() {
         "Product submitted for review. Admin will configure variants & publish.",
       );
       setSubmitFeedback("Product submitted successfully for admin review.");
-      clearAddProductDraft(uid);
-      setLocalDraft(null);
+      await clearAddProductDraft(uid, activeDraftId);
+      setLocalDrafts((drafts) =>
+        drafts.filter((draft) => draft.id !== activeDraftId),
+      );
+      setActiveDraftId(null);
       setIsAddProductOpen(false);
       clearAddProductFormState(formElement);
     } catch (err: any) {
@@ -2503,11 +2586,11 @@ export default function Products() {
                     </span>
                     <span className="font-medium">
                       {/* compute final price for display (treat empty as 0) */}
-                      â‚¹
+                      {"\u20B9"}
                       {(
                         Number(basePriceInput || 0) +
                         (handleDeliveryCharge ? 100 : 0)
-                      ).toLocaleString(undefined, {
+                      ).toLocaleString("en-IN", {
                         minimumFractionDigits: 0,
                         maximumFractionDigits: 2,
                       })}
@@ -2515,7 +2598,7 @@ export default function Products() {
                     <span className="ml-2 text-xs text-muted-foreground">
                       (
                       {handleDeliveryCharge
-                        ? "+â‚¹100 delivery"
+                        ? `+\u20B9100 delivery`
                         : "no delivery added"}
                       )
                     </span>
@@ -2806,7 +2889,7 @@ export default function Products() {
                         </TableCell>
                         <TableCell>
                           {p.price != null
-                            ? `â‚¹${Number(p.price).toLocaleString()}`
+                            ? `\u20B9${Number(p.price).toLocaleString("en-IN")}`
                             : "-"}
                         </TableCell>
                         <TableCell>
@@ -2834,8 +2917,15 @@ export default function Products() {
                                   variant="ghost"
                                   size="icon"
                                   onClick={() => {
-                                    clearAddProductDraft(uid);
-                                    setLocalDraft(null);
+                                    const draftId = p.draft?.id;
+                                    if (draftId) {
+                                      void clearAddProductDraft(uid, draftId);
+                                      setLocalDrafts((drafts) =>
+                                        drafts.filter(
+                                          (draft) => draft.id !== draftId,
+                                        ),
+                                      );
+                                    }
                                     toast.success("Local draft removed.");
                                   }}
                                   title="Remove local draft"
@@ -3101,7 +3191,7 @@ export default function Products() {
                             <th className="text-left p-2">Variant</th>
                             <th className="text-left p-2">SKU</th>
                             <th className="text-left p-2">Barcode</th>
-                            <th className="text-left p-2">Price (â‚¹)</th>
+                            <th className="text-left p-2">Price ({"\u20B9"})</th>
                             <th className="text-left p-2">Stock</th>
                             <th className="text-left p-2">Chest/Bust (in)</th>
                             <th className="text-left p-2">Waist (in)</th>
@@ -3258,8 +3348,8 @@ export default function Products() {
                   <div>
                     <span className="font-medium">Price:</span>{" "}
                     {deleteTarget.price != null
-                      ? `â‚¹${deleteTarget.price}`
-                      : "-"}
+                      ? `\u20B9${deleteTarget.price}`
+                      : "—"}
                   </div>
                   <div>
                     <span className="font-medium">SKU:</span>{" "}
@@ -3650,8 +3740,10 @@ function VariantPlanner(props: {
               <thead className="bg-muted/50">
                 <tr>
                   <th className="w-[140px] text-left p-2">Variant</th>
-                  <th className="w-[125px] text-left p-2">Price (â‚¹)</th>
-                  <th className="w-[140px] text-left p-2">Compare at (â‚¹)</th>
+                  <th className="w-[125px] text-left p-2">Price ({"\u20B9"})</th>
+                  <th className="w-[140px] text-left p-2">
+                    Compare at ({"\u20B9"})
+                  </th>
                   <th className="w-[160px] text-left p-2">SKU (optional)</th>
                   <th className="w-[90px] text-left p-2">Qty</th>
                   <th className="w-[140px] text-left p-2">Barcode</th>
