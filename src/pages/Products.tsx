@@ -228,6 +228,24 @@ function hasAnyMeasurement(measurements?: ProductMeasurements | null) {
   );
 }
 
+function hasMeaningfulAddDraft(draft: Partial<AddProductDraft>) {
+  return Boolean(
+    draft.title?.trim() ||
+      draft.description?.trim() ||
+      draft.vendor?.trim() ||
+      draft.sku?.trim() ||
+      draft.productType?.trim() ||
+      draft.basePriceInput ||
+      draft.compareAtPrice != null ||
+      draft.quantity != null ||
+      draft.singleColor?.trim() ||
+      (draft.imagePreviews?.length ?? 0) > 0 ||
+      (draft.options || []).some((option) => option.values.length > 0) ||
+      (draft.variantRows?.length ?? 0) > 0 ||
+      hasAnyMeasurement(draft.measurements),
+  );
+}
+
 // ---------------- Draft helpers ----------------
 function getAddProductDraftKey(uid: string | null) {
   return `addProductDrafts:${uid ?? "anonymous"}`;
@@ -500,6 +518,38 @@ export default function Products() {
     form?.reset();
   }
 
+  function clearSingleVariantDetails() {
+    setSelectedImages([]);
+    setImagePreviews([]);
+    setSingleColor("");
+    setDraftQuantity("");
+    setFallbackSize("M");
+    setDraftBustSize("");
+    setDraftWaistSize("");
+    setDraftHipSize("");
+    setDraftLengthSize("");
+    setDraftShoulderSize("");
+    setDraftInseamSize("");
+  }
+
+  function clearMultipleVariantDetails() {
+    setOptions([
+      { name: "Size", values: [] },
+      { name: "Color", values: [] },
+    ]);
+    setValueInputs(["", "", ""]);
+    setVariantRows({});
+    setVariantColorImages({});
+    setVariantColorImagePreviews({});
+  }
+
+  function switchVariantMode(mode: "single" | "multiple") {
+    if (mode === variantMode) return;
+    if (mode === "single") clearMultipleVariantDetails();
+    else clearSingleVariantDetails();
+    setVariantMode(mode);
+  }
+
   function handleClearAddProductForm() {
     skipNextDraftAutosave.current = true;
     if (activeDraftId) {
@@ -522,11 +572,13 @@ export default function Products() {
     }
 
     const draft = readCurrentAddDraft();
-    await saveAddProductDraft(uid, () => draft);
-    setLocalDrafts((drafts) => [
-      draft,
-      ...drafts.filter((item) => item.id !== draft.id),
-    ]);
+    if (hasMeaningfulAddDraft(draft)) {
+      await saveAddProductDraft(uid, () => draft);
+      setLocalDrafts((drafts) => [
+        draft,
+        ...drafts.filter((item) => item.id !== draft.id),
+      ]);
+    }
     setActiveDraftId(null);
     clearAddProductFormState();
     setIsAddProductOpen(false);
@@ -840,11 +892,13 @@ export default function Products() {
         return;
       }
       const draft = readCurrentAddDraft();
-      saveAddProductDraft(uid, () => draft);
-      setLocalDrafts((drafts) => [
-        draft,
-        ...drafts.filter((item) => item.id !== draft.id),
-      ]);
+      if (hasMeaningfulAddDraft(draft)) {
+        saveAddProductDraft(uid, () => draft);
+        setLocalDrafts((drafts) => [
+          draft,
+          ...drafts.filter((item) => item.id !== draft.id),
+        ]);
+      }
     }, 500);
 
     return () => clearTimeout(timeout);
@@ -967,15 +1021,18 @@ export default function Products() {
   const handleAddDialogOpenChange = (open: boolean) => {
     if (!open && isAddProductOpen && uid) {
       const draft = readCurrentAddDraft();
-      saveAddProductDraft(uid, () => draft);
-      setLocalDrafts((drafts) => [
-        draft,
-        ...drafts.filter((item) => item.id !== draft.id),
-      ]);
+      const shouldSaveDraft = hasMeaningfulAddDraft(draft);
+      if (shouldSaveDraft) {
+        saveAddProductDraft(uid, () => draft);
+        setLocalDrafts((drafts) => [
+          draft,
+          ...drafts.filter((item) => item.id !== draft.id),
+        ]);
+      }
       skipNextDraftAutosave.current = true;
       setActiveDraftId(null);
       clearAddProductFormState();
-      toast.success("Progress saved as a local draft.");
+      if (shouldSaveDraft) toast.success("Progress saved as a local draft.");
     }
     setIsAddProductOpen(open);
   };
@@ -1134,7 +1191,7 @@ export default function Products() {
     const description = String(form.get("description") || "").trim();
 
     const rawPrice =
-      basePriceInput !== "" ? basePriceInput : String(form.get("price") ?? "0");
+      basePriceInput !== "" ? basePriceInput : String(form.get("price") ?? "");
     const parsedPrice = Number(rawPrice || 0);
     const price = Number.isFinite(parsedPrice)
       ? parsedPrice + (handleDeliveryCharge ? 100 : 0)
@@ -1177,7 +1234,7 @@ export default function Products() {
       return showSubmitError("Please add one photo for the single variant.");
     if (!title) return showSubmitError("Product title is required.");
     if (!description) return showSubmitError("Product description is required.");
-    if (!Number.isFinite(price) || price <= 0)
+    if (rawPrice.trim() === "" || !Number.isFinite(parsedPrice) || parsedPrice <= 0)
       return showSubmitError("Please enter a valid selling price.");
     if (Number.isNaN(compareAtPrice))
       return showSubmitError("MRP is required.");
@@ -1220,6 +1277,17 @@ export default function Products() {
       return showSubmitError(
         "Add at least one complete variant combination before submitting.",
       );
+    }
+    if (
+      variantMode === "multiple" &&
+      Object.values(variantRows).some(
+        (row) =>
+          row.price == null ||
+          !Number.isFinite(Number(row.price)) ||
+          Number(row.price) <= 0,
+      )
+    ) {
+      return showSubmitError("Enter a selling price for every variant.");
     }
     if (
       variantMode === "multiple" &&
@@ -2273,7 +2341,7 @@ export default function Products() {
                 <div className="grid gap-3 sm:grid-cols-2">
                   <button
                     type="button"
-                    onClick={() => setVariantMode("single")}
+                    onClick={() => switchVariantMode("single")}
                     className={`rounded-lg border p-4 text-left transition-colors ${
                       variantMode === "single"
                         ? "border-primary bg-primary/5"
@@ -2287,7 +2355,7 @@ export default function Products() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setVariantMode("multiple")}
+                    onClick={() => switchVariantMode("multiple")}
                     className={`rounded-lg border p-4 text-left transition-colors ${
                       variantMode === "multiple"
                         ? "border-primary bg-primary/5"
@@ -3126,6 +3194,241 @@ export default function Products() {
                       onChange={(e) => setETags(e.target.value)}
                     />
                   </div>
+
+                <div className="grid grid-cols-2 gap-4 border-t pt-4">
+                  <div className="space-y-2">
+                    <Label>Vendor</Label>
+                    <Input
+                      placeholder="Brand name"
+                      value={eVendor}
+                      onChange={(event) => setEVendor(event.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Selling Price ({"\u20B9"})</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={ePrice}
+                      onChange={(event) =>
+                        setEPrice(
+                          event.target.value === ""
+                            ? ""
+                            : Number(event.target.value),
+                        )
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>MRP ({"\u20B9"})</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      placeholder="Compare at price"
+                      value={eCompareAt}
+                      onChange={(event) =>
+                        setECompareAt(
+                          event.target.value === ""
+                            ? ""
+                            : Number(event.target.value),
+                        )
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Stock</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      value={eStock}
+                      onChange={(event) =>
+                        setEStock(
+                          event.target.value === ""
+                            ? ""
+                            : Number(event.target.value),
+                        )
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Barcode (ISBN, UPC, etc.)</Label>
+                    <Input
+                      placeholder="123456789"
+                      value={eBarcode}
+                      onChange={(event) => setEBarcode(event.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Weight (grams)</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      placeholder="500"
+                      value={eWeight}
+                      onChange={(event) =>
+                        setEWeight(
+                          event.target.value === ""
+                            ? ""
+                            : Number(event.target.value),
+                        )
+                      }
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-4 rounded-lg border bg-muted/20 p-4">
+                  <div>
+                    <h3 className="font-semibold">Fallback Product Measurements</h3>
+                    <p className="text-xs text-muted-foreground">
+                      Update product-level measurements when there are no
+                      size-wise values, or use these as fallback values.
+                    </p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[130px_1fr_150px_150px_auto] lg:items-end">
+                    <div className="space-y-2">
+                      <Label>Size</Label>
+                      <Select
+                        value={fallbackSize}
+                        onValueChange={(value) => {
+                          setFallbackSize(value);
+                          autofillEditFallbackMeasurements(
+                            value,
+                            garmentCategory,
+                            fitType,
+                          );
+                        }}
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {sizesForCategory(garmentCategory).map((size) => (
+                            <SelectItem key={size} value={size}>{size}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Garment category</Label>
+                      <Select
+                        value={garmentCategory}
+                        onValueChange={(value) => {
+                          const category = value as GarmentCategory;
+                          setGarmentCategory(category);
+                          const categorySizes = sizesForCategory(category);
+                          const nextSize = categorySizes.includes(fallbackSize as never)
+                            ? fallbackSize
+                            : categorySizes[0];
+                          setFallbackSize(nextSize);
+                          autofillEditFallbackMeasurements(nextSize, category, fitType);
+                          generateVariants(category, fitType);
+                        }}
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Tops">Tops</SelectItem>
+                          <SelectItem value="Bottoms">Bottoms</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Fit type</Label>
+                      <Select
+                        value={fitType}
+                        onValueChange={(value) => {
+                          const fit = value as FitType;
+                          setFitType(fit);
+                          autofillEditFallbackMeasurements(
+                            fallbackSize,
+                            garmentCategory,
+                            fit,
+                          );
+                          generateVariants(garmentCategory, fit);
+                        }}
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Slim">Slim</SelectItem>
+                          <SelectItem value="Regular">Regular</SelectItem>
+                          <SelectItem value="Oversized">Oversized</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => autofillEditFallbackMeasurements()}
+                    >
+                      Auto-fill size
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="space-y-2">
+                      <Label>Chest/Bust (in)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.1"
+                        value={eBustSize}
+                        onChange={(event) =>
+                          setEBustSize(
+                            event.target.value === ""
+                              ? ""
+                              : Number(event.target.value),
+                          )
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Waist (in)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.1"
+                        value={eWaistSize}
+                        onChange={(event) =>
+                          setEWaistSize(
+                            event.target.value === ""
+                              ? ""
+                              : Number(event.target.value),
+                          )
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Hip (in)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.1"
+                        value={eHipSize}
+                        onChange={(event) =>
+                          setEHipSize(
+                            event.target.value === ""
+                              ? ""
+                              : Number(event.target.value),
+                          )
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Length (in)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.1"
+                        value={eLengthSize}
+                        onChange={(event) =>
+                          setELengthSize(
+                            event.target.value === ""
+                              ? ""
+                              : Number(event.target.value),
+                          )
+                        }
+                      />
+                    </div>
+                  </div>
+                </div>
 
                 {/* Variant images */}
                 <div className="border-t pt-4 space-y-3">
