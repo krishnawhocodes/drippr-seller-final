@@ -452,7 +452,7 @@ async function associateVariantMedia(args: {
   mediaIdBySource: Map<string, string>;
 }) {
   const variantMedia = args.createdVariants
-    .map((variant: any) => {
+    .flatMap((variant: any) => {
       const createdOptionKey = Array.isArray(variant?.selectedOptions)
         ? variant.selectedOptions
             .map((option: any) => String(option?.value || "").trim())
@@ -472,8 +472,8 @@ async function associateVariantMedia(args: {
         ),
       ];
       return variant?.id && mediaIds.length
-        ? { variantId: variant.id, mediaIds }
-        : null;
+        ? mediaIds.map((mediaId) => ({ variantId: variant.id, mediaIds: [mediaId] }))
+        : [];
     })
     .filter(Boolean);
 

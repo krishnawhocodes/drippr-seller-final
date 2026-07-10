@@ -1139,6 +1139,15 @@ export default function Products() {
     return target.resourceUrl;
   }
 
+  async function dataUrlToFile(dataUrl: string, index: number) {
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    const extension = blob.type.split("/")[1] || "jpg";
+    return new File([blob], `single-variant-draft-${index + 1}.${extension}`, {
+      type: blob.type || "image/jpeg",
+    });
+  }
+
   async function uploadPendingReviewImage(idToken: string, file: File) {
     const signResponse = await fetch("/api/admin/products/update", {
       method: "POST",
@@ -1230,8 +1239,12 @@ export default function Products() {
     };
 
     // --- required checks per your request ---
-    if (variantMode === "single" && selectedImages.length === 0)
-      return showSubmitError("Please add one photo for the single variant.");
+    if (
+      variantMode === "single" &&
+      selectedImages.length === 0 &&
+      imagePreviews.length === 0
+    )
+      return showSubmitError("Please add at least one photo for the single variant.");
     if (!title) return showSubmitError("Product title is required.");
     if (!description) return showSubmitError("Product description is required.");
     if (rawPrice.trim() === "" || !Number.isFinite(parsedPrice) || parsedPrice <= 0)
@@ -1340,8 +1353,24 @@ export default function Products() {
       setBusy(true);
       const idToken = await getIdToken();
 
+      const restoredPreviewFiles =
+        variantMode === "single" && selectedImages.length === 0
+          ? await Promise.all(
+              imagePreviews
+                .filter((preview) => preview.startsWith("data:"))
+                .slice(0, 5)
+                .map((preview, index) => dataUrlToFile(preview, index)),
+            )
+          : [];
       const localFiles =
-        variantMode === "single" ? selectedImages.slice(0, 5) : [];
+        variantMode === "single"
+          ? (selectedImages.length ? selectedImages : restoredPreviewFiles).slice(0, 5)
+          : [];
+      if (variantMode === "single" && !localFiles.length) {
+        return showSubmitError(
+          "Please re-upload at least one product photo before submitting.",
+        );
+      }
       let resourceUrls: string[] = [];
       if (localFiles.length) {
         const targets = await startStagedUploads(idToken, localFiles);
