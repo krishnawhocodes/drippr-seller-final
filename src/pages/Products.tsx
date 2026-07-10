@@ -56,7 +56,7 @@ import {
   where,
 } from "firebase/firestore";
 import type { FitType, GarmentCategory, Variant } from "@/lib/types";
-import { GARMENT_SIZES, measurementsForVariant } from "@/lib/sizing";
+import { GARMENT_SIZES, measurementsForVariant, sizesForCategory } from "@/lib/sizing";
 
 /** ---------------- Types ---------------- */
 type StagedTarget = {
@@ -660,6 +660,34 @@ export default function Products() {
     };
   }
 
+  function getRequiredMeasurementFields(category: GarmentCategory) {
+    return category === "Tops"
+      ? (["bust", "shoulder", "length"] as const)
+      : (["waist"] as const);
+  }
+
+  function missingProductMeasurements(
+    measurements: ProductMeasurements,
+    category: GarmentCategory,
+  ) {
+    return getRequiredMeasurementFields(category).filter(
+      (field) => typeof measurements[field] !== "number",
+    );
+  }
+
+  function missingVariantMeasurements(
+    row: VariantRow,
+    category: GarmentCategory,
+  ) {
+    const fields =
+      category === "Tops"
+        ? (["chest", "shoulder", "length"] as const)
+        : (["waist"] as const);
+    return fields.filter(
+      (field) => typeof row.measurements?.[field] !== "number",
+    );
+  }
+
   function generateVariants(
     category: GarmentCategory = garmentCategory,
     fit: FitType = fitType,
@@ -692,6 +720,17 @@ export default function Products() {
     );
     const garmentLength = generated.length ?? generated.inseam;
     setDraftLengthSize(garmentLength == null ? "" : String(garmentLength));
+  }
+
+  function handleGarmentCategoryChange(category: GarmentCategory) {
+    setGarmentCategory(category);
+    const categorySizes = sizesForCategory(category);
+    const nextSize = categorySizes.includes(fallbackSize as never)
+      ? fallbackSize
+      : categorySizes[0];
+    setFallbackSize(nextSize);
+    autofillFallbackMeasurements(nextSize, category, fitType);
+    generateVariants(category, fitType);
   }
 
   function setOptionName(idx: number, name: string) {
@@ -943,15 +982,24 @@ export default function Products() {
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    const file = files[0];
-    if (!file) return;
-    setSelectedImages([file]);
-    setImagePreviews([]);
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setImagePreviews([String(reader.result || "")]);
-    };
-    reader.readAsDataURL(file);
+    if (!files.length) return;
+    const remainingSlots = Math.max(0, 5 - selectedImages.length);
+    const filesToAdd = files.slice(0, remainingSlots);
+    if (files.length > filesToAdd.length) {
+      toast.error("You can upload up to 5 photos for the single variant.");
+    }
+    if (!filesToAdd.length) {
+      e.target.value = "";
+      return;
+    }
+    setSelectedImages((current) => [...current, ...filesToAdd]);
+    filesToAdd.forEach((file) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setImagePreviews((current) => [...current, String(reader.result || "")]);
+      };
+      reader.readAsDataURL(file);
+    });
     e.target.value = "";
   };
 
@@ -1096,7 +1144,8 @@ export default function Products() {
       compareAtPriceRaw === "" ? NaN : Number(compareAtPriceRaw);
     const cost = Number(form.get("cost") || 0) || undefined;
     const barcode = String(form.get("barcode") || "").trim() || undefined;
-    const weightGrams = Number(form.get("weight") || 0) || undefined;
+    const weightRaw = String(form.get("weight") ?? "");
+    const weightGrams = weightRaw === "" ? undefined : Number(weightRaw);
     const quantityRaw = String(form.get("quantity") ?? "");
     const quantity = quantityRaw === "" ? null : Number(quantityRaw);
 
@@ -1134,6 +1183,13 @@ export default function Products() {
       return showSubmitError("MRP is required.");
     if (!sku) return showSubmitError("SKU is required.");
     if (
+      weightGrams == null ||
+      !Number.isFinite(weightGrams) ||
+      Number(weightGrams) <= 0
+    ) {
+      return showSubmitError("Product weight is required.");
+    }
+    if (
       variantMode === "single" &&
       (quantity === null || !Number.isFinite(quantity) || quantity < 0)
     ) {
@@ -1145,6 +1201,17 @@ export default function Products() {
       return showSubmitError("SEO Title and SEO Description are required.");
     if (variantMode === "single" && !singleColor.trim())
       return showSubmitError("Color is required for the single variant.");
+    if (variantMode === "single") {
+      const missingMeasurements = missingProductMeasurements(
+        measurements,
+        garmentCategory,
+      );
+      if (missingMeasurements.length) {
+        return showSubmitError(
+          "Please add all required garment measurements for the selected category.",
+        );
+      }
+    }
     if (
       variantMode === "multiple" &&
       (options.every((option) => option.values.length === 0) ||
@@ -1164,6 +1231,27 @@ export default function Products() {
       )
     ) {
       return showSubmitError("Enter a quantity for every variant.");
+    }
+    if (
+      variantMode === "multiple" &&
+      Object.values(variantRows).some(
+        (row) =>
+          row.weightGrams == null ||
+          !Number.isFinite(Number(row.weightGrams)) ||
+          Number(row.weightGrams) <= 0,
+      )
+    ) {
+      return showSubmitError("Enter product weight for every variant.");
+    }
+    if (
+      variantMode === "multiple" &&
+      Object.values(variantRows).some(
+        (row) => missingVariantMeasurements(row, garmentCategory).length > 0,
+      )
+    ) {
+      return showSubmitError(
+        "Please add all required garment measurements for every variant.",
+      );
     }
     if (variantMode === "multiple") {
       const colorOption = options.find(
@@ -1185,7 +1273,7 @@ export default function Products() {
       const idToken = await getIdToken();
 
       const localFiles =
-        variantMode === "single" ? selectedImages.slice(0, 1) : [];
+        variantMode === "single" ? selectedImages.slice(0, 5) : [];
       let resourceUrls: string[] = [];
       if (localFiles.length) {
         const targets = await startStagedUploads(idToken, localFiles);
@@ -2234,7 +2322,7 @@ export default function Products() {
                       Single variant photo <span className="text-destructive">*</span>
                     </Label>
                     <p className="text-xs text-muted-foreground">
-                      Upload one clear primary photo for this product.
+                      Upload up to 5 clear photos for this variant.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-4">
@@ -2260,11 +2348,12 @@ export default function Products() {
                     <label className="flex h-28 w-40 cursor-pointer flex-col items-center justify-center rounded-md border-2 border-dashed hover:bg-muted/50">
                       <Upload className="mb-2 h-5 w-5 text-muted-foreground" />
                       <span className="text-sm font-medium">
-                        {selectedImages.length ? "Replace photo" : "Upload photo"}
+                         {selectedImages.length ? "Add more photos" : "Upload photos"}
                       </span>
                       <input
                         type="file"
                         accept="image/png,image/jpeg,image/jpg,image/webp"
+                        multiple
                         className="hidden"
                         onChange={handleImageSelect}
                       />
@@ -2284,7 +2373,7 @@ export default function Products() {
                     >
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        {GARMENT_SIZES.map((size) => (
+                        {sizesForCategory(garmentCategory).map((size) => (
                           <SelectItem key={size} value={size}>{size}</SelectItem>
                         ))}
                       </SelectContent>
@@ -2304,10 +2393,7 @@ export default function Products() {
                     <Select
                       value={garmentCategory}
                       onValueChange={(value) => {
-                        const category = value as GarmentCategory;
-                        setGarmentCategory(category);
-                        autofillFallbackMeasurements(fallbackSize, category, fitType);
-                        generateVariants(category, fitType);
+                        handleGarmentCategoryChange(value as GarmentCategory);
                       }}
                     >
                       <SelectTrigger><SelectValue /></SelectTrigger>
@@ -2361,7 +2447,7 @@ export default function Products() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   {garmentCategory === "Tops" && (
                   <div className="space-y-2">
-                    <Label htmlFor="bust-size">Chest/Bust (in)</Label>
+                    <Label htmlFor="bust-size">Chest/Bust (in) <span className="text-destructive">*</span></Label>
                     <Input
                       id="bust-size"
                       name="bust-size"
@@ -2376,7 +2462,7 @@ export default function Products() {
                   )}
 
                   <div className="space-y-2">
-                    <Label htmlFor="waist-size">Waist Size (in)</Label>
+                    <Label htmlFor="waist-size">Waist Size (in) {garmentCategory === "Bottoms" && <span className="text-destructive">*</span>}</Label>
                     <Input
                       id="waist-size"
                       name="waist-size"
@@ -2407,7 +2493,7 @@ export default function Products() {
 
                   {garmentCategory === "Tops" && (
                   <div className="space-y-2">
-                    <Label htmlFor="shoulder-size">Shoulder (in)</Label>
+                    <Label htmlFor="shoulder-size">Shoulder (in) <span className="text-destructive">*</span></Label>
                     <Input
                       id="shoulder-size"
                       name="shoulder-size"
@@ -2438,7 +2524,7 @@ export default function Products() {
                   )}
 
                   <div className="space-y-2">
-                    <Label htmlFor="length-size">Length Size (in)</Label>
+                    <Label htmlFor="length-size">Length Size (in) {garmentCategory === "Tops" && <span className="text-destructive">*</span>}</Label>
                     <Input
                       id="length-size"
                       name="length-size"
@@ -2477,7 +2563,7 @@ export default function Products() {
                           {option}
                         </SelectItem>
                       ))}
-                      <SelectItem value="__custom__">Add your ownâ€¦</SelectItem>
+                      <SelectItem value="__custom__">Add your own...</SelectItem>
                     </SelectContent>
                   </Select>
                   {useCustomProductType && (
@@ -2664,13 +2750,16 @@ export default function Products() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="weight">Weight (grams)</Label>
+                  <Label htmlFor="weight">
+                    Weight (grams) <span className="text-destructive">*</span>
+                  </Label>
                   <Input
                     id="weight"
                     name="weight"
                     type="number"
                     placeholder="500"
                     min={0}
+                    required
                     value={draftWeight}
                     onChange={(e) => setDraftWeight(e.target.value)}
                   />
@@ -2776,7 +2865,7 @@ export default function Products() {
                   disabled={busy}
                   onClick={handleSubmitForReviewClick}
                 >
-                  {busy ? "Submittingâ€¦" : "Submit for review"}
+                  {busy ? "Submitting..." : "Submit for review"}
                 </Button>
                 </div>
               </div>
@@ -3014,7 +3103,7 @@ export default function Products() {
                           </SelectItem>
                         ))}
                         <SelectItem value="__custom__">
-                          Add your ownâ€¦
+                          Add your own...
                         </SelectItem>
                       </SelectContent>
                     </Select>
@@ -3049,7 +3138,7 @@ export default function Products() {
                   </div>
 
                   {loadingDetails ? (
-                    <div className="text-sm text-muted-foreground">Loading variant photosâ€¦</div>
+                    <div className="text-sm text-muted-foreground">Loading variant photos...</div>
                   ) : editColorGroups.length === 0 ? (
                     <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
                       No live variants were found for photo assignment.
@@ -3103,7 +3192,7 @@ export default function Products() {
                                       className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-xs text-destructive-foreground"
                                       aria-label={`Remove pending ${group.label} photo ${index + 1}`}
                                     >
-                                      Ã—
+                                      {"\u00D7"}
                                     </button>
                                   </div>
                                 ))}
@@ -3127,13 +3216,13 @@ export default function Products() {
                       }
                     >
                       <ImageMinus className="h-4 w-4 mr-2" />
-                      {imageBusy ? "Removingâ€¦" : "Remove selected"}
+                      {imageBusy ? "Removing..." : "Remove selected"}
                     </Button>
                   </div>
 
                   {loadingDetails ? (
                     <div className="text-sm text-muted-foreground">
-                      Loading imagesâ€¦
+                      Loading images...
                     </div>
                   ) : imagesLive.length === 0 ? (
                     <div className="text-sm text-muted-foreground">
@@ -3177,7 +3266,7 @@ export default function Products() {
                   </h3>
                   {loadingDetails ? (
                     <div className="text-sm text-muted-foreground">
-                      Loading variantsâ€¦
+                      Loading variants...
                     </div>
                   ) : existingVariants.length === 0 ? (
                     <div className="text-sm text-muted-foreground">
@@ -3212,8 +3301,8 @@ export default function Products() {
                                 <td className="p-2">
                                   {v.optionValues?.join(" / ") || v.title}
                                 </td>
-                                <td className="p-2">{v.sku || "â€”"}</td>
-                                <td className="p-2">{v.barcode || "â€”"}</td>
+                                <td className="p-2">{v.sku || "\u2014"}</td>
+                                <td className="p-2">{v.barcode || "\u2014"}</td>
                                 <td className="p-2 w-[160px]">
                                   <Input
                                     type="number"
@@ -3292,7 +3381,7 @@ export default function Products() {
                   </p>
                 </div>
 
-                {/* Add more variants (planner â†’ review) */}
+                {/* Add more variants (planner to review) */}
                 <div className="border-t pt-4">
                   <h3 className="font-semibold mb-2">
                     Add more variants (sent to admin)
@@ -3353,7 +3442,7 @@ export default function Products() {
                   </div>
                   <div>
                     <span className="font-medium">SKU:</span>{" "}
-                    {deleteTarget.sku || "â€”"}
+                    {deleteTarget.sku || "\u2014"}
                   </div>
                 </div>
                 <p className="text-sm">
@@ -3416,7 +3505,7 @@ export default function Products() {
                   >
                     download from here
                   </a>
-                  . The first sheetâ€™s first row must be headers. See the sample
+                  . The first sheet's first row must be headers. See the sample
                   file{" "}
                   <a
                     href="https://seller.drippr.in/download/DRIPPR_Bulk_Template_Sample_D1.xlsx"
@@ -3472,7 +3561,7 @@ export default function Products() {
                   onClick={runBulkUpload}
                   disabled={!bulkFile || bulkRunning}
                 >
-                  {bulkRunning ? "Uploadingâ€¦" : "Start upload"}
+                  {bulkRunning ? "Uploading..." : "Start upload"}
                 </Button>
               </div>
             </div>
@@ -3585,7 +3674,7 @@ function VariantPlanner(props: {
                   onClick={() => removeValue(idx, v)}
                   title="Click to remove"
                 >
-                  {v} <span className="ml-1 opacity-60">Ã—</span>
+                  {v} <span className="ml-1 opacity-60">{"\u00D7"}</span>
                 </Badge>
               ))}
             </div>
@@ -3635,7 +3724,7 @@ function VariantPlanner(props: {
               Photos for each colour <span className="text-destructive">*</span>
             </Label>
             <p className="text-xs text-muted-foreground">
-              Add 1â€“5 photos per colour. Each set is linked to every size
+              Add 1-5 photos per colour. Each set is linked to every size
               using that colour, so customers never see another colour's photos.
             </p>
           </div>
@@ -3678,7 +3767,7 @@ function VariantPlanner(props: {
                           className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-xs text-destructive-foreground"
                           aria-label={`Remove ${color} image ${index + 1}`}
                         >
-                          Ã—
+                          {"\u00D7"}
                         </button>
                       </div>
                     ),
@@ -3747,10 +3836,17 @@ function VariantPlanner(props: {
                   <th className="w-[160px] text-left p-2">SKU (optional)</th>
                   <th className="w-[90px] text-left p-2">Qty</th>
                   <th className="w-[140px] text-left p-2">Barcode</th>
-                  <th className="w-[105px] text-left p-2">Weight (g)</th>
+                  <th className="w-[105px] text-left p-2">
+                    Weight (g) <span className="text-destructive">*</span>
+                  </th>
                   {measurementFields.map((field) => (
                     <th key={field} className="w-[115px] text-left p-2">
-                      {measurementLabels[field]}
+                      {measurementLabels[field]}{" "}
+                      {(
+                        garmentCategory === "Tops"
+                          ? ["chest", "length", "shoulder"].includes(field)
+                          : field === "waist"
+                      ) && <span className="text-destructive">*</span>}
                     </th>
                   ))}
                 </tr>
