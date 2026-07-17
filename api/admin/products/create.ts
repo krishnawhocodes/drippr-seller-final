@@ -244,6 +244,9 @@ function validateCreatePayload(args: {
   if (variants.some((variant: any) => !isPositiveNumber(variant.price))) {
     return "Enter a selling price for every variant.";
   }
+  if (variants.some((variant: any) => !isPositiveNumber(variant.compareAtPrice))) {
+    return "Enter MRP for every variant.";
+  }
   if (variants.some((variant: any) => !isNonNegativeNumber(variant.quantity))) {
     return "Enter a quantity for every variant.";
   }

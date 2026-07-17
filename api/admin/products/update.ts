@@ -643,11 +643,47 @@ export default async function handler(req: any, res: any) {
         const fallbackImages = [
           ...(Array.isArray(doc.images) ? doc.images : []),
           ...(Array.isArray(doc.imageUrls) ? doc.imageUrls : []),
+          ...(Array.isArray(doc.variantDraft?.variants)
+            ? doc.variantDraft.variants.flatMap((variant: any) =>
+                Array.isArray(variant?.mediaUrls) ? variant.mediaUrls : [],
+              )
+            : []),
+          ...(Array.isArray(doc.pendingUpdates?.variantDraft?.variants)
+            ? doc.pendingUpdates.variantDraft.variants.flatMap((variant: any) =>
+                Array.isArray(variant?.mediaUrls) ? variant.mediaUrls : [],
+              )
+            : []),
           doc.image,
         ]
           .map((url: unknown) => String(url || "").trim())
           .filter(Boolean);
         imagesLive = [...new Set([...imagesLive, ...fallbackImages])];
+
+        const savedVariantMedia = [
+          ...(Array.isArray(doc.variantDraft?.variants)
+            ? doc.variantDraft.variants
+            : []),
+          ...(Array.isArray(doc.pendingUpdates?.variantDraft?.variants)
+            ? doc.pendingUpdates.variantDraft.variants
+            : []),
+        ];
+        if (savedVariantMedia.length && variants.length) {
+          variants = variants.map((variant: any) => {
+            if (variant.mediaUrls?.length) return variant;
+            const optionKey = (variant.optionValues || [])
+              .map((value: unknown) => String(value).trim())
+              .join("|");
+            const saved = savedVariantMedia.find(
+              (item: any) =>
+                (item.optionValues || item.options || [])
+                  .map((value: unknown) => String(value).trim())
+                  .join("|") === optionKey,
+            );
+            return Array.isArray(saved?.mediaUrls) && saved.mediaUrls.length
+              ? { ...variant, mediaUrls: saved.mediaUrls }
+              : variant;
+          });
+        }
 
         const firstVariant = variants[0] || {};
 

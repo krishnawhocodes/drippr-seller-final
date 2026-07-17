@@ -85,6 +85,7 @@ type MerchantProduct = {
   collections?: string[];
   status?: "pending" | "approved" | "rejected" | "update_in_review" | "deleted";
   images?: string[];
+  imageUrls?: string[];
   image?: string | null;
   createdAt?: number;
   sku?: string; // now used for delete confirmation & required on create
@@ -122,6 +123,7 @@ type AddProductDraft = {
   statusSel?: "active" | "draft";
   handleDeliveryCharge?: boolean;
   imagePreviews?: string[]; // data URLs
+  variantColorImagePreviews?: Record<string, string[]>; // data URLs by color
   options?: VariantOption[];
   garmentCategory?: GarmentCategory;
   fitType?: FitType;
@@ -245,6 +247,9 @@ function hasMeaningfulAddDraft(draft: Partial<AddProductDraft>) {
       draft.quantity != null ||
       draft.singleColor?.trim() ||
       (draft.imagePreviews?.length ?? 0) > 0 ||
+      Object.values(draft.variantColorImagePreviews || {}).some(
+        (previews) => previews.length > 0,
+      ) ||
       (draft.options || []).some((option) => option.values.length > 0) ||
       (draft.variantRows?.length ?? 0) > 0 ||
       hasAnyMeasurement(draft.measurements),
@@ -465,6 +470,7 @@ export default function Products() {
       statusSel,
       handleDeliveryCharge,
       imagePreviews,
+      variantColorImagePreviews,
       options,
       garmentCategory,
       fitType,
@@ -656,13 +662,23 @@ export default function Products() {
             collections: draft.collections,
             status: "pending",
             images: [],
-            image: draft.imagePreviews?.[0] ?? null,
+            image:
+              draft.imagePreviews?.[0] ??
+              Object.values(draft.variantColorImagePreviews || {}).find(
+                (previews) => previews.length,
+              )?.[0] ??
+              null,
             sku: draft.sku,
             tags: draft.tags,
             vendor: draft.vendor,
             measurements: draft.measurements,
             isLocalDraft: true,
-            imagePreview: draft.imagePreviews?.[0] ?? null,
+            imagePreview:
+              draft.imagePreviews?.[0] ??
+              Object.values(draft.variantColorImagePreviews || {}).find(
+                (previews) => previews.length,
+              )?.[0] ??
+              null,
             draft,
           };
         }),
@@ -942,6 +958,7 @@ export default function Products() {
     imagePreviews,
     options,
     variantRows,
+    variantColorImagePreviews,
     activeDraftId,
   ]);
 
@@ -1013,6 +1030,8 @@ export default function Products() {
       setVariantRows(rowsMap);
     }
     if (saved.imagePreviews) setImagePreviews(saved.imagePreviews);
+    if (saved.variantColorImagePreviews)
+      setVariantColorImagePreviews(saved.variantColorImagePreviews);
     setActiveDraftId(saved.id);
   };
 
@@ -1311,6 +1330,17 @@ export default function Products() {
       variantMode === "multiple" &&
       Object.values(variantRows).some(
         (row) =>
+          row.compareAtPrice == null ||
+          !Number.isFinite(Number(row.compareAtPrice)) ||
+          Number(row.compareAtPrice) <= 0,
+      )
+    ) {
+      return showSubmitError("Enter MRP for every variant.");
+    }
+    if (
+      variantMode === "multiple" &&
+      Object.values(variantRows).some(
+        (row) =>
           row.quantity == null ||
           !Number.isFinite(Number(row.quantity)) ||
           Number(row.quantity) < 0,
@@ -1347,7 +1377,9 @@ export default function Products() {
         return showSubmitError("Add a Color option for variant-wise photos.");
       }
       const missingColor = colorOption.values.find(
-        (color) => !(variantColorImages[color] || []).length,
+        (color) =>
+          !(variantColorImages[color] || []).length &&
+          !(variantColorImagePreviews[color] || []).length,
       );
       if (missingColor) {
         return showSubmitError(`Add at least one photo for ${missingColor}.`);
@@ -1393,9 +1425,27 @@ export default function Products() {
       );
       const variantColorMediaUrls: Record<string, string[]> = {};
       if (variantMode === "multiple") {
-        const colorFiles = Object.entries(variantColorImages).flatMap(
-          ([color, files]) => files.map((file) => ({ color, file })),
+        const restoredColorFiles = await Promise.all(
+          Object.entries(variantColorImagePreviews).flatMap(([color, previews]) =>
+            (previews || [])
+              .filter(
+                (preview) =>
+                  preview.startsWith("data:") &&
+                  !(variantColorImages[color] || []).length,
+              )
+              .slice(0, 5)
+              .map(async (preview, index) => ({
+                color,
+                file: await dataUrlToFile(preview, index),
+              })),
+          ),
         );
+        const colorFiles = [
+          ...Object.entries(variantColorImages).flatMap(([color, files]) =>
+            files.map((file) => ({ color, file })),
+          ),
+          ...restoredColorFiles,
+        ];
         if (colorFiles.length) {
           const targets = await startStagedUploads(
             idToken,
@@ -1863,7 +1913,18 @@ export default function Products() {
     setImageAddFiles([]);
     setEditColorImageFiles({});
     setEditColorImagePreviews({});
+    setVariantColorImages({});
+    setVariantColorImagePreviews({});
     setExistingProductOptions([]);
+    setImagesLive(
+      [
+        ...(Array.isArray(p.images) ? p.images : []),
+        ...(Array.isArray(p.imageUrls) ? p.imageUrls : []),
+        p.image,
+      ]
+        .map((url) => String(url || "").trim())
+        .filter(Boolean),
+    );
     setDeleteSel({});
     setVariantMeasurementEdits({});
     setIsEditOpen(true);
@@ -1998,6 +2059,20 @@ export default function Products() {
         (o) => (o?.name || "").trim() && o.values.length > 0,
       );
       if (enabledOptions.length > 0 && Object.keys(variantRows).length > 0) {
+        const colorOptionIndex = enabledOptions.findIndex(
+          (option) => option.name.trim().toLowerCase() === "color",
+        );
+        const newVariantColorMediaUrls: Record<string, string[]> = {};
+        const newVariantColorFiles = Object.entries(variantColorImages).flatMap(
+          ([color, files]) => files.map((file) => ({ color, file })),
+        );
+        for (const item of newVariantColorFiles) {
+          const resourceUrl = await uploadPendingReviewImage(idToken, item.file);
+          newVariantColorMediaUrls[item.color] = [
+            ...(newVariantColorMediaUrls[item.color] || []),
+            resourceUrl,
+          ];
+        }
         payload.variantDraft = {
           options: enabledOptions,
           variants: Object.values(variantRows).map((v) => ({
@@ -2012,6 +2087,10 @@ export default function Products() {
             measurements: hasAnyMeasurement(v.measurements)
               ? v.measurements
               : null,
+            mediaUrls:
+              colorOptionIndex >= 0
+                ? newVariantColorMediaUrls[v.options[colorOptionIndex]] || []
+                : [],
           })),
         };
       }
@@ -4094,6 +4173,9 @@ export default function Products() {
                     comboKeys={comboKeys}
                     variantRows={variantRows}
                     setVariantRows={setVariantRows}
+                    variantColorImagePreviews={variantColorImagePreviews}
+                    onAddVariantColorImages={addVariantColorImages}
+                    onRemoveVariantColorImage={removeVariantColorImage}
                   />
                 </div>
 
@@ -4520,13 +4602,17 @@ function VariantPlanner(props: {
               <thead className="bg-muted/50">
                 <tr>
                   <th className="w-[140px] text-left p-2">Variant</th>
-                  <th className="w-[125px] text-left p-2">Price ({"\u20B9"})</th>
+                  <th className="w-[125px] text-left p-2">
+                    Price ({"\u20B9"}) <span className="text-destructive">*</span>
+                  </th>
                   <th className="w-[140px] text-left p-2">
-                    Compare at ({"\u20B9"})
+                    Compare at ({"\u20B9"}) <span className="text-destructive">*</span>
                   </th>
                   <th className="w-[160px] text-left p-2">SKU (optional)</th>
-                  <th className="w-[90px] text-left p-2">Qty</th>
-                  <th className="w-[140px] text-left p-2">Barcode</th>
+                  <th className="w-[90px] text-left p-2">
+                    Qty <span className="text-destructive">*</span>
+                  </th>
+                  <th className="w-[140px] text-left p-2">Barcode (optional)</th>
                   <th className="w-[105px] text-left p-2">
                     Weight (g) <span className="text-destructive">*</span>
                   </th>
@@ -4554,6 +4640,7 @@ function VariantPlanner(props: {
                           type="number"
                           min={0}
                           step="0.01"
+                          required
                           value={row?.price ?? ""}
                           onChange={(e) =>
                             setVariantRows((prev) => ({
@@ -4573,6 +4660,7 @@ function VariantPlanner(props: {
                           type="number"
                           min={0}
                           step="0.01"
+                          required
                           value={row?.compareAtPrice ?? ""}
                           onChange={(e) =>
                             setVariantRows((prev) => ({
@@ -4603,6 +4691,7 @@ function VariantPlanner(props: {
                         <Input
                           type="number"
                           min={0}
+                          required
                           value={row?.quantity ?? ""}
                           onChange={(e) =>
                             setVariantRows((prev) => ({
@@ -4632,6 +4721,7 @@ function VariantPlanner(props: {
                         <Input
                           type="number"
                           min={0}
+                          required
                           value={row?.weightGrams ?? ""}
                           onChange={(e) =>
                             setVariantRows((prev) => ({
@@ -4649,11 +4739,16 @@ function VariantPlanner(props: {
                       {measurementFields.map(
                         (field) => (
                           <td key={field} className="p-2">
-                            <Input
-                              type="number"
-                              min={0}
-                              step="0.1"
-                              value={row?.measurements?.[field] ?? ""}
+                              <Input
+                                type="number"
+                                min={0}
+                                step="0.1"
+                                required={
+                                  garmentCategory === "Tops"
+                                    ? ["chest", "length", "shoulder"].includes(field)
+                                    : field === "waist"
+                                }
+                                value={row?.measurements?.[field] ?? ""}
                               onChange={(e) =>
                                 setVariantRows((prev) => ({
                                   ...prev,
