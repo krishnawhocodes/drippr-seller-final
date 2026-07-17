@@ -92,6 +92,10 @@ type MerchantProduct = {
   tags?: string[];
   vendor?: string | null;
   measurements?: ProductMeasurements | null;
+  compareAtPrice?: number | null;
+  barcode?: string | null;
+  weightGrams?: number | null;
+  seo?: { title?: string; description?: string } | null;
 };
 
 type AddProductDraft = {
@@ -184,6 +188,7 @@ type ExistingVariant = {
   title: string;
   optionValues: string[]; // ["Red","M"]
   price?: number;
+  compareAtPrice?: number;
   quantity?: number;
   sku?: string;
   barcode?: string;
@@ -1546,10 +1551,14 @@ export default function Products() {
   const [eCustomCollectionName, setECustomCollectionName] = useState("");
   const [eVendor, setEVendor] = useState("");
   const [eTags, setETags] = useState("");
+  const [eSeoTitle, setESeoTitle] = useState("");
+  const [eSeoDesc, setESeoDesc] = useState("");
   const [eBustSize, setEBustSize] = useState<number | "">("");
   const [eWaistSize, setEWaistSize] = useState<number | "">("");
   const [eHipSize, setEHipSize] = useState<number | "">("");
   const [eLengthSize, setELengthSize] = useState<number | "">("");
+  const [eShoulderSize, setEShoulderSize] = useState<number | "">("");
+  const [eInseamSize, setEInseamSize] = useState<number | "">("");
 
   function autofillEditFallbackMeasurements(
     size: string = fallbackSize,
@@ -1562,6 +1571,8 @@ export default function Products() {
     setEWaistSize(generated.waist ?? "");
     setEHipSize(generated.hip ?? "");
     setELengthSize(generated.length ?? generated.inseam ?? "");
+    setEShoulderSize(generated.shoulder ?? "");
+    setEInseamSize(generated.inseam ?? "");
   }
 
   // existing variants (live) + images (live)
@@ -1668,7 +1679,7 @@ export default function Products() {
 
   function setVariantMeasurementEdit(
     vid: string,
-    key: "bust" | "waist" | "hip" | "length",
+    key: "chest" | "bust" | "waist" | "hip" | "length" | "shoulder" | "inseam",
     value: string,
   ) {
     setVariantMeasurementEdits((prev) => ({
@@ -1698,6 +1709,58 @@ export default function Products() {
         throw new Error(j.error || "Failed to load product details");
 
       const prod = j.product || {};
+      setEditing((current) =>
+        current?.id === productId ? { ...current, ...(prod as MerchantProduct) } : current,
+      );
+      setETitle(prod.title || "");
+      setEDescription(prod.description || "");
+      setEPrice(typeof prod.price === "number" ? prod.price : "");
+      setEStock(typeof prod.stock === "number" ? prod.stock : "");
+      setECompareAt(
+        typeof prod.compareAtPrice === "number" ? prod.compareAtPrice : "",
+      );
+      setEBarcode(prod.barcode || "");
+      setEWeight(typeof prod.weightGrams === "number" ? prod.weightGrams : "");
+      setEProductType(prod.productType || "");
+      setEUseCustomProductType(
+        Boolean(
+          prod.productType &&
+            !PRODUCT_TYPE_OPTIONS.includes(
+              prod.productType as (typeof PRODUCT_TYPE_OPTIONS)[number],
+            ),
+        ),
+      );
+      setECollections(Array.isArray(prod.collections) ? prod.collections : []);
+      setEVendor(prod.vendor || "");
+      setETags((Array.isArray(prod.tags) ? prod.tags : []).join(", "));
+      setESeoTitle(prod.seo?.title || "");
+      setESeoDesc(prod.seo?.description || "");
+      setGarmentCategory(prod.garmentCategory || "Tops");
+      setFitType(prod.fitType || "Regular");
+      setEBustSize(
+        typeof prod.measurements?.bust === "number"
+          ? prod.measurements.bust
+          : typeof prod.measurements?.chest === "number"
+            ? prod.measurements.chest
+            : "",
+      );
+      setEWaistSize(
+        typeof prod.measurements?.waist === "number" ? prod.measurements.waist : "",
+      );
+      setEHipSize(
+        typeof prod.measurements?.hip === "number" ? prod.measurements.hip : "",
+      );
+      setELengthSize(
+        typeof prod.measurements?.length === "number" ? prod.measurements.length : "",
+      );
+      setEShoulderSize(
+        typeof prod.measurements?.shoulder === "number"
+          ? prod.measurements.shoulder
+          : "",
+      );
+      setEInseamSize(
+        typeof prod.measurements?.inseam === "number" ? prod.measurements.inseam : "",
+      );
       const variants: ExistingVariant[] = Array.isArray(prod.variants)
         ? prod.variants.map((v: any) => ({
             id: v.id,
@@ -1708,6 +1771,8 @@ export default function Products() {
                 ? String(v.title).split(" / ")
                 : [],
             price: v.price != null ? Number(v.price) : undefined,
+            compareAtPrice:
+              v.compareAtPrice != null ? Number(v.compareAtPrice) : undefined,
             quantity: v.quantity != null ? Number(v.quantity) : undefined,
             sku: v.sku || undefined,
             barcode: v.barcode || undefined,
@@ -1728,7 +1793,15 @@ export default function Products() {
           return acc;
         }, {}),
       );
-      setImagesLive(Array.isArray(prod.imagesLive) ? prod.imagesLive : []);
+      setImagesLive(
+        Array.isArray(prod.imagesLive)
+          ? prod.imagesLive
+          : Array.isArray(prod.images)
+            ? prod.images
+            : Array.isArray(prod.imageUrls)
+              ? prod.imageUrls
+              : [],
+      );
       setDeleteSel({});
       // planner defaults until details load
       setOptions([
@@ -1751,9 +1824,9 @@ export default function Products() {
     setEDescription(p.description || "");
     setEPrice(typeof p.price === "number" ? p.price : "");
     setEStock(typeof p.stock === "number" ? p.stock : "");
-    setECompareAt("");
-    setEBarcode("");
-    setEWeight("");
+    setECompareAt(typeof p.compareAtPrice === "number" ? p.compareAtPrice : "");
+    setEBarcode(p.barcode || "");
+    setEWeight(typeof p.weightGrams === "number" ? p.weightGrams : "");
     setEProductType(p.productType || "");
     setEUseCustomProductType(
       Boolean(
@@ -1767,6 +1840,8 @@ export default function Products() {
     setECustomCollectionName("");
     setEVendor(p.vendor || "");
     setETags((p.tags || []).join(", "));
+    setESeoTitle(p.seo?.title || "");
+    setESeoDesc(p.seo?.description || "");
     setEBustSize(
       typeof p.measurements?.bust === "number" ? p.measurements.bust : "",
     );
@@ -1778,6 +1853,12 @@ export default function Products() {
     );
     setELengthSize(
       typeof p.measurements?.length === "number" ? p.measurements.length : "",
+    );
+    setEShoulderSize(
+      typeof p.measurements?.shoulder === "number" ? p.measurements.shoulder : "",
+    );
+    setEInseamSize(
+      typeof p.measurements?.inseam === "number" ? p.measurements.inseam : "",
     );
     setImageAddFiles([]);
     setEditColorImageFiles({});
@@ -1851,15 +1932,31 @@ export default function Products() {
         .filter(Boolean);
       if (JSON.stringify(newTags) !== JSON.stringify(editing.tags || []))
         payload.tags = newTags;
+      if (JSON.stringify(eCollections) !== JSON.stringify(editing.collections || []))
+        payload.collections = eCollections;
+      const nextSeo = {
+        title: eSeoTitle.trim(),
+        description: eSeoDesc.trim(),
+      };
+      if (
+        nextSeo.title ||
+        nextSeo.description ||
+        JSON.stringify(nextSeo) !== JSON.stringify(editing.seo || {})
+      ) {
+        payload.seo = nextSeo;
+      }
       if (eCompareAt !== "") payload.compareAtPrice = Number(eCompareAt);
       if (eBarcode.trim()) payload.barcode = eBarcode.trim();
       if (eWeight !== "") payload.weightGrams = Number(eWeight);
 
       const editedMeasurements: ProductMeasurements = {
+        chest: eBustSize === "" ? null : Number(eBustSize),
         bust: eBustSize === "" ? null : Number(eBustSize),
         waist: eWaistSize === "" ? null : Number(eWaistSize),
         hip: eHipSize === "" ? null : Number(eHipSize),
         length: eLengthSize === "" ? null : Number(eLengthSize),
+        shoulder: eShoulderSize === "" ? null : Number(eShoulderSize),
+        inseam: eInseamSize === "" ? null : Number(eInseamSize),
         unit: "in",
       };
       if (
@@ -2157,6 +2254,60 @@ export default function Products() {
     if (["no", "n", "false", "0"].includes(s)) return false;
     return defaultVal;
   }
+  function positiveNum(v: any) {
+    const n = num(v);
+    return n != null && n > 0 ? n : undefined;
+  }
+  function requireBulkField<T>(
+    value: T | undefined | null | "",
+    message: string,
+  ): T {
+    if (value === "" || value == null) throw new Error(message);
+    return value;
+  }
+  function bulkGarmentCategory(row: Record<string, any>): GarmentCategory {
+    return String(row["garmentcategory"] ?? row["category"] ?? "")
+      .trim()
+      .toLowerCase() === "bottoms"
+      ? "Bottoms"
+      : "Tops";
+  }
+  function bulkFitType(row: Record<string, any>): FitType {
+    const fit = String(row["fittype"] ?? row["fit"] ?? "")
+      .trim()
+      .toLowerCase();
+    if (fit === "slim") return "Slim";
+    if (fit === "oversized") return "Oversized";
+    return "Regular";
+  }
+  function bulkMeasurements(
+    row: Record<string, any>,
+    category: GarmentCategory,
+    fit: FitType,
+    sizeValue = "",
+  ): ProductMeasurements {
+    const generated = measurementsForVariant(category, fit, sizeValue);
+    return {
+      ...emptyMeasurements(),
+      ...generated,
+      chest:
+        num(row["chestsize"] ?? row["chest"] ?? row["bustsize"] ?? row["bust"]) ??
+        generated?.chest ??
+        null,
+      bust:
+        num(row["bustsize"] ?? row["bust"] ?? row["chestsize"] ?? row["chest"]) ??
+        generated?.chest ??
+        null,
+      waist: num(row["waistsize"] ?? row["waist"]) ?? generated?.waist ?? null,
+      hip: num(row["hipsize"] ?? row["hip"]) ?? generated?.hip ?? null,
+      length: num(row["lengthsize"] ?? row["length"]) ?? generated?.length ?? null,
+      shoulder:
+        num(row["shouldersize"] ?? row["shoulder"]) ?? generated?.shoulder ?? null,
+      inseam:
+        num(row["inseamsize"] ?? row["inseam"]) ?? generated?.inseam ?? null,
+      unit: "in",
+    };
+  }
   function buildVariantDraft(row: any) {
     const o1n = row["option1name"] || row["option_1_name"];
     const o1v = row["option1values"] || row["option_1_values"];
@@ -2177,17 +2328,30 @@ export default function Products() {
 
     const lists = options.map((o) => o.values);
     const combos = cartesian(lists);
+    const category = bulkGarmentCategory(row);
+    const fit = bulkFitType(row);
+    const sizeOptionIndex = options.findIndex(
+      (option) => option.name.trim().toLowerCase() === "size",
+    );
     const variants = combos.map((vals) => ({
       options: vals,
       title: vals.join(" / "),
-      price: num(row["variantprice"]) ?? num(row["price"]),
+      price: positiveNum(row["variantprice"]) ?? positiveNum(row["price"]),
       compareAtPrice:
         num(row["variantcompareat"]) ?? num(row["compareatprice"]) ?? undefined,
       sku: String(row["variantsku"] ?? "").trim() || undefined,
       quantity: num(row["variantqty"]) ?? num(row["quantity"]) ?? 0,
       barcode: String(row["variantbarcode"] ?? "").trim() || undefined,
       weightGrams:
-        num(row["variantweightgrams"]) ?? num(row["weightgrams"]) ?? undefined,
+        positiveNum(row["variantweightgrams"]) ??
+        positiveNum(row["weightgrams"]) ??
+        undefined,
+      measurements: bulkMeasurements(
+        row,
+        category,
+        fit,
+        sizeOptionIndex >= 0 ? vals[sizeOptionIndex] : "",
+      ),
     }));
 
     return { options, variants };
@@ -2197,36 +2361,59 @@ export default function Products() {
     for (const [k, v] of Object.entries(row)) map[norm(k)] = v;
 
     const title = String(map["title"] ?? "").trim();
-    const basePrice = num(map["price"]); // treat as base price
-    if (!title || basePrice == null) throw new Error("Missing Title or Price");
+    const basePrice = positiveNum(map["price"]); // treat as base price
+    if (!title || basePrice == null) throw new Error("Missing Title or valid Price");
 
     // NEW: delivery charge flag (defaults to true, like the Add form)
     const handleDelivery = boolFromCell(map["handledeliverycharge"], true);
     const price = basePrice + (handleDelivery ? 100 : 0);
 
-    const compareAtPrice = num(map["compareatprice"]);
+    const compareAtPrice = requireBulkField(
+      positiveNum(map["compareatprice"]),
+      "Missing valid CompareAtPrice",
+    );
     const cost = num(map["cost"]);
     const barcode = String(map["barcode"] ?? "").trim() || undefined;
-    const weightGrams = num(map["weightgrams"]);
+    const weightGrams = requireBulkField(
+      positiveNum(map["weightgrams"]),
+      "Missing valid WeightGrams",
+    );
     const quantity = num(map["quantity"]) ?? 0;
 
-    const vendor = String(map["vendor"] ?? "").trim() || undefined;
-    const productType = String(map["producttype"] ?? "").trim() || undefined;
+    const vendor = requireBulkField(
+      String(map["vendor"] ?? "").trim(),
+      "Missing Vendor",
+    );
+    const productType = requireBulkField(
+      String(map["producttype"] ?? "").trim(),
+      "Missing ProductType",
+    );
     const tags = csvToArr(map["tags"]);
     const seoTitle = String(map["seotitle"] ?? "").trim() || undefined;
     const seoDescription =
       String(map["seodescription"] ?? "").trim() || undefined;
-    const sku = String(map["sku"] ?? "").trim() || undefined;
+    const sku = requireBulkField(String(map["sku"] ?? "").trim(), "Missing SKU");
 
     const resourceUrls = csvToArr(map["imageurls"]);
     const variantDraft = buildVariantDraft(map);
-    const measurements: ProductMeasurements = {
-      bust: num(map["bustsize"] ?? map["bust"]),
-      waist: num(map["waistsize"] ?? map["waist"]),
-      hip: num(map["hipsize"] ?? map["hip"]),
-      length: num(map["lengthsize"] ?? map["length"]),
-      unit: "in",
-    };
+    const garmentCategory = bulkGarmentCategory(map);
+    const fitType = bulkFitType(map);
+    const measurements = bulkMeasurements(map, garmentCategory, fitType);
+
+    if (!seoTitle || !seoDescription) {
+      throw new Error("Missing SeoTitle or SeoDescription");
+    }
+    if (!variantDraft) {
+      const missingMeasurements =
+        garmentCategory === "Tops"
+          ? measurements.chest == null ||
+            measurements.shoulder == null ||
+            measurements.length == null
+          : measurements.waist == null;
+      if (missingMeasurements) {
+        throw new Error("Missing required measurements");
+      }
+    }
 
     return {
       title,
@@ -2243,8 +2430,11 @@ export default function Products() {
       currency: "INR",
       tags,
       resourceUrls: resourceUrls.length ? resourceUrls : undefined,
+      garmentCategory,
+      fitType,
       vendor,
       productType,
+      variantMode: variantDraft ? "multiple" : "single",
       status: "active",
       sku,
       seo:
@@ -3217,12 +3407,99 @@ export default function Products() {
                 </div>
 
                 <div className="space-y-2">
+                  <Label>Description</Label>
+                  <Textarea
+                    rows={4}
+                    value={eDescription}
+                    onChange={(event) => setEDescription(event.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-2">
                     <Label>Tags (comma-separated)</Label>
                     <Input
                       value={eTags}
                       onChange={(e) => setETags(e.target.value)}
                     />
                   </div>
+
+                <div className="space-y-2">
+                  <Label>Collections</Label>
+                  <div className="flex flex-wrap gap-2">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button type="button" variant="outline">
+                          Select collections
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent className="max-h-72 w-64 overflow-y-auto">
+                        <DropdownMenuLabel>Collections</DropdownMenuLabel>
+                        <DropdownMenuSeparator />
+                        {COLLECTION_OPTIONS.map((collection) => (
+                          <DropdownMenuCheckboxItem
+                            key={collection}
+                            checked={eCollections.includes(collection)}
+                            onCheckedChange={(checked) =>
+                              setECollections((current) =>
+                                checked
+                                  ? [...new Set([...current, collection])]
+                                  : current.filter((item) => item !== collection),
+                              )
+                            }
+                          >
+                            {collection}
+                          </DropdownMenuCheckboxItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <Input
+                      className="max-w-xs"
+                      placeholder="Custom collection"
+                      value={eCustomCollectionName}
+                      onChange={(event) => setECustomCollectionName(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter") return;
+                        event.preventDefault();
+                        const value = eCustomCollectionName.trim();
+                        if (!value) return;
+                        setECollections((current) => [...new Set([...current, value])]);
+                        setECustomCollectionName("");
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => {
+                        const value = eCustomCollectionName.trim();
+                        if (!value) return;
+                        setECollections((current) => [...new Set([...current, value])]);
+                        setECustomCollectionName("");
+                      }}
+                    >
+                      Add
+                    </Button>
+                  </div>
+                  {!!eCollections.length && (
+                    <div className="flex flex-wrap gap-2">
+                      {eCollections.map((collection) => (
+                        <Badge key={collection} variant="outline" className="gap-1">
+                          {collection}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setECollections((current) =>
+                                current.filter((item) => item !== collection),
+                              )
+                            }
+                            aria-label={`Remove ${collection}`}
+                          >
+                            {"\u00D7"}
+                          </button>
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
                 <div className="grid grid-cols-2 gap-4 border-t pt-4">
                   <div className="space-y-2">
@@ -3303,6 +3580,25 @@ export default function Products() {
                             : Number(event.target.value),
                         )
                       }
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-3 border-t pt-4">
+                  <h3 className="font-semibold">Search Engine Listing</h3>
+                  <div className="space-y-2">
+                    <Label>SEO Title</Label>
+                    <Input
+                      value={eSeoTitle}
+                      onChange={(event) => setESeoTitle(event.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>SEO Description</Label>
+                    <Textarea
+                      rows={3}
+                      value={eSeoDesc}
+                      onChange={(event) => setESeoDesc(event.target.value)}
                     />
                   </div>
                 </div>
@@ -3456,6 +3752,38 @@ export default function Products() {
                         }
                       />
                     </div>
+                    <div className="space-y-2">
+                      <Label>Shoulder (in)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.1"
+                        value={eShoulderSize}
+                        onChange={(event) =>
+                          setEShoulderSize(
+                            event.target.value === ""
+                              ? ""
+                              : Number(event.target.value),
+                          )
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Inseam (in)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.1"
+                        value={eInseamSize}
+                        onChange={(event) =>
+                          setEInseamSize(
+                            event.target.value === ""
+                              ? ""
+                              : Number(event.target.value),
+                          )
+                        }
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -3538,7 +3866,29 @@ export default function Products() {
 
                   <h4 className="border-t pt-3 text-sm font-medium">All current product images</h4>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted/50">
+                      <ImagePlus className="h-4 w-4" />
+                      Choose product photos
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/jpg,image/webp"
+                        multiple
+                        className="hidden"
+                        onChange={(event) => {
+                          onEditChooseImages(event);
+                          event.target.value = "";
+                        }}
+                      />
+                    </label>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={onEditAttachImages}
+                      disabled={imageBusy || !imageAddFiles.length}
+                    >
+                      {imageBusy ? "Uploading..." : `Add selected${imageAddFiles.length ? ` (${imageAddFiles.length})` : ""}`}
+                    </Button>
                     <Button
                       type="button"
                       variant="destructive"
@@ -3618,6 +3968,8 @@ export default function Products() {
                             <th className="text-left p-2">Waist (in)</th>
                             <th className="text-left p-2">Hip (in)</th>
                             <th className="text-left p-2">Length (in)</th>
+                            <th className="text-left p-2">Shoulder (in)</th>
+                            <th className="text-left p-2">Inseam (in)</th>
                             <th className="text-left p-2">Remove?</th>
                           </tr>
                         </thead>
@@ -3668,8 +4020,16 @@ export default function Products() {
                                     }
                                   />
                                 </td>
-                                {(["bust", "waist", "hip", "length"] as const).map(
-                                  (field) => (
+                                {(
+                                  [
+                                    "bust",
+                                    "waist",
+                                    "hip",
+                                    "length",
+                                    "shoulder",
+                                    "inseam",
+                                  ] as const
+                                ).map((field) => (
                                     <td key={field} className="p-2 w-[140px]">
                                       <Input
                                         type="number"
@@ -3685,8 +4045,7 @@ export default function Products() {
                                         }
                                       />
                                     </td>
-                                  ),
-                                )}
+                                  ))}
                                 <td className="p-2 w-[100px]">
                                   <label className="inline-flex items-center gap-2 text-xs">
                                     <input

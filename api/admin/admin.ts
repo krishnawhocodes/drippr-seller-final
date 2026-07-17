@@ -614,6 +614,12 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
     productInput.productType = pendingUpdates.productType || "";
   if (pendingUpdates.tags !== undefined)
     productInput.tags = [...new Set([...existingMerchantTags, ...requestedTags])];
+  if (pendingUpdates.seo !== undefined) {
+    productInput.seo = {
+      title: String(pendingUpdates.seo?.title || ""),
+      description: String(pendingUpdates.seo?.description || ""),
+    };
+  }
 
   await updateShopifyProduct(productInput);
 

@@ -127,6 +127,138 @@ function normalizeVariantDraft(input: any) {
   return options.length || variants.length ? { options, variants } : null;
 }
 
+function toFiniteNumber(value: any) {
+  if (value === "" || value == null) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function isPositiveNumber(value: any) {
+  const parsed = toFiniteNumber(value);
+  return parsed !== undefined && parsed > 0;
+}
+
+function isNonNegativeNumber(value: any) {
+  const parsed = toFiniteNumber(value);
+  return parsed !== undefined && parsed >= 0;
+}
+
+function missingMeasurementFields(measurements: any, category: any) {
+  const normalizedCategory = category === "Bottoms" ? "Bottoms" : "Tops";
+  const requiredFields =
+    normalizedCategory === "Tops"
+      ? (["chest", "shoulder", "length"] as const)
+      : (["waist"] as const);
+
+  return requiredFields.filter(
+    (field) => typeof measurements?.[field] !== "number",
+  );
+}
+
+function inferVariantMode(
+  variantMode: any,
+  variantDraft: any,
+): "single" | "multiple" {
+  if (variantMode === "single" || variantMode === "multiple") {
+    return variantMode;
+  }
+
+  return (variantDraft?.variants?.length || 0) > 1 ? "multiple" : "single";
+}
+
+function validateCreatePayload(args: {
+  title: any;
+  description: any;
+  price: any;
+  compareAtPrice: any;
+  vendor: any;
+  productType: any;
+  rawSku: any;
+  weightGrams: any;
+  inventory: any;
+  seo: any;
+  variantMode: "single" | "multiple";
+  variantDraft: any;
+  measurements: any;
+  garmentCategory: any;
+}) {
+  const title = String(args.title || "").trim();
+  const description = String(args.description || "").trim();
+  const vendor = String(args.vendor || "").trim();
+  const productType = String(args.productType || "").trim();
+  const sku = String(args.rawSku || "").trim();
+  const seoTitle = String(args.seo?.title || "").trim();
+  const seoDescription = String(args.seo?.description || "").trim();
+
+  if (!title) return "Product title is required.";
+  if (!description) return "Product description is required.";
+  if (!isPositiveNumber(args.price)) return "Please enter a valid selling price.";
+  if (!isPositiveNumber(args.compareAtPrice)) return "MRP is required.";
+  if (!sku) return "SKU is required.";
+  if (!vendor) return "Vendor name is required.";
+  if (!productType) return "Product type is required.";
+  if (!seoTitle || !seoDescription) {
+    return "SEO Title and SEO Description are required.";
+  }
+
+  const variants = Array.isArray(args.variantDraft?.variants)
+    ? args.variantDraft.variants
+    : [];
+
+  if (args.variantMode === "single") {
+    if (variants.length > 1) {
+      return "Single variant products cannot include multiple variant rows.";
+    }
+
+    const singleVariant = variants[0] || {};
+    const singleWeight = singleVariant.weightGrams ?? args.weightGrams;
+    const singleQuantity = singleVariant.quantity ?? args.inventory?.quantity;
+
+    if (!isPositiveNumber(singleWeight)) return "Product weight is required.";
+    if (!isNonNegativeNumber(singleQuantity)) {
+      return "Quantity is required for the single variant.";
+    }
+    if (missingMeasurementFields(args.measurements, args.garmentCategory).length) {
+      return "Please add all required garment measurements for the selected category.";
+    }
+    return null;
+  }
+
+  if (!variants.length) {
+    return "Add at least one complete variant combination before submitting.";
+  }
+
+  const options = Array.isArray(args.variantDraft?.options)
+    ? args.variantDraft.options
+    : [];
+  const colorOption = options.find(
+    (option: any) => String(option?.name || "").trim().toLowerCase() === "color",
+  );
+  if (!colorOption?.values?.length) {
+    return "Add a Color option for variant-wise photos.";
+  }
+
+  if (variants.some((variant: any) => !isPositiveNumber(variant.price))) {
+    return "Enter a selling price for every variant.";
+  }
+  if (variants.some((variant: any) => !isNonNegativeNumber(variant.quantity))) {
+    return "Enter a quantity for every variant.";
+  }
+  if (variants.some((variant: any) => !isPositiveNumber(variant.weightGrams))) {
+    return "Enter product weight for every variant.";
+  }
+  if (
+    variants.some(
+      (variant: any) =>
+        missingMeasurementFields(variant.measurements, args.garmentCategory).length,
+    )
+  ) {
+    return "Please add all required garment measurements for every variant.";
+  }
+
+  return null;
+}
+
 function buildVariantMeasurements(variantDraft: any) {
   if (!variantDraft?.variants?.length) return [];
 
@@ -472,7 +604,7 @@ async function associateVariantMedia(args: {
         ),
       ];
       return variant?.id && mediaIds.length
-        ? mediaIds.map((mediaId) => ({ variantId: variant.id, mediaIds: [mediaId] }))
+        ? [{ variantId: variant.id, mediaIds }]
         : [];
     })
     .filter(Boolean);
@@ -521,6 +653,7 @@ export default async function handler(req: any, res: any) {
       price,
       compareAtPrice,
       barcode,
+      weightGrams,
       inventory = {},
       currency = "INR",
       tags = [],
@@ -537,22 +670,33 @@ export default async function handler(req: any, res: any) {
       measurements,
     } = body;
 
-    if (
-      !title ||
-      price == null ||
-      !vendor ||
-      !rawSku ||
-      compareAtPrice == null
-    ) {
-      return res.status(400).json({
-        ok: false,
-        error: "title, price, vendor, sku and compareAtPrice are required",
-      });
-    }
-
     const sku = normSku(rawSku);
     const normalizedMeasurements = normalizeMeasurements(measurements);
     const normalizedVariantDraft = normalizeVariantDraft(variantDraft);
+    const normalizedVariantMode = inferVariantMode(
+      variantMode,
+      normalizedVariantDraft,
+    );
+    const validationError = validateCreatePayload({
+      title,
+      description,
+      price,
+      compareAtPrice,
+      vendor,
+      productType,
+      rawSku,
+      weightGrams,
+      inventory,
+      seo,
+      variantMode: normalizedVariantMode,
+      variantDraft: normalizedVariantDraft,
+      measurements: normalizedMeasurements,
+      garmentCategory,
+    });
+    if (validationError) {
+      return res.status(400).json({ ok: false, error: validationError });
+    }
+
     const variantMeasurements = buildVariantMeasurements(normalizedVariantDraft);
 
     // --- Shopify product input ---
@@ -619,6 +763,14 @@ export default async function handler(req: any, res: any) {
 
     const userErrors = createRes?.data?.productCreate?.userErrors || [];
     if (userErrors.length) {
+      try {
+        if (claimedSkuRef) {
+          await claimedSkuRef.delete();
+          claimedSkuRef = null;
+        }
+      } catch {
+        // ignore SKU claim rollback failure
+      }
       return res.status(400).json({
         ok: false,
         error: userErrors.map((error: any) => error.message).join("; "),
@@ -751,7 +903,7 @@ export default async function handler(req: any, res: any) {
     const shopifyProductNumericId = String(product.id).split("/").pop() || "";
     const sellerStatus = "pending";
     const isMultipleVariantProduct =
-      variantMode === "multiple" ||
+      normalizedVariantMode === "multiple" ||
       (normalizedVariantDraft?.variants?.length || 0) > 1;
     const totalVariantStock = isMultipleVariantProduct
       ? (normalizedVariantDraft?.variants || []).reduce(
@@ -770,10 +922,13 @@ export default async function handler(req: any, res: any) {
       title,
       description: description || "",
       price: Number(price),
+      compareAtPrice: Number(compareAtPrice),
       currency,
       status: sellerStatus,
       published: false,
       sku,
+      barcode: barcode || null,
+      seo: seo || null,
       shopifyProductId: product.id,
       shopifyProductNumericId,
       shopifyVariantIds,
@@ -795,6 +950,7 @@ export default async function handler(req: any, res: any) {
       collectionsSynced: false,
       garmentCategory: garmentCategory || null,
       fitType: fitType || null,
+      weightGrams: toFiniteNumber(weightGrams) ?? null,
       variantMode: isMultipleVariantProduct ? "multiple" : "single",
       variantDraft: normalizedVariantDraft,
       variantMeasurements: hydratedVariantMeasurements,

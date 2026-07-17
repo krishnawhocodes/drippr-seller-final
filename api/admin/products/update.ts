@@ -90,6 +90,18 @@ function readMeasurementMetafields(nodes: any[]) {
   return hasAnyMeasurement(measurements) ? measurements : null;
 }
 
+function textFromHtml(value: unknown) {
+  return String(value || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .trim();
+}
+
 function valuesEqual(left: any, right: any) {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
@@ -123,6 +135,14 @@ const PRODUCT_DETAILS_QUERY = /* GraphQL */ `
     product(id: $id) {
       id
       title
+      descriptionHtml
+      vendor
+      productType
+      tags
+      seo {
+        title
+        description
+      }
       options {
         name
         values
@@ -148,7 +168,7 @@ const PRODUCT_DETAILS_QUERY = /* GraphQL */ `
           }
         }
       }
-      images(first: 25) {
+      images(first: 100) {
         nodes {
           id
           url
@@ -547,6 +567,7 @@ export default async function handler(req: any, res: any) {
         let productOptions: any[] = [];
         let variants: any[] = [];
         let imagesLive: string[] = [];
+        let liveProduct: any = null;
 
         if (doc.shopifyProductId) {
           try {
@@ -556,6 +577,7 @@ export default async function handler(req: any, res: any) {
             const p = r?.data?.product;
 
             if (p) {
+              liveProduct = p;
               const mediaUrlsByVariant = new Map<string, string[]>();
               for (const image of p.images?.nodes || []) {
                 const imageUrl = String(image?.url || "").trim();
@@ -586,6 +608,8 @@ export default async function handler(req: any, res: any) {
                   title: v.title,
                   optionValues: opts,
                   price: v.price != null ? Number(v.price) : undefined,
+                  compareAtPrice:
+                    v.compareAtPrice != null ? Number(v.compareAtPrice) : undefined,
                   quantity:
                     typeof v.inventoryQuantity === "number"
                       ? v.inventoryQuantity
@@ -616,11 +640,45 @@ export default async function handler(req: any, res: any) {
           }
         }
 
+        const fallbackImages = [
+          ...(Array.isArray(doc.images) ? doc.images : []),
+          ...(Array.isArray(doc.imageUrls) ? doc.imageUrls : []),
+          doc.image,
+        ]
+          .map((url: unknown) => String(url || "").trim())
+          .filter(Boolean);
+        imagesLive = [...new Set([...imagesLive, ...fallbackImages])];
+
+        const firstVariant = variants[0] || {};
+
         return res.status(200).json({
           ok: true,
           product: {
             id: snap.id,
             ...doc,
+            title: liveProduct?.title || doc.title || "",
+            description:
+              textFromHtml(liveProduct?.descriptionHtml) ||
+              textFromHtml((doc as any).descriptionHtml) ||
+              doc.description ||
+              "",
+            vendor: liveProduct?.vendor || doc.vendor || "",
+            productType: liveProduct?.productType || doc.productType || "",
+            tags: Array.isArray(liveProduct?.tags)
+              ? liveProduct.tags
+              : Array.isArray(doc.tags)
+                ? doc.tags
+                : [],
+            seo: liveProduct?.seo || doc.seo || null,
+            compareAtPrice:
+              firstVariant.compareAtPrice != null
+                ? Number(firstVariant.compareAtPrice)
+                : doc.compareAtPrice ?? null,
+            barcode: firstVariant.barcode || doc.barcode || "",
+            price:
+              firstVariant.price != null ? Number(firstVariant.price) : doc.price,
+            stock:
+              firstVariant.quantity != null ? Number(firstVariant.quantity) : doc.stock,
             productOptions,
             variants,
             imagesLive,
@@ -825,6 +883,7 @@ export default async function handler(req: any, res: any) {
         "productType",
         "collections",
         "tags",
+        "seo",
         "vendor",
         "compareAtPrice",
         "barcode",
