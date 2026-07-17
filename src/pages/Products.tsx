@@ -13,6 +13,7 @@ import {
   Upload,
   ImagePlus,
   ImageMinus,
+  ChevronsUpDown,
 } from "lucide-react";
 import {
   Table,
@@ -45,6 +46,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { toast } from "sonner";
 import { auth, db } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
@@ -2918,45 +2924,14 @@ export default function Products() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="product-type">Product Type</Label>
-                  <Select
-                    value={
-                      useCustomProductType ? "__custom__" : draftProductType
-                    }
-                    onValueChange={(value) => {
-                      const custom = value === "__custom__";
-                      setUseCustomProductType(custom);
-                      setDraftProductType(custom ? "" : value);
-                    }}
-                  >
-                    <SelectTrigger id="product-type">
-                      <SelectValue placeholder="Select product type" />
-                    </SelectTrigger>
-                    <SelectContent className="max-h-72">
-                      {PRODUCT_TYPE_OPTIONS.map((option) => (
-                        <SelectItem key={option} value={option}>
-                          {option}
-                        </SelectItem>
-                      ))}
-                      <SelectItem value="__custom__">Add your own...</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  {useCustomProductType && (
-                    <Input
-                      name="product-type"
-                      placeholder="Enter custom product type"
-                      value={draftProductType}
-                      onChange={(event) =>
-                        setDraftProductType(event.target.value)
-                      }
-                    />
-                  )}
-                  {!useCustomProductType && (
-                    <input
-                      type="hidden"
-                      name="product-type"
-                      value={draftProductType}
-                    />
-                  )}
+                  <ProductTypeCombobox
+                    id="product-type"
+                    name="product-type"
+                    value={draftProductType}
+                    isCustom={useCustomProductType}
+                    onValueChange={setDraftProductType}
+                    onCustomChange={setUseCustomProductType}
+                  />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="vendor">
@@ -3457,39 +3432,12 @@ export default function Products() {
                   </div>
                   <div className="space-y-2">
                     <Label>Product Type</Label>
-                    <Select
-                      value={
-                        eUseCustomProductType ? "__custom__" : eProductType
-                      }
-                      onValueChange={(value) => {
-                        const custom = value === "__custom__";
-                        setEUseCustomProductType(custom);
-                        setEProductType(custom ? "" : value);
-                      }}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select product type" />
-                      </SelectTrigger>
-                      <SelectContent className="max-h-72">
-                        {PRODUCT_TYPE_OPTIONS.map((option) => (
-                          <SelectItem key={option} value={option}>
-                            {option}
-                          </SelectItem>
-                        ))}
-                        <SelectItem value="__custom__">
-                          Add your own...
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                    {eUseCustomProductType && (
-                      <Input
-                        placeholder="Enter custom product type"
-                        value={eProductType}
-                        onChange={(event) =>
-                          setEProductType(event.target.value)
-                        }
-                      />
-                    )}
+                    <ProductTypeCombobox
+                      value={eProductType}
+                      isCustom={eUseCustomProductType}
+                      onValueChange={setEProductType}
+                      onCustomChange={setEUseCustomProductType}
+                    />
                   </div>
                 </div>
 
@@ -4354,6 +4302,114 @@ export default function Products() {
 }
 
 /** ---- Small reusable section for the variant plan UI ---- */
+function ProductTypeCombobox(props: {
+  id?: string;
+  name?: string;
+  value: string;
+  isCustom: boolean;
+  onValueChange: (value: string) => void;
+  onCustomChange: (custom: boolean) => void;
+}) {
+  const { id, name, value, isCustom, onValueChange, onCustomChange } = props;
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const filteredOptions = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return PRODUCT_TYPE_OPTIONS;
+    return PRODUCT_TYPE_OPTIONS.filter((option) =>
+      option.toLowerCase().includes(normalized),
+    );
+  }, [query]);
+
+  const selectedLabel = isCustom
+    ? value || "Custom product type"
+    : value || "Select product type";
+
+  return (
+    <div className="space-y-2">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            id={id}
+            type="button"
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className="w-full justify-between font-normal"
+          >
+            <span className={value || isCustom ? "" : "text-muted-foreground"}>
+              {selectedLabel}
+            </span>
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+          <div className="border-b p-2">
+            <div className="flex items-center rounded-md border px-2">
+              <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search product type..."
+                className="h-9 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+              />
+            </div>
+          </div>
+          <div className="max-h-72 overflow-y-auto p-1">
+            {filteredOptions.length ? (
+              filteredOptions.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className="flex w-full items-center rounded-sm px-2 py-2 text-left text-sm hover:bg-accent"
+                  onClick={() => {
+                    onCustomChange(false);
+                    onValueChange(option);
+                    setQuery("");
+                    setOpen(false);
+                  }}
+                >
+                  <span className="mr-2 w-4 text-center">
+                    {!isCustom && value === option ? "*" : ""}
+                  </span>
+                  {option}
+                </button>
+              ))
+            ) : (
+              <div className="px-2 py-3 text-sm text-muted-foreground">
+                No matching product type.
+              </div>
+            )}
+            <button
+              type="button"
+              className="mt-1 flex w-full items-center rounded-sm border-t px-2 py-2 text-left text-sm font-medium hover:bg-accent"
+              onClick={() => {
+                onCustomChange(true);
+                onValueChange("");
+                setQuery("");
+                setOpen(false);
+              }}
+            >
+              Add your own...
+            </button>
+          </div>
+        </PopoverContent>
+      </Popover>
+      {isCustom && (
+        <Input
+          name={name}
+          placeholder="Enter custom product type"
+          value={value}
+          onChange={(event) => onValueChange(event.target.value)}
+        />
+      )}
+      {!isCustom && name ? (
+        <input type="hidden" name={name} value={value} />
+      ) : null}
+    </div>
+  );
+}
+
 function VariantPlanner(props: {
   garmentCategory: GarmentCategory;
   fitType: FitType;
