@@ -1,7 +1,10 @@
 // pages/api/admin/products/create.ts
 import { getAdmin } from "../../_lib/firebaseAdmin.js";
 import { shopifyGraphQL } from "../../_lib/shopify.js";
-import type { DocumentReference } from "firebase-admin/firestore";
+
+type FirestoreDeleteRef = {
+  delete: () => Promise<unknown>;
+};
 
 /* ---------------- helpers: sku ---------------- */
 function normSku(raw: string): string {
@@ -627,7 +630,7 @@ export default async function handler(req: any, res: any) {
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
-  let claimedSkuRef: DocumentReference | null = null;
+  let claimedSkuRef: FirestoreDeleteRef | null = null;
 
   try {
     const { adminAuth, adminDb } = getAdmin();
