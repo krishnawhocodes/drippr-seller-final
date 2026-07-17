@@ -235,6 +235,14 @@ function hasAnyMeasurement(measurements?: ProductMeasurements | null) {
   );
 }
 
+function uniqueImageUrls(urls: unknown[]) {
+  return [
+    ...new Set(
+      urls.map((url) => String(url || "").trim()).filter(Boolean),
+    ),
+  ];
+}
+
 function hasMeaningfulAddDraft(draft: Partial<AddProductDraft>) {
   return Boolean(
     draft.title?.trim() ||
@@ -1844,13 +1852,15 @@ export default function Products() {
         }, {}),
       );
       setImagesLive(
-        Array.isArray(prod.imagesLive)
-          ? prod.imagesLive
-          : Array.isArray(prod.images)
-            ? prod.images
-            : Array.isArray(prod.imageUrls)
-              ? prod.imageUrls
-              : [],
+        uniqueImageUrls(
+          Array.isArray(prod.imagesLive)
+            ? prod.imagesLive
+            : Array.isArray(prod.images)
+              ? prod.images
+              : Array.isArray(prod.imageUrls)
+                ? prod.imageUrls
+                : [],
+        ),
       );
       setDeleteSel({});
       // planner defaults until details load
@@ -1917,13 +1927,11 @@ export default function Products() {
     setVariantColorImagePreviews({});
     setExistingProductOptions([]);
     setImagesLive(
-      [
+      uniqueImageUrls([
         ...(Array.isArray(p.images) ? p.images : []),
         ...(Array.isArray(p.imageUrls) ? p.imageUrls : []),
         p.image,
-      ]
-        .map((url) => String(url || "").trim())
-        .filter(Boolean),
+      ]),
     );
     setDeleteSel({});
     setVariantMeasurementEdits({});

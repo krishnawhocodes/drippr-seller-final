@@ -640,24 +640,16 @@ export default async function handler(req: any, res: any) {
           }
         }
 
-        const fallbackImages = [
+        const savedProductImages = [
           ...(Array.isArray(doc.images) ? doc.images : []),
           ...(Array.isArray(doc.imageUrls) ? doc.imageUrls : []),
-          ...(Array.isArray(doc.variantDraft?.variants)
-            ? doc.variantDraft.variants.flatMap((variant: any) =>
-                Array.isArray(variant?.mediaUrls) ? variant.mediaUrls : [],
-              )
-            : []),
-          ...(Array.isArray(doc.pendingUpdates?.variantDraft?.variants)
-            ? doc.pendingUpdates.variantDraft.variants.flatMap((variant: any) =>
-                Array.isArray(variant?.mediaUrls) ? variant.mediaUrls : [],
-              )
-            : []),
           doc.image,
         ]
           .map((url: unknown) => String(url || "").trim())
           .filter(Boolean);
-        imagesLive = [...new Set([...imagesLive, ...fallbackImages])];
+        imagesLive = savedProductImages.length
+          ? [...new Set(savedProductImages)]
+          : [...new Set(imagesLive)];
 
         const savedVariantMedia = [
           ...(Array.isArray(doc.variantDraft?.variants)
