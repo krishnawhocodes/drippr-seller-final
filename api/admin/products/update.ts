@@ -301,6 +301,29 @@ const PRODUCT_IMAGES_QUERY = /* GraphQL */ `
           url
         }
       }
+      media(first: 100) {
+        nodes {
+          id
+          mediaContentType
+          ... on MediaImage {
+            image {
+              url
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const PRODUCT_DELETE_MEDIA = /* GraphQL */ `
+  mutation productDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
+    productDeleteMedia(productId: $productId, mediaIds: $mediaIds) {
+      deletedMediaIds
+      userErrors {
+        field
+        message
+      }
     }
   }
 `;
@@ -335,18 +358,55 @@ const PRODUCT_DELETE = /* GraphQL */ `
 
 async function listImageUrls(
   productId: string,
-): Promise<{ idsByUrl: Record<string, string>; urls: string[] }> {
+): Promise<{
+  idsByUrl: Record<string, string>;
+  mediaIdsByUrl: Record<string, string>;
+  urls: string[];
+}> {
   const r = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, { id: productId });
   const nodes = r?.data?.product?.images?.nodes || [];
+  const mediaNodes = r?.data?.product?.media?.nodes || [];
   const urls: string[] = [];
   const idsByUrl: Record<string, string> = {};
+  const mediaIdsByUrl: Record<string, string> = {};
   for (const n of nodes) {
     if (n?.url && n?.id) {
       urls.push(String(n.url));
-      idsByUrl[String(n.url)] = String(n.id);
+      for (const key of imageUrlLookupKeys(String(n.url))) {
+        idsByUrl[key] = String(n.id);
+      }
     }
   }
-  return { idsByUrl, urls };
+  for (const n of mediaNodes) {
+    if (n?.image?.url && n?.id) {
+      for (const key of imageUrlLookupKeys(String(n.image.url))) {
+        mediaIdsByUrl[key] = String(n.id);
+      }
+    }
+  }
+  return { idsByUrl, mediaIdsByUrl, urls };
+}
+
+function imageUrlLookupKeys(url: string) {
+  const raw = String(url || "").trim();
+  if (!raw) return [];
+  const withoutQuery = raw.split("?")[0];
+  const keys = new Set([raw, withoutQuery]);
+  try {
+    const parsed = new URL(raw);
+    const pathname = decodeURIComponent(parsed.pathname || "");
+    const normalizedPath = pathname.replace(/(_\d+x\d+|_pico|_icon|_thumb|_small|_compact|_medium|_large|_grande|_master)(?=\.[a-z0-9]+$)/i, "");
+    keys.add(`${parsed.hostname}${pathname}`.toLowerCase());
+    keys.add(`${parsed.hostname}${normalizedPath}`.toLowerCase());
+    keys.add(pathname.toLowerCase());
+    keys.add(normalizedPath.toLowerCase());
+    const filename = normalizedPath.split("/").filter(Boolean).pop();
+    if (filename) keys.add(filename.toLowerCase());
+  } catch {
+    const filename = withoutQuery.split("/").filter(Boolean).pop();
+    if (filename) keys.add(filename.toLowerCase());
+  }
+  return [...keys].filter(Boolean);
 }
 
 /* ---------------- Handler ---------------- */
@@ -614,19 +674,41 @@ export default async function handler(req: any, res: any) {
             .status(400)
             .json({ ok: false, error: "No Shopify product id" });
 
-        const { idsByUrl } = await listImageUrls(shopifyProductId);
+        const { idsByUrl, mediaIdsByUrl } = await listImageUrls(shopifyProductId);
 
+        const mediaIds = new Set<string>();
+        const legacyImageIds = new Set<string>();
         for (const u of urlsToDelete) {
-          const imgId = idsByUrl[u];
-          if (!imgId) continue;
+          for (const key of imageUrlLookupKeys(u)) {
+            const mediaId = mediaIdsByUrl[key];
+            if (mediaId) mediaIds.add(mediaId);
+            const imgId = idsByUrl[key];
+            if (imgId) legacyImageIds.add(imgId);
+          }
+        }
+
+        if (mediaIds.size) {
+          try {
+            const del = await shopifyGraphQL(PRODUCT_DELETE_MEDIA, {
+              productId: shopifyProductId,
+              mediaIds: [...mediaIds],
+            });
+            const errs = del?.data?.productDeleteMedia?.userErrors || [];
+            if (errs.length) console.warn("productDeleteMedia errors:", errs);
+          } catch (e) {
+            console.warn("productDeleteMedia failed:", e);
+          }
+        }
+
+        for (const imgId of legacyImageIds) {
           try {
             const del = await shopifyGraphQL(PRODUCT_IMAGE_DELETE, {
               id: imgId,
             });
             const errs = del?.data?.productImageDelete?.userErrors || [];
-            if (errs.length) console.warn("productImageDelete errors:", errs);
+            if (errs.length) console.warn("productImageDelete fallback errors:", errs);
           } catch (e) {
-            console.warn("productImageDelete failed:", e);
+            console.warn("productImageDelete fallback failed:", e);
           }
         }
 

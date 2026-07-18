@@ -177,6 +177,15 @@ const PRODUCT_UPDATE_LEGACY = /* GraphQL */ `
   }
 `;
 
+const PRODUCT_STATUS_QUERY = /* GraphQL */ `
+  query productStatus($id: ID!) {
+    product(id: $id) {
+      id
+      status
+    }
+  }
+`;
+
 const PRODUCT_CREATE = /* GraphQL */ `
   mutation productCreate(
     $product: ProductCreateInput!
@@ -228,6 +237,29 @@ const PRODUCT_IMAGES_QUERY = /* GraphQL */ `
           id
           url
         }
+      }
+      media(first: 100) {
+        nodes {
+          id
+          mediaContentType
+          ... on MediaImage {
+            image {
+              url
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const PRODUCT_DELETE_MEDIA = /* GraphQL */ `
+  mutation productDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
+    productDeleteMedia(productId: $productId, mediaIds: $mediaIds) {
+      deletedMediaIds
+      userErrors {
+        field
+        message
       }
     }
   }
@@ -732,6 +764,22 @@ async function updateShopifyProduct(productInput: Record<string, any>) {
   }
 }
 
+function resolveApprovedShopifyStatus(qdoc: any) {
+  if (qdoc.status === "pending") return "DRAFT";
+  const currentStatus = String(qdoc.shopifyStatus || "").trim().toUpperCase();
+  if (["ACTIVE", "DRAFT", "ARCHIVED"].includes(currentStatus)) {
+    return currentStatus;
+  }
+  if (qdoc.published === false) return "DRAFT";
+  return "ACTIVE";
+}
+
+async function fetchShopifyProductStatus(productId: string) {
+  const result = await shopifyGraphQL(PRODUCT_STATUS_QUERY, { id: productId });
+  const status = String(result?.data?.product?.status || "").trim().toUpperCase();
+  return ["ACTIVE", "DRAFT", "ARCHIVED"].includes(status) ? status : null;
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -744,24 +792,82 @@ async function listCdnImageUrls(productId: string): Promise<string[]> {
   return nodes.map((node: any) => String(node.url)).filter(Boolean);
 }
 
+function imageUrlLookupKeys(url: string) {
+  const raw = String(url || "").trim();
+  if (!raw) return [];
+  const withoutQuery = raw.split("?")[0];
+  const keys = new Set([raw, withoutQuery]);
+  try {
+    const parsed = new URL(raw);
+    const pathname = decodeURIComponent(parsed.pathname || "");
+    const normalizedPath = pathname.replace(/(_\d+x\d+|_pico|_icon|_thumb|_small|_compact|_medium|_large|_grande|_master)(?=\.[a-z0-9]+$)/i, "");
+    keys.add(`${parsed.hostname}${pathname}`.toLowerCase());
+    keys.add(`${parsed.hostname}${normalizedPath}`.toLowerCase());
+    keys.add(pathname.toLowerCase());
+    keys.add(normalizedPath.toLowerCase());
+    const filename = normalizedPath.split("/").filter(Boolean).pop();
+    if (filename) keys.add(filename.toLowerCase());
+  } catch {
+    const filename = withoutQuery.split("/").filter(Boolean).pop();
+    if (filename) keys.add(filename.toLowerCase());
+  }
+  return [...keys].filter(Boolean);
+}
+
 async function deleteProductImagesByUrl(productId: string, urls: string[]) {
   const uniqueUrls = [...new Set(urls.map((url) => String(url).trim()).filter(Boolean))];
   if (!uniqueUrls.length) return 0;
   const response = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, { id: productId });
-  const nodes = response?.data?.product?.images?.nodes || [];
-  const idsByUrl = new Map<string, string>();
-  for (const node of nodes) {
+  const imageNodes = response?.data?.product?.images?.nodes || [];
+  const mediaNodes = response?.data?.product?.media?.nodes || [];
+  const imageIdByKey = new Map<string, string>();
+  const mediaIdByKey = new Map<string, string>();
+  for (const node of imageNodes) {
     const url = String(node?.url || "").trim();
     const id = String(node?.id || "").trim();
-    if (url && id) idsByUrl.set(url, id);
+    if (!url || !id) continue;
+    for (const key of imageUrlLookupKeys(url)) imageIdByKey.set(key, id);
   }
-  let deleted = 0;
+  for (const node of mediaNodes) {
+    const url = String(node?.image?.url || "").trim();
+    const id = String(node?.id || "").trim();
+    if (!url || !id) continue;
+    for (const key of imageUrlLookupKeys(url)) mediaIdByKey.set(key, id);
+  }
+
+  const mediaIds = new Set<string>();
+  const legacyImageIds = new Set<string>();
   for (const url of uniqueUrls) {
-    const id = idsByUrl.get(url);
-    if (!id) continue;
-    const result = await shopifyGraphQL(PRODUCT_IMAGE_DELETE, { id });
-    throwUserErrors(result, "data.productImageDelete");
-    deleted += 1;
+    for (const key of imageUrlLookupKeys(url)) {
+      const mediaId = mediaIdByKey.get(key);
+      if (mediaId) mediaIds.add(mediaId);
+      const imageId = imageIdByKey.get(key);
+      if (imageId) legacyImageIds.add(imageId);
+    }
+  }
+
+  let deleted = 0;
+  if (mediaIds.size) {
+    try {
+      const result = await shopifyGraphQL(PRODUCT_DELETE_MEDIA, {
+        productId,
+        mediaIds: [...mediaIds],
+      });
+      throwUserErrors(result, "data.productDeleteMedia");
+      deleted += result?.data?.productDeleteMedia?.deletedMediaIds?.length || 0;
+    } catch (error) {
+      console.warn("productDeleteMedia failed, falling back to productImageDelete", error);
+    }
+  }
+
+  for (const id of legacyImageIds) {
+    try {
+      const result = await shopifyGraphQL(PRODUCT_IMAGE_DELETE, { id });
+      throwUserErrors(result, "data.productImageDelete");
+      deleted += 1;
+    } catch (error) {
+      console.warn("productImageDelete fallback failed", error);
+    }
   }
   return deleted;
 }
@@ -1340,9 +1446,15 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
       ? qdoc.tags
       : [];
 
+  const preservedShopifyStatus =
+    qdoc.status === "pending"
+      ? "DRAFT"
+      : (await fetchShopifyProductStatus(productId).catch(() => null)) ||
+        resolveApprovedShopifyStatus(qdoc);
+
   const productInput: Record<string, any> = {
     id: productId,
-    status: qdoc.status === "pending" ? "DRAFT" : "ACTIVE",
+    status: preservedShopifyStatus,
   };
   if (pendingUpdates.title !== undefined) productInput.title = pendingUpdates.title;
   if (pendingUpdates.description !== undefined)
@@ -1471,7 +1583,7 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
     inventoryItemId,
     warnings,
     collections: desiredCollections,
-    shopifyStatus: qdoc.status === "pending" ? "DRAFT" : "ACTIVE",
+    shopifyStatus: productInput.status,
     variantMediaSync,
     ...(refreshedImageUrls ? { imageUrls: refreshedImageUrls } : {}),
   };
