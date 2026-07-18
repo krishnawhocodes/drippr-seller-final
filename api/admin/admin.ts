@@ -894,9 +894,14 @@ async function applyVariantDraftMediaToShopify(args: {
       : values.map((value) => String(value || "").trim().toLowerCase()).join("|");
 
   const mediaUrlsByKey = new Map<string, string[]>();
+  const mediaColorByUrl = new Map<string, string>();
   for (const draftVariant of args.variantDraft?.variants || []) {
     const values = draftVariant.optionValues || draftVariant.options || [];
     const key = keyForValues(values);
+    const displayColor =
+      colorOptionIndex >= 0
+        ? String(values[colorOptionIndex] || "").trim()
+        : String(draftVariant.title || key).trim();
     const urls = Array.isArray(draftVariant.mediaUrls)
       ? draftVariant.mediaUrls
           .map((url: unknown) => String(url).trim())
@@ -906,6 +911,9 @@ async function applyVariantDraftMediaToShopify(args: {
     mediaUrlsByKey.set(key, [
       ...new Set([...(mediaUrlsByKey.get(key) || []), ...urls]),
     ]);
+    urls.forEach((url) => {
+      if (displayColor) mediaColorByUrl.set(url, displayColor);
+    });
   }
   const resourceUrls = [...new Set([...mediaUrlsByKey.values()].flat())];
   if (!resourceUrls.length) return { colors: 0, variants: 0, media: 0 };
@@ -915,6 +923,9 @@ async function applyVariantDraftMediaToShopify(args: {
     media: resourceUrls.map((url) => ({
       originalSource: url,
       mediaContentType: "IMAGE",
+      alt: mediaColorByUrl.get(url)
+        ? `DRIPPR_COLOR:${mediaColorByUrl.get(url)}`
+        : undefined,
     })),
   });
   const mediaErrors =
@@ -929,23 +940,43 @@ async function applyVariantDraftMediaToShopify(args: {
     if (mediaId) mediaIdByUrl.set(url, mediaId);
   });
 
-  const variantMedia = args.createdVariants.flatMap((variant: any) => {
-    const values = Array.isArray(variant?.selectedOptions)
-      ? variant.selectedOptions.map((option: any) =>
-          String(option?.value || "").trim(),
-        )
-      : [];
-    const key = keyForValues(values);
-    const mediaIds = (mediaUrlsByKey.get(key) || [])
-      .map((url) => mediaIdByUrl.get(url))
-      .filter(Boolean);
-    return variant?.id
-      ? mediaIds.map((mediaId) => ({
-          variantId: variant.id,
-          mediaIds: [mediaId],
-        }))
-      : [];
-  });
+  const variantMediaGroups = args.createdVariants
+    .map((variant: any) => {
+      const values = Array.isArray(variant?.selectedOptions)
+        ? variant.selectedOptions.map((option: any) =>
+            String(option?.value || "").trim(),
+          )
+        : [];
+      const key = keyForValues(values);
+      const mediaIds = (mediaUrlsByKey.get(key) || [])
+        .map((url) => mediaIdByUrl.get(url))
+        .filter(Boolean);
+      return variant?.id && mediaIds.length
+        ? { variantId: variant.id, mediaIds }
+        : null;
+    })
+    .filter(Boolean) as Array<{ variantId: string; mediaIds: string[] }>;
+
+  const variantFeaturedMediaUpdates = variantMediaGroups
+    .map((group) => ({
+      id: group.variantId,
+      mediaId: group.mediaIds[0],
+    }))
+    .filter((input) => input.mediaId);
+  if (variantFeaturedMediaUpdates.length) {
+    const updateResult = await shopifyGraphQL(VARIANTS_BULK_UPDATE, {
+      productId: args.productId,
+      variants: variantFeaturedMediaUpdates,
+    });
+    throwUserErrors(updateResult, "data.productVariantsBulkUpdate");
+  }
+
+  const variantMedia = variantMediaGroups.flatMap((group) =>
+    group.mediaIds.map((mediaId) => ({
+      variantId: group.variantId,
+      mediaIds: [mediaId],
+    })),
+  );
 
   for (const mediaInput of variantMedia) {
     const appendResult = await shopifyGraphQL(PRODUCT_VARIANT_APPEND_MEDIA, {
