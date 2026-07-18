@@ -89,7 +89,13 @@ type MerchantProduct = {
   price?: number;
   productType?: string;
   collections?: string[];
-  status?: "pending" | "approved" | "rejected" | "update_in_review" | "deleted";
+  status?:
+    | "pending"
+    | "approved"
+    | "rejected"
+    | "update_in_review"
+    | "deleted"
+    | "local_draft";
   images?: string[];
   imageUrls?: string[];
   image?: string | null;
@@ -103,6 +109,7 @@ type MerchantProduct = {
   barcode?: string | null;
   weightGrams?: number | null;
   seo?: { title?: string; description?: string } | null;
+  draft?: AddProductDraft;
 };
 
 type AddProductDraft = {
@@ -284,6 +291,60 @@ function createDraftId() {
     `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function cloudSafeAddDraft(draft: AddProductDraft): AddProductDraft {
+  const keepRemotePreview = (url: string) => /^https?:\/\//i.test(url);
+  const variantColorImagePreviews = Object.fromEntries(
+    Object.entries(draft.variantColorImagePreviews || {})
+      .map(([color, previews]) => [
+        color,
+        (previews || []).filter(keepRemotePreview).slice(0, 5),
+      ])
+      .filter(([, previews]) => previews.length),
+  );
+  return {
+    ...draft,
+    imagePreviews: (draft.imagePreviews || [])
+      .filter(keepRemotePreview)
+      .slice(0, 5),
+    variantColorImagePreviews,
+  };
+}
+
+async function syncAddProductDraftToCloud(
+  draft: AddProductDraft,
+  uid: string | null,
+) {
+  const idToken = await auth.currentUser?.getIdToken();
+  if (!uid || !idToken) return;
+  await fetch("/api/admin/products/update", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${idToken}`,
+    },
+    body: JSON.stringify({
+      op: "draftSave",
+      draft: cloudSafeAddDraft(draft),
+    }),
+  }).catch((err) => console.warn("Failed to sync draft to cloud", err));
+}
+
+async function deleteAddProductDraftFromCloud(
+  draftId: string | null | undefined,
+  uid: string | null,
+) {
+  const idToken = await auth.currentUser?.getIdToken();
+  if (!uid || !idToken || !draftId) return;
+  await fetch("/api/admin/products/update", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${idToken}`,
+    },
+    body: JSON.stringify({ op: "draftDelete", draftId }),
+  }).catch((err) => console.warn("Failed to delete cloud draft", err));
+}
+
 async function saveAddProductDraft(
   uid: string | null,
   stateReader: () => Partial<AddProductDraft>,
@@ -310,6 +371,7 @@ async function saveAddProductDraft(
         ...existing.filter((item) => item.id !== saved.id),
       ]),
     );
+    await syncAddProductDraftToCloud(saved, uid);
   } catch (err) {
     console.warn("Failed to save add product draft", err);
   }
@@ -361,6 +423,7 @@ async function clearAddProductDraft(uid: string | null, draftId?: string | null)
       key,
       JSON.stringify(existing.filter((draft) => draft.id !== draftId)),
     );
+    await deleteAddProductDraftFromCloud(draftId, uid);
   } catch (err) {
     console.warn("Failed to clear add product draft", err);
   }
@@ -659,6 +722,7 @@ export default function Products() {
   const localDraftProducts = useMemo<ProductListItem[]>(
     () =>
       localDrafts
+        .filter((draft) => !products.some((product) => product.id === draft.id))
         .filter((draft) => draft.title?.trim())
         .map((draft) => {
           const basePrice = Number(draft.basePriceInput || 0);
@@ -696,13 +760,27 @@ export default function Products() {
             draft,
           };
         }),
-    [localDrafts],
+    [localDrafts, products],
   );
 
   const filtered = useMemo<ProductListItem[]>(() => {
-    const remoteProducts: ProductListItem[] = products.filter(
-      (p) => p.status !== "deleted",
-    );
+    const remoteProducts: ProductListItem[] = products
+      .filter((p) => p.status !== "deleted")
+      .map((p) =>
+        p.status === "local_draft" && p.draft
+          ? {
+              ...p,
+              isLocalDraft: true,
+              imagePreview:
+                p.image ??
+                p.draft.imagePreviews?.[0] ??
+                Object.values(p.draft.variantColorImagePreviews || {}).find(
+                  (items) => items.length,
+                )?.[0] ??
+                null,
+            }
+          : p,
+      );
     const allProducts = [...localDraftProducts, ...remoteProducts];
 
     const s = search.trim().toLowerCase();
@@ -1651,6 +1729,9 @@ export default function Products() {
   const [editColorImagePreviews, setEditColorImagePreviews] = useState<
     Record<string, string[]>
   >({});
+  const [editColorImageRemovals, setEditColorImageRemovals] = useState<
+    Record<string, Record<string, boolean>>
+  >({});
   const [imagesLive, setImagesLive] = useState<string[]>([]);
   const [imageAddFiles, setImageAddFiles] = useState<File[]>([]);
   const [imageBusy, setImageBusy] = useState(false);
@@ -1712,6 +1793,20 @@ export default function Products() {
     setEditColorImagePreviews((current) => ({
       ...current,
       [color]: (current[color] || []).filter((_, itemIndex) => itemIndex !== index),
+    }));
+  }
+
+  function setEditColorImageRemoval(
+    color: string,
+    url: string,
+    checked: boolean,
+  ) {
+    setEditColorImageRemovals((current) => ({
+      ...current,
+      [color]: {
+        ...(current[color] || {}),
+        [url]: checked,
+      },
     }));
   }
 
@@ -1840,6 +1935,7 @@ export default function Products() {
       );
       setRemoveVariantIds({});
       setVariantQuickEdits({});
+      setEditColorImageRemovals({});
       setVariantMeasurementEdits(
         variants.reduce<Record<string, ProductMeasurements>>((acc, variant) => {
           acc[variant.id] = variant.measurements || emptyMeasurements();
@@ -1918,6 +2014,7 @@ export default function Products() {
     setImageAddFiles([]);
     setEditColorImageFiles({});
     setEditColorImagePreviews({});
+    setEditColorImageRemovals({});
     setVariantColorImages({});
     setVariantColorImagePreviews({});
     setExistingProductOptions([]);
@@ -2104,7 +2201,17 @@ export default function Products() {
           file,
         })),
       );
-      if (pendingColorFiles.length) {
+      const removeUrlsByColor = Object.fromEntries(
+        editColorGroups
+          .map((group) => [
+            group.label,
+            Object.entries(editColorImageRemovals[group.label] || {})
+              .filter(([, selected]) => selected)
+              .map(([url]) => url),
+          ])
+          .filter(([, urls]) => (urls as string[]).length),
+      ) as Record<string, string[]>;
+      if (pendingColorFiles.length || Object.keys(removeUrlsByColor).length) {
         const resourceUrlsByColor: Record<string, string[]> = {};
         for (let index = 0; index < pendingColorFiles.length; index += 1) {
           const item = pendingColorFiles[index];
@@ -2115,11 +2222,16 @@ export default function Products() {
           ];
         }
         payload.variantMediaUpdates = editColorGroups
-          .filter((group) => resourceUrlsByColor[group.label]?.length)
+          .filter(
+            (group) =>
+              resourceUrlsByColor[group.label]?.length ||
+              removeUrlsByColor[group.label]?.length,
+          )
           .map((group) => ({
             color: group.label,
             variantIds: group.variantIds,
-            resourceUrls: resourceUrlsByColor[group.label],
+            resourceUrls: resourceUrlsByColor[group.label] || [],
+            removeResourceUrls: removeUrlsByColor[group.label] || [],
           }));
       }
 
@@ -3195,7 +3307,7 @@ export default function Products() {
                   variant="outline"
                   onClick={handleSaveAddProductDraft}
                 >
-                  Save Draft Locally
+                  Save Draft
                 </Button>
 
                 <Button
@@ -3267,7 +3379,8 @@ export default function Products() {
                 </TableHeader>
                 <TableBody>
                   {filtered.map((p) => {
-                    const isLocalDraft = p.isLocalDraft === true;
+                    const isLocalDraft =
+                      p.isLocalDraft === true || p.status === "local_draft";
                     const img = isLocalDraft
                       ? p.imagePreview || ""
                       : p.image || (p.images?.[0] ?? "");
@@ -3281,7 +3394,7 @@ export default function Products() {
                             ? "bg-blue-500/10 text-blue-700 border-blue-500/20"
                             : "bg-muted text-muted-foreground border-muted";
                     const statusText = isLocalDraft
-                      ? "Local draft"
+                      ? "Draft"
                       : p.status === "approved"
                         ? "Active"
                         : p.status === "pending"
@@ -3925,6 +4038,111 @@ export default function Products() {
                       {imageBusy ? "Removing..." : "Remove selected"}
                     </Button>
                   </div>
+
+                  {!!editColorGroups.length && (
+                    <div className="space-y-4 rounded-md border bg-muted/20 p-3">
+                      <div>
+                        <h4 className="text-sm font-semibold">
+                          Variant-wise photos
+                        </h4>
+                        <p className="text-xs text-muted-foreground">
+                          Remove or add photos under the exact colour group.
+                          Changes are sent to admin review.
+                        </p>
+                      </div>
+                      {editColorGroups.map((group) => (
+                        <div key={group.label} className="space-y-2 border-t pt-3 first:border-t-0 first:pt-0">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="font-medium">{group.label}</div>
+                            <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm hover:bg-muted/50">
+                              <ImagePlus className="h-4 w-4" />
+                              Add {group.label} photos
+                              <input
+                                type="file"
+                                accept="image/png,image/jpeg,image/jpg,image/webp"
+                                multiple
+                                className="hidden"
+                                onChange={(event) => {
+                                  addEditColorImages(
+                                    group.label,
+                                    Array.from(event.target.files || []),
+                                  );
+                                  event.target.value = "";
+                                }}
+                              />
+                            </label>
+                          </div>
+
+                          {!!group.existingUrls.length && (
+                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                              {group.existingUrls.map((url) => (
+                                <label
+                                  key={`${group.label}-${url}`}
+                                  className={`relative block overflow-hidden rounded-md border bg-background ${
+                                    editColorImageRemovals[group.label]?.[url]
+                                      ? "ring-2 ring-destructive"
+                                      : ""
+                                  }`}
+                                >
+                                  <img
+                                    src={url}
+                                    alt={`${group.label} variant`}
+                                    className="h-32 w-full object-cover"
+                                  />
+                                  <div className="absolute left-2 top-2 rounded bg-white/85 px-1.5 py-0.5 text-xs">
+                                    <input
+                                      type="checkbox"
+                                      checked={
+                                        !!editColorImageRemovals[group.label]?.[url]
+                                      }
+                                      onChange={(event) =>
+                                        setEditColorImageRemoval(
+                                          group.label,
+                                          url,
+                                          event.target.checked,
+                                        )
+                                      }
+                                    />{" "}
+                                    Remove
+                                  </div>
+                                </label>
+                              ))}
+                            </div>
+                          )}
+
+                          {!!(editColorImagePreviews[group.label] || []).length && (
+                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                              {(editColorImagePreviews[group.label] || []).map(
+                                (preview, index) => (
+                                  <div
+                                    key={`${group.label}-new-${index}`}
+                                    className="relative overflow-hidden rounded-md border border-dashed bg-background"
+                                  >
+                                    <img
+                                      src={preview}
+                                      alt={`${group.label} new variant`}
+                                      className="h-32 w-full object-cover"
+                                    />
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="secondary"
+                                      className="absolute right-2 top-2"
+                                      onClick={() =>
+                                        removeEditColorImage(group.label, index)
+                                      }
+                                    >
+                                      <X className="h-3 w-3" />
+                                    </Button>
+                                  </div>
+                                ),
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   {loadingDetails ? (
                     <div className="text-sm text-muted-foreground">

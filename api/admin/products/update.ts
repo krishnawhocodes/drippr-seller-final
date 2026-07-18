@@ -127,6 +127,41 @@ function buildChangeSummary(
   };
 }
 
+function sanitizeAddDraft(input: any) {
+  const draft = input && typeof input === "object" ? input : {};
+  const id = String(draft.id || "").trim();
+  if (!id) return null;
+  const keepRemotePreview = (url: unknown) =>
+    /^https?:\/\//i.test(String(url || ""));
+  const variantColorImagePreviews = Object.fromEntries(
+    Object.entries(draft.variantColorImagePreviews || {})
+      .map(([color, previews]: [string, any]) => [
+        String(color).trim(),
+        Array.isArray(previews)
+          ? previews.map((url) => String(url || "")).filter(keepRemotePreview)
+          : [],
+      ])
+      .filter(([color, previews]) => color && (previews as string[]).length),
+  );
+  return {
+    ...draft,
+    id,
+    title: String(draft.title || "").trim() || undefined,
+    description: String(draft.description || "").trim() || undefined,
+    sku: String(draft.sku || "").trim() || undefined,
+    vendor: String(draft.vendor || "").trim() || undefined,
+    productType: String(draft.productType || "").trim() || undefined,
+    imagePreviews: Array.isArray(draft.imagePreviews)
+      ? draft.imagePreviews
+          .map((url: unknown) => String(url || ""))
+          .filter(keepRemotePreview)
+      : [],
+    variantColorImagePreviews,
+    createdAt: Number(draft.createdAt || Date.now()),
+    updatedAt: Date.now(),
+  };
+}
+
 /* ---------------- Shopify GQL ---------------- */
 
 // NOTE: removed variant.weight & variant.weightUnit (they caused 500)
@@ -172,6 +207,7 @@ const PRODUCT_DETAILS_QUERY = /* GraphQL */ `
         nodes {
           id
           url
+          altText
           variants(first: 20) {
             nodes {
               id
@@ -405,6 +441,66 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({ ok: true, saved: records.length });
       }
 
+      if (op === "draftSave") {
+        const draft = sanitizeAddDraft(body.draft);
+        if (!draft) {
+          return res
+            .status(400)
+            .json({ ok: false, error: "Missing draft id" });
+        }
+        const ref = adminDb.collection("merchantProducts").doc(draft.id);
+        const now = Date.now();
+        await ref.set(
+          {
+            id: draft.id,
+            merchantId: uid,
+            status: "local_draft",
+            published: false,
+            title: draft.title || "Untitled draft",
+            description: draft.description || "",
+            price:
+              draft.basePriceInput && Number.isFinite(Number(draft.basePriceInput))
+                ? Number(draft.basePriceInput)
+                : null,
+            compareAtPrice:
+              draft.compareAtPrice == null ? null : Number(draft.compareAtPrice),
+            productType: draft.productType || null,
+            collections: Array.isArray(draft.collections) ? draft.collections : [],
+            sku: draft.sku || null,
+            vendor: draft.vendor || null,
+            tags: Array.isArray(draft.tags) ? draft.tags : [],
+            image: draft.imagePreviews?.[0] || null,
+            images: draft.imagePreviews || [],
+            imageUrls: draft.imagePreviews || [],
+            draft,
+            createdAt: Number(draft.createdAt || now),
+            updatedAt: now,
+          },
+          { merge: true },
+        );
+        return res.status(200).json({ ok: true, id: draft.id });
+      }
+
+      if (op === "draftDelete") {
+        const draftId = String(body.draftId || "").trim();
+        if (!draftId) {
+          return res
+            .status(400)
+            .json({ ok: false, error: "Missing draft id" });
+        }
+        const ref = adminDb.collection("merchantProducts").doc(draftId);
+        const snap = await ref.get();
+        if (!snap.exists) return res.status(200).json({ ok: true });
+        const doc = snap.data() || {};
+        if (doc.merchantId && doc.merchantId !== uid) {
+          return res.status(403).json({ ok: false, error: "Forbidden" });
+        }
+        if (doc.status === "local_draft") {
+          await ref.delete();
+        }
+        return res.status(200).json({ ok: true });
+      }
+
       /* ---------- New: image edit pipeline ---------- */
 
       // 1) return staged targets for files
@@ -579,9 +675,28 @@ export default async function handler(req: any, res: any) {
             if (p) {
               liveProduct = p;
               const mediaUrlsByVariant = new Map<string, string[]>();
+              const mediaUrlsByColor = new Map<string, string[]>();
               for (const image of p.images?.nodes || []) {
                 const imageUrl = String(image?.url || "").trim();
                 if (!imageUrl) continue;
+                const altText = String(image?.altText || "").toLowerCase();
+                if (
+                  altText.includes("drippr_color:") ||
+                  altText.includes("drippr-color:")
+                ) {
+                  const color = altText
+                    .replace("drippr-color:", "drippr_color:")
+                    .split("drippr_color:")
+                    .pop()
+                    ?.split("|")?.[0]
+                    ?.trim();
+                  if (color) {
+                    mediaUrlsByColor.set(color, [
+                      ...(mediaUrlsByColor.get(color) || []),
+                      imageUrl,
+                    ]);
+                  }
+                }
                 for (const variant of image?.variants?.nodes || []) {
                   const variantId = String(variant?.id || "").trim();
                   if (!variantId) continue;
@@ -622,6 +737,26 @@ export default async function handler(req: any, res: any) {
                   mediaUrls: mediaUrlsByVariant.get(String(v.id)) || [],
                 };
               });
+              if (mediaUrlsByColor.size) {
+                const colorOptionIndex = productOptions.findIndex(
+                  (option: any) =>
+                    String(option?.name || "").trim().toLowerCase() === "color",
+                );
+                if (colorOptionIndex >= 0) {
+                  variants = variants.map((variant: any) => {
+                    if (variant.mediaUrls?.length) return variant;
+                    const color = String(
+                      variant.optionValues?.[colorOptionIndex] || "",
+                    )
+                      .trim()
+                      .toLowerCase();
+                    const mediaUrls = mediaUrlsByColor.get(color) || [];
+                    return mediaUrls.length
+                      ? { ...variant, mediaUrls: [...new Set(mediaUrls)] }
+                      : variant;
+                  });
+                }
+              }
 
               imagesLive = (p.images?.nodes || [])
                 .map((n: any) => String(n.url))
@@ -632,11 +767,6 @@ export default async function handler(req: any, res: any) {
               "[details:product]",
               err?.response?.errors || err?.message || err,
             );
-            return res.status(500).json({
-              ok: false,
-              code: "details/exception",
-              error: `[details:product] ${JSON.stringify(err?.response || err)}`,
-            });
           }
         }
 
@@ -674,6 +804,68 @@ export default async function handler(req: any, res: any) {
             return Array.isArray(saved?.mediaUrls) && saved.mediaUrls.length
               ? { ...variant, mediaUrls: saved.mediaUrls }
               : variant;
+          });
+        }
+        if (!productOptions.length && Array.isArray(doc.variantDraft?.options)) {
+          productOptions = doc.variantDraft.options
+            .map((option: any) => ({
+              name: String(option?.name || "").trim(),
+              values: Array.isArray(option?.values)
+                ? option.values
+                    .map((value: unknown) => String(value).trim())
+                    .filter(Boolean)
+                : [],
+            }))
+            .filter((option: any) => option.name && option.values.length);
+        }
+        if (!variants.length && Array.isArray(doc.variantDraft?.variants)) {
+          const measurementsByOptionKey = new Map<string, any>();
+          for (const item of normalizeVariantMeasurements(
+            doc.variantMeasurements || [],
+          )) {
+            const key = (item.optionValues || [])
+              .map((value: unknown) => String(value).trim())
+              .join("|");
+            if (key) measurementsByOptionKey.set(key, item);
+          }
+          const savedShopifyVariantIds = Array.isArray(doc.shopifyVariantIds)
+            ? doc.shopifyVariantIds
+            : [];
+          variants = doc.variantDraft.variants.map((variant: any, index: number) => {
+            const optionValues = Array.isArray(variant?.optionValues)
+              ? variant.optionValues
+              : Array.isArray(variant?.options)
+                ? variant.options
+                : [];
+            const optionKey = optionValues
+              .map((value: unknown) => String(value).trim())
+              .join("|");
+            const savedMeasurement = measurementsByOptionKey.get(optionKey);
+            return {
+              id:
+                savedMeasurement?.variantId ||
+                variant.variantId ||
+                savedShopifyVariantIds[index] ||
+                `draft-variant-${index}`,
+              title:
+                variant.title ||
+                optionValues.map((value: unknown) => String(value)).join(" / "),
+              optionValues,
+              price: variant.price != null ? Number(variant.price) : undefined,
+              compareAtPrice:
+                variant.compareAtPrice != null
+                  ? Number(variant.compareAtPrice)
+                  : undefined,
+              quantity:
+                variant.quantity != null ? Number(variant.quantity) : undefined,
+              sku: variant.sku || undefined,
+              barcode: variant.barcode || undefined,
+              measurements:
+                savedMeasurement?.measurements || variant.measurements || null,
+              mediaUrls: Array.isArray(variant.mediaUrls)
+                ? variant.mediaUrls
+                : [],
+            };
           });
         }
 
