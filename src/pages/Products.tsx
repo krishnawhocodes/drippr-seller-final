@@ -95,7 +95,11 @@ type MerchantProduct = {
     | "rejected"
     | "update_in_review"
     | "deleted"
-    | "local_draft";
+    | "local_draft"
+    | "active";
+  shopifyProductId?: string | null;
+  shopifyStatus?: "ACTIVE" | "DRAFT" | "ARCHIVED" | "DELETED" | string | null;
+  published?: boolean;
   images?: string[];
   imageUrls?: string[];
   image?: string | null;
@@ -482,6 +486,7 @@ export default function Products() {
     Record<string, string[]>
   >({});
   const skipNextDraftAutosave = useRef(false);
+  const lastShopifySyncKey = useRef("");
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
 
   // ----- list / search -----
@@ -734,6 +739,39 @@ export default function Products() {
     });
     return () => unsub();
   }, [uid]);
+
+  useEffect(() => {
+    if (!uid || !products.length) return;
+    const ids = products
+      .filter(
+        (product) =>
+          product.shopifyProductId &&
+          product.status !== "deleted" &&
+          product.status !== "local_draft",
+      )
+      .map((product) => product.id)
+      .sort();
+    if (!ids.length) return;
+    const syncKey = ids.join("|");
+    if (lastShopifySyncKey.current === syncKey) return;
+    lastShopifySyncKey.current = syncKey;
+
+    void (async () => {
+      try {
+        const idToken = await getIdToken();
+        await fetch("/api/admin/products/update", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({ op: "syncShopifyProducts", ids }),
+        });
+      } catch (error) {
+        console.warn("Failed to sync Shopify product statuses", error);
+      }
+    })();
+  }, [uid, products]);
 
   const localDraftProducts = useMemo<ProductListItem[]>(
     () =>
@@ -3520,12 +3558,18 @@ export default function Products() {
                   {filtered.map((p) => {
                     const isLocalDraft =
                       p.isLocalDraft === true || p.status === "local_draft";
+                    const isShopifyDraft =
+                      !isLocalDraft &&
+                      (String(p.shopifyStatus || "").toUpperCase() === "DRAFT" ||
+                        p.published === false);
                     const img = isLocalDraft
                       ? p.imagePreview || ""
                       : p.image || (p.images?.[0] ?? "");
                     const statusClass = isLocalDraft
                       ? "bg-purple-500/10 text-purple-700 border-purple-500/20"
-                      : p.status === "approved"
+                      : isShopifyDraft
+                        ? "bg-sky-500/10 text-sky-700 border-sky-500/20"
+                      : p.status === "approved" || p.status === "active"
                         ? "bg-green-500/10 text-green-700 border-green-500/20"
                         : p.status === "pending"
                           ? "bg-yellow-500/10 text-yellow-700 border-yellow-500/20"
@@ -3534,7 +3578,9 @@ export default function Products() {
                             : "bg-muted text-muted-foreground border-muted";
                     const statusText = isLocalDraft
                       ? "Draft"
-                      : p.status === "approved"
+                      : isShopifyDraft
+                        ? "Shopify draft"
+                      : p.status === "approved" || p.status === "active"
                         ? "Active"
                         : p.status === "pending"
                           ? "In review"

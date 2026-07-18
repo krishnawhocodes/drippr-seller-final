@@ -257,6 +257,11 @@ const PRODUCT_DELETE_MEDIA = /* GraphQL */ `
   mutation productDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
     productDeleteMedia(productId: $productId, mediaIds: $mediaIds) {
       deletedMediaIds
+      deletedProductImageIds
+      mediaUserErrors {
+        field
+        message
+      }
       userErrors {
         field
         message
@@ -853,6 +858,13 @@ async function deleteProductImagesByUrl(productId: string, urls: string[]) {
         productId,
         mediaIds: [...mediaIds],
       });
+      const mediaErrors =
+        result?.data?.productDeleteMedia?.mediaUserErrors || [];
+      if (mediaErrors.length) {
+        throw new Error(
+          mediaErrors.map((error: any) => error.message).join("; "),
+        );
+      }
       throwUserErrors(result, "data.productDeleteMedia");
       deleted += result?.data?.productDeleteMedia?.deletedMediaIds?.length || 0;
     } catch (error) {
@@ -1366,10 +1378,13 @@ async function applyVariantMediaUpdates(
     : [];
   if (!groups.length) return { colors: 0, variants: 0, media: 0, deleted: 0 };
 
-  const deletedMedia = await deleteProductImagesByUrl(
-    productId,
-    groups.flatMap((group) => group.removeResourceUrls),
-  );
+  const deleteUrls = groups.flatMap((group) => group.removeResourceUrls);
+  const deletedMedia = await deleteProductImagesByUrl(productId, deleteUrls);
+  if (deleteUrls.length && deletedMedia === 0) {
+    throw new Error(
+      "Selected product photos could not be matched in Shopify, so no photos were removed.",
+    );
+  }
   const resourceUrls = [
     ...new Set(groups.flatMap((group) => group.resourceUrls)),
   ];
@@ -2160,10 +2175,14 @@ export default async function handler(req: any, res: any) {
             );
         }
 
-        // Optional: flip merchantProducts status to 'active' if linked
         if (qdoc.merchantProductDocId) {
           await adminDb.collection("merchantProducts").doc(qdoc.merchantProductDocId).set(
-            { status: "active", updatedAt: Date.now() },
+            {
+              status: "approved",
+              published: shopifyResult.shopifyStatus !== "DRAFT",
+              shopifyStatus: shopifyResult.shopifyStatus || "DRAFT",
+              updatedAt: Date.now(),
+            },
             { merge: true }
           );
         }

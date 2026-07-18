@@ -169,6 +169,7 @@ const PRODUCT_DETAILS_QUERY = /* GraphQL */ `
   query product($id: ID!) {
     product(id: $id) {
       id
+      status
       title
       descriptionHtml
       vendor
@@ -320,6 +321,11 @@ const PRODUCT_DELETE_MEDIA = /* GraphQL */ `
   mutation productDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
     productDeleteMedia(productId: $productId, mediaIds: $mediaIds) {
       deletedMediaIds
+      deletedProductImageIds
+      mediaUserErrors {
+        field
+        message
+      }
       userErrors {
         field
         message
@@ -561,6 +567,76 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({ ok: true });
       }
 
+      if (op === "syncShopifyProducts") {
+        const ids = Array.isArray(body.ids)
+          ? [
+              ...new Set(
+                body.ids
+                  .map((id: unknown) => String(id || "").trim())
+                  .filter(Boolean),
+              ),
+            ]
+          : [];
+        if (!ids.length) {
+          return res.status(200).json({ ok: true, synced: 0, deleted: 0 });
+        }
+
+        const now = Date.now();
+        let synced = 0;
+        let deleted = 0;
+        for (const id of ids.slice(0, 25)) {
+          const ref = adminDb.collection("merchantProducts").doc(id);
+          const snap = await ref.get();
+          if (!snap.exists) continue;
+          const doc = snap.data() || {};
+          if (doc.merchantId && doc.merchantId !== uid) continue;
+          if (doc.status === "deleted") continue;
+          const shopifyProductId = String(doc.shopifyProductId || "").trim();
+          if (!shopifyProductId) continue;
+
+          try {
+            const result = await shopifyGraphQL(PRODUCT_DETAILS_QUERY, {
+              id: shopifyProductId,
+            });
+            const product = result?.data?.product || null;
+            if (!product) {
+              await ref.set(
+                {
+                  status: "deleted",
+                  published: false,
+                  shopifyStatus: "DELETED",
+                  shopifyDeletedAt: now,
+                  updatedAt: now,
+                },
+                { merge: true },
+              );
+              deleted += 1;
+              synced += 1;
+              continue;
+            }
+
+            const shopifyStatus = String(product.status || "")
+              .trim()
+              .toUpperCase();
+            if (["ACTIVE", "DRAFT", "ARCHIVED"].includes(shopifyStatus)) {
+              await ref.set(
+                {
+                  shopifyStatus,
+                  published: shopifyStatus === "ACTIVE",
+                  updatedAt: now,
+                },
+                { merge: true },
+              );
+              synced += 1;
+            }
+          } catch (error) {
+            console.warn("syncShopifyProducts failed for", id, error);
+          }
+        }
+
+        return res.status(200).json({ ok: true, synced, deleted });
+      }
+
       /* ---------- New: image edit pipeline ---------- */
 
       // 1) return staged targets for files
@@ -693,7 +769,10 @@ export default async function handler(req: any, res: any) {
               productId: shopifyProductId,
               mediaIds: [...mediaIds],
             });
-            const errs = del?.data?.productDeleteMedia?.userErrors || [];
+            const errs = [
+              ...(del?.data?.productDeleteMedia?.mediaUserErrors || []),
+              ...(del?.data?.productDeleteMedia?.userErrors || []),
+            ];
             if (errs.length) console.warn("productDeleteMedia errors:", errs);
           } catch (e) {
             console.warn("productDeleteMedia failed:", e);
@@ -753,6 +832,24 @@ export default async function handler(req: any, res: any) {
               id: doc.shopifyProductId,
             });
             const p = r?.data?.product;
+
+            if (!p) {
+              await ref.set(
+                {
+                  status: "deleted",
+                  published: false,
+                  shopifyStatus: "DELETED",
+                  shopifyDeletedAt: Date.now(),
+                  updatedAt: Date.now(),
+                },
+                { merge: true },
+              );
+              return res.status(404).json({
+                ok: false,
+                error:
+                  "This product no longer exists in Shopify and was removed from the seller list.",
+              });
+            }
 
             if (p) {
               liveProduct = p;
