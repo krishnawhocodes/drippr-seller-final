@@ -877,6 +877,91 @@ async function associateApprovedVariantMedia(args: {
   };
 }
 
+async function applyVariantDraftMediaToShopify(args: {
+  productId: string;
+  variantDraft: any;
+  createdVariants: any[];
+}) {
+  const colorOptionIndex = Array.isArray(args.variantDraft?.options)
+    ? args.variantDraft.options.findIndex(
+        (option: any) =>
+          String(option?.name || "").trim().toLowerCase() === "color",
+      )
+    : -1;
+  const keyForValues = (values: unknown[]) =>
+    colorOptionIndex >= 0
+      ? String(values[colorOptionIndex] || "").trim().toLowerCase()
+      : values.map((value) => String(value || "").trim().toLowerCase()).join("|");
+
+  const mediaUrlsByKey = new Map<string, string[]>();
+  for (const draftVariant of args.variantDraft?.variants || []) {
+    const values = draftVariant.optionValues || draftVariant.options || [];
+    const key = keyForValues(values);
+    const urls = Array.isArray(draftVariant.mediaUrls)
+      ? draftVariant.mediaUrls
+          .map((url: unknown) => String(url).trim())
+          .filter(Boolean)
+      : [];
+    if (!key || !urls.length) continue;
+    mediaUrlsByKey.set(key, [
+      ...new Set([...(mediaUrlsByKey.get(key) || []), ...urls]),
+    ]);
+  }
+  const resourceUrls = [...new Set([...mediaUrlsByKey.values()].flat())];
+  if (!resourceUrls.length) return { colors: 0, variants: 0, media: 0 };
+
+  const createResult = await shopifyGraphQL(PRODUCT_CREATE_MEDIA, {
+    productId: args.productId,
+    media: resourceUrls.map((url) => ({
+      originalSource: url,
+      mediaContentType: "IMAGE",
+    })),
+  });
+  const mediaErrors =
+    createResult?.data?.productCreateMedia?.mediaUserErrors || [];
+  if (mediaErrors.length) {
+    throw new Error(mediaErrors.map((error: any) => error.message).join("; "));
+  }
+  const createdMedia = createResult?.data?.productCreateMedia?.media || [];
+  const mediaIdByUrl = new Map<string, string>();
+  resourceUrls.forEach((url, index) => {
+    const mediaId = String(createdMedia[index]?.id || "").trim();
+    if (mediaId) mediaIdByUrl.set(url, mediaId);
+  });
+
+  const variantMedia = args.createdVariants.flatMap((variant: any) => {
+    const values = Array.isArray(variant?.selectedOptions)
+      ? variant.selectedOptions.map((option: any) =>
+          String(option?.value || "").trim(),
+        )
+      : [];
+    const key = keyForValues(values);
+    const mediaIds = (mediaUrlsByKey.get(key) || [])
+      .map((url) => mediaIdByUrl.get(url))
+      .filter(Boolean);
+    return variant?.id
+      ? mediaIds.map((mediaId) => ({
+          variantId: variant.id,
+          mediaIds: [mediaId],
+        }))
+      : [];
+  });
+
+  for (const mediaInput of variantMedia) {
+    const appendResult = await shopifyGraphQL(PRODUCT_VARIANT_APPEND_MEDIA, {
+      productId: args.productId,
+      variantMedia: [mediaInput],
+    });
+    throwUserErrors(appendResult, "data.productVariantAppendMedia");
+  }
+
+  return {
+    colors: mediaUrlsByKey.size,
+    variants: new Set(variantMedia.map((item) => item.variantId)).size,
+    media: resourceUrls.length,
+  };
+}
+
 async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
   const approved = { ...qdoc, ...pendingUpdates };
   const variantDraft = normalizeVariantDraft(approved.variantDraft);
@@ -908,7 +993,8 @@ async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
     url,
     alt: `drippr-review-media-${index + 1}`,
   }));
-  const mediaInput = mediaSourceEntries.length
+  const isMultipleVariantProduct = Boolean(variantDraft?.variants?.length);
+  const mediaInput = mediaSourceEntries.length && !isMultipleVariantProduct
     ? mediaSourceEntries.map((entry) => ({
         originalSource: entry.url,
         mediaContentType: "IMAGE" as const,
@@ -921,7 +1007,7 @@ async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
     descriptionHtml: approved.description || "",
     vendor: approved.vendor || "DRIPPR Marketplace",
     productType: approved.productType || undefined,
-    status: "ACTIVE",
+    status: "DRAFT",
     seo: approved.seo || undefined,
     tags,
     metafields: buildProductMeasurementMetafields(measurements),
@@ -957,6 +1043,7 @@ async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
   const locationId = normalizeLocationId(process.env.SHOPIFY_LOCATION_ID);
   let finalVariantNodes: any[] = [firstVariant];
   let variantMediaSync = { colors: 0, variants: 0, media: 0 };
+  const warnings: string[] = [];
 
   if (variantDraft?.variants?.length) {
     finalVariantNodes =
@@ -973,24 +1060,21 @@ async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
         cost:
           approved.inventory?.cost == null || approved.inventory.cost === ""
             ? undefined
-            : Number(approved.inventory.cost),
+          : Number(approved.inventory.cost),
         locationId,
       })) || [firstVariant];
 
-    const mediaSync = await associateApprovedVariantMedia({
-      productId: product.id,
-      variantDraft,
-      createdVariants: finalVariantNodes,
-      mediaIdBySource,
-    });
-    variantMediaSync = {
-      colors: new Set(
-        (variantDraft.variants || []).flatMap((variant: any) =>
-          variant.mediaUrls?.length ? [variant.optionValues?.join("|")] : [],
-        ),
-      ).size,
-      ...mediaSync,
-    };
+    try {
+      variantMediaSync = await applyVariantDraftMediaToShopify({
+        productId: product.id,
+        variantDraft,
+        createdVariants: finalVariantNodes,
+      });
+    } catch (error: any) {
+      warnings.push(
+        `Product was created as Shopify draft, but variant photo association failed: ${String(error?.message || error)}`,
+      );
+    }
   } else {
     const variantResult = await shopifyGraphQL(VARIANTS_BULK_UPDATE, {
       productId: product.id,
@@ -1045,12 +1129,18 @@ async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
     : normalizeVariantMeasurements(approved.variantMeasurements);
   const desiredCollections = normalizeCollectionTitles(approved.collections);
   if (desiredCollections.length) {
-    await syncShopifyCollections({
-      productId: product.id,
-      previousTitles: normalizeCollectionTitles(qdoc.collections),
-      desiredTitles: desiredCollections,
-      removeDeselected: false,
-    });
+    try {
+      await syncShopifyCollections({
+        productId: product.id,
+        previousTitles: normalizeCollectionTitles(qdoc.collections),
+        desiredTitles: desiredCollections,
+        removeDeselected: false,
+      });
+    } catch (error: any) {
+      warnings.push(
+        `Product was created as Shopify draft, but collection sync failed: ${String(error?.message || error)}`,
+      );
+    }
   }
 
   const shopifyVariantIds = finalVariantNodes
@@ -1060,8 +1150,9 @@ async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
   return {
     productId: product.id,
     inventoryItemId: finalVariantNodes[0]?.inventoryItem?.id || null,
-    warnings: [],
+    warnings,
     collections: desiredCollections,
+    shopifyStatus: "DRAFT",
     variantMediaSync,
     imageUrls,
     variantDraft,
@@ -1159,7 +1250,7 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
 
   const productInput: Record<string, any> = {
     id: productId,
-    status: "ACTIVE",
+    status: qdoc.status === "pending" ? "DRAFT" : "ACTIVE",
   };
   if (pendingUpdates.title !== undefined) productInput.title = pendingUpdates.title;
   if (pendingUpdates.description !== undefined)
@@ -1284,6 +1375,7 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
     inventoryItemId,
     warnings,
     collections: desiredCollections,
+    shopifyStatus: qdoc.status === "pending" ? "DRAFT" : "ACTIVE",
     variantMediaSync,
   };
 }
@@ -1686,10 +1778,50 @@ export default async function handler(req: any, res: any) {
         if (!id) return res.status(400).json({ ok: false, error: "id required" });
 
         const ref = adminDb.collection("merchantProducts").doc(id);
-        const snap = await ref.get();
-        if (!snap.exists) return res.status(404).json({ ok: false, error: "queue item not found" });
-
-        const qdoc = snap.data() as any;
+        let alreadyApproved = false;
+        let queueItemMissing = false;
+        let qdoc: any = null;
+        await adminDb.runTransaction(async (tx: any) => {
+          const snap = await tx.get(ref);
+          if (!snap.exists) {
+            queueItemMissing = true;
+            return;
+          }
+          const fresh = snap.data() as any;
+          if (fresh.status === "approved" && fresh.shopifyProductId) {
+            alreadyApproved = true;
+            qdoc = fresh;
+            return;
+          }
+          const approvalStartedAt = Number(fresh.approvalStartedAt || 0);
+          const approvalIsFresh =
+            fresh.approvalState === "processing" &&
+            Date.now() - approvalStartedAt < 2 * 60 * 1000;
+          if (approvalIsFresh) {
+            throw new Error("Approval is already processing. Please refresh in a moment.");
+          }
+          tx.set(
+            ref,
+            {
+              approvalState: "processing",
+              approvalStartedAt: Date.now(),
+              reviewerUid: me.uid,
+              updatedAt: Date.now(),
+            },
+            { merge: true },
+          );
+          qdoc = fresh;
+        });
+        if (alreadyApproved) {
+          return res.status(200).json({
+            ok: true,
+            alreadyApproved: true,
+            warnings: [],
+          });
+        }
+        if (queueItemMissing || !qdoc) {
+          return res.status(404).json({ ok: false, error: "queue item not found" });
+        }
         const pendingUpdates =
           qdoc.pendingUpdates && typeof qdoc.pendingUpdates === "object"
             ? qdoc.pendingUpdates
@@ -1738,8 +1870,8 @@ export default async function handler(req: any, res: any) {
             effectiveVariantMeasurements || [],
           );
         } catch (error: any) {
-          throw new Error(
-            `Approval stopped because Shopify variant sizing sync failed: ${String(error?.message || error)}`,
+          warnings.push(
+            `Product approved, but Shopify variant sizing sync failed: ${String(error?.message || error)}`,
           );
         }
 
@@ -1747,8 +1879,8 @@ export default async function handler(req: any, res: any) {
           {
             ...approvalUpdates,
             status: "approved",
-            published: true,
-            shopifyStatus: "ACTIVE",
+            published: shopifyResult.shopifyStatus !== "DRAFT",
+            shopifyStatus: shopifyResult.shopifyStatus || "DRAFT",
             shopifyProductId: shopifyResult.productId,
             shopifyProductNumericId:
               shopifyResult.productId.split("/").pop() ||
@@ -1790,6 +1922,8 @@ export default async function handler(req: any, res: any) {
             pendingUpdates: null,
             changeSummary: null,
             preReviewStatus: null,
+            approvalState: null,
+            approvalStartedAt: null,
             reviewerUid: me.uid,
             reviewNote: note || null,
             reviewedAt: Date.now(),
