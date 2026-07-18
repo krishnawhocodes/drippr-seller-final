@@ -3579,11 +3579,11 @@ export default function Products() {
                     const statusText = isLocalDraft
                       ? "Draft"
                       : p.status === "pending"
-                          ? "Approval pending"
+                          ? "Review pending"
                           : p.status === "update_in_review"
-                            ? "Update in review"
+                            ? "Review pending"
                             : isShopifyDraft
-                              ? "Shopify draft"
+                              ? "In store draft"
                               : p.status === "approved" || p.status === "active"
                                 ? "Active"
                                 : "Rejected";

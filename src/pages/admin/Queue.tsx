@@ -692,7 +692,9 @@ export default function ProductQueue() {
 
                 <div className="space-y-2 rounded-md border bg-muted/20 p-3">
                   <div>
-                    <h4 className="font-semibold">Store collections</h4>
+                    <h4 className="font-semibold">
+                      Store collections <span className="text-destructive">*</span>
+                    </h4>
                     <p className="text-xs text-muted-foreground">
                       Select where this product should appear before approving.
                     </p>

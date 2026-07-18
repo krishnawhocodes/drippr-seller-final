@@ -602,7 +602,9 @@ export default async function handler(req: any, res: any) {
             if (!product) {
               await ref.set(
                 {
-                  status: "deleted",
+                  ...(doc.status === "update_in_review"
+                    ? {}
+                    : { status: "deleted" }),
                   published: false,
                   shopifyStatus: "DELETED",
                   shopifyDeletedAt: now,
@@ -836,7 +838,9 @@ export default async function handler(req: any, res: any) {
             if (!p) {
               await ref.set(
                 {
-                  status: "deleted",
+                  ...(doc.status === "update_in_review"
+                    ? {}
+                    : { status: "deleted" }),
                   published: false,
                   shopifyStatus: "DELETED",
                   shopifyDeletedAt: Date.now(),

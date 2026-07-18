@@ -789,7 +789,8 @@ function resolveApprovedShopifyStatus(qdoc: any) {
 
 async function fetchShopifyProductStatus(productId: string) {
   const result = await shopifyGraphQL(PRODUCT_STATUS_QUERY, { id: productId });
-  const status = String(result?.data?.product?.status || "").trim().toUpperCase();
+  if (!result?.data?.product) return "MISSING";
+  const status = String(result.data.product.status || "").trim().toUpperCase();
   return ["ACTIVE", "DRAFT", "ARCHIVED"].includes(status) ? status : null;
 }
 
@@ -1460,6 +1461,28 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
     return createApprovedProductOnShopify(qdoc, pendingUpdates);
   }
 
+  let liveShopifyStatus: string | null = null;
+  try {
+    liveShopifyStatus = await fetchShopifyProductStatus(productId);
+  } catch (error) {
+    console.warn("Unable to verify Shopify product status before approval", error);
+  }
+  if (
+    liveShopifyStatus === "MISSING" ||
+    String(qdoc.shopifyStatus || "").trim().toUpperCase() === "DELETED"
+  ) {
+    return createApprovedProductOnShopify(
+      {
+        ...qdoc,
+        shopifyProductId: null,
+        shopifyProductNumericId: null,
+        shopifyVariantIds: [],
+        shopifyVariantNumericIds: [],
+      },
+      pendingUpdates,
+    );
+  }
+
   const existingMerchantTags = Array.isArray(qdoc.tags)
     ? qdoc.tags.filter((tag: any) => String(tag).startsWith("merchant:"))
     : [];
@@ -1472,8 +1495,7 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
   const preservedShopifyStatus =
     qdoc.status === "pending"
       ? "DRAFT"
-      : (await fetchShopifyProductStatus(productId).catch(() => null)) ||
-        resolveApprovedShopifyStatus(qdoc);
+      : liveShopifyStatus || resolveApprovedShopifyStatus(qdoc);
 
   const productInput: Record<string, any> = {
     id: productId,
@@ -2008,6 +2030,17 @@ export default async function handler(req: any, res: any) {
           collections?: string[];
         };
         if (!id) return res.status(400).json({ ok: false, error: "id required" });
+        const approvalCollections = Array.isArray(collections)
+          ? collections
+              .map((collection) => String(collection || "").trim())
+              .filter(Boolean)
+          : [];
+        if (!approvalCollections.length) {
+          return res.status(400).json({
+            ok: false,
+            error: "Select at least one store collection before approving.",
+          });
+        }
 
         const ref = adminDb.collection("merchantProducts").doc(id);
         let alreadyApproved = false;
@@ -2060,13 +2093,7 @@ export default async function handler(req: any, res: any) {
             : {};
         const approvalUpdates = {
           ...pendingUpdates,
-          ...(Array.isArray(collections)
-            ? {
-                collections: collections
-                  .map((collection) => String(collection || "").trim())
-                  .filter(Boolean),
-              }
-            : {}),
+          collections: approvalCollections,
         };
         const approvedMeasurements =
           approvalUpdates.measurements !== undefined
