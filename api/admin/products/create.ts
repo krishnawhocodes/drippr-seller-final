@@ -610,19 +610,24 @@ async function associateVariantMedia(args: {
         ),
       ];
       return variant?.id && mediaIds.length
-        ? [{ variantId: variant.id, mediaIds }]
+        ? mediaIds.map((mediaId) => ({
+            variantId: variant.id,
+            mediaIds: [mediaId],
+          }))
         : [];
     })
     .filter(Boolean);
 
   if (!variantMedia.length) return;
-  const result = await shopifyGraphQL(PRODUCT_VARIANT_APPEND_MEDIA, {
-    productId: args.productId,
-    variantMedia,
-  });
-  const errors = result?.data?.productVariantAppendMedia?.userErrors || [];
-  if (errors.length) {
-    throw new Error(errors.map((error: any) => error.message).join("; "));
+  for (const mediaInput of variantMedia) {
+    const result = await shopifyGraphQL(PRODUCT_VARIANT_APPEND_MEDIA, {
+      productId: args.productId,
+      variantMedia: [mediaInput],
+    });
+    const errors = result?.data?.productVariantAppendMedia?.userErrors || [];
+    if (errors.length) {
+      throw new Error(errors.map((error: any) => error.message).join("; "));
+    }
   }
 }
 
@@ -705,21 +710,7 @@ export default async function handler(req: any, res: any) {
 
     const variantMeasurements = buildVariantMeasurements(normalizedVariantDraft);
 
-    // --- Shopify product input ---
     const shopifyTags = [...new Set([`merchant:${merchantId}`, ...tags])];
-    const shopifyStatus = "DRAFT";
-
-    const productInput = {
-      title,
-      descriptionHtml: description || "",
-      vendor: vendor || "DRIPPR Marketplace",
-      productType: productType || undefined,
-      status: shopifyStatus,
-      seo: seo || undefined,
-      tags: shopifyTags,
-      metafields: buildMeasurementMetafields(normalizedMeasurements),
-    };
-
     const baseMediaUrls = Array.isArray(resourceUrls)
       ? resourceUrls.map((url: unknown) => String(url).trim()).filter(Boolean)
       : [];
@@ -727,20 +718,9 @@ export default async function handler(req: any, res: any) {
       (variant: any) =>
         Array.isArray(variant.mediaUrls) ? variant.mediaUrls : [],
     );
-    const allMediaSources = [
+    const reviewImageUrls = [
       ...new Set([...baseMediaUrls, ...variantMediaUrls]),
     ].slice(0, 100);
-    const mediaSourceEntries = allMediaSources.map((url, index) => ({
-      url,
-      alt: `drippr-media-${index + 1}`,
-    }));
-    const mediaInput = mediaSourceEntries.length
-      ? mediaSourceEntries.map((entry) => ({
-          originalSource: entry.url,
-          mediaContentType: "IMAGE" as const,
-          alt: entry.alt,
-        }))
-      : undefined;
 
     // --- SKU claim per merchant ---
     const docRef = adminDb.collection("merchantProducts").doc();
@@ -761,152 +741,9 @@ export default async function handler(req: any, res: any) {
         .json({ ok: false, error: "SKU already used by you" });
     }
 
-    // --- 1) Create product on Shopify ---
-    const createRes = await shopifyGraphQL(PRODUCT_CREATE, {
-      product: productInput,
-      media: mediaInput,
-    });
-
-    const userErrors = createRes?.data?.productCreate?.userErrors || [];
-    if (userErrors.length) {
-      try {
-        if (claimedSkuRef) {
-          await claimedSkuRef.delete();
-          claimedSkuRef = null;
-        }
-      } catch {
-        // ignore SKU claim rollback failure
-      }
-      return res.status(400).json({
-        ok: false,
-        error: userErrors.map((error: any) => error.message).join("; "),
-      });
-    }
-
-    const product = createRes.data.productCreate.product;
-    const firstVariant = product?.variants?.nodes?.[0];
-
-    if (!product?.id || !firstVariant?.id) {
-      throw new Error("Product created but default variant not returned.");
-    }
-
-    const createdMediaEdges = Array.isArray(product?.media?.edges)
-      ? product.media.edges
-      : [];
-    const sourceByAlt = new Map(
-      mediaSourceEntries.map((entry) => [entry.alt, entry.url]),
-    );
-    const mediaIdBySource = new Map<string, string>();
-    createdMediaEdges.forEach((edge: any, index: number) => {
-      const mediaId = String(edge?.node?.id || "").trim();
-      const altText = String(edge?.node?.image?.altText || "").trim();
-      const sourceUrl =
-        sourceByAlt.get(altText) || mediaSourceEntries[index]?.url || null;
-      if (mediaId && sourceUrl) mediaIdBySource.set(sourceUrl, mediaId);
-    });
-
-    const locationId = normalizeLocationId(runtimeEnv("SHOPIFY_LOCATION_ID"));
-    let finalVariantNodes: any[] = [firstVariant];
-
-    if (normalizedVariantDraft?.variants?.length) {
-      finalVariantNodes =
-        (await createShopifyVariants({
-          productId: product.id,
-          variantDraft: normalizedVariantDraft,
-          basePrice: Number(price),
-          baseCompareAtPrice:
-            compareAtPrice == null ? undefined : Number(compareAtPrice),
-          baseSku: sku,
-          tracked: Boolean(inventory.tracked),
-          cost:
-            inventory?.cost == null || inventory.cost === ""
-              ? undefined
-              : Number(inventory.cost),
-          locationId,
-        })) || [firstVariant];
-
-      await associateVariantMedia({
-        productId: product.id,
-        variantDraft: normalizedVariantDraft,
-        createdVariants: finalVariantNodes,
-        mediaIdBySource,
-      });
-    } else {
-      const variantsPayload: any[] = [
-        {
-          id: firstVariant.id,
-          price: String(price),
-          ...(compareAtPrice != null
-            ? { compareAtPrice: String(compareAtPrice) }
-            : {}),
-          ...(barcode ? { barcode } : {}),
-          inventoryItem: {
-            sku,
-            tracked: Boolean(inventory.tracked),
-            ...(inventory?.cost != null && inventory.cost !== ""
-              ? { cost: String(inventory.cost) }
-              : {}),
-          },
-        },
-      ];
-      const updateRes = await shopifyGraphQL(VARIANTS_BULK_UPDATE, {
-        productId: product.id,
-        variants: variantsPayload,
-      });
-      const variantErrors =
-        updateRes?.data?.productVariantsBulkUpdate?.userErrors || [];
-      if (variantErrors.length) {
-        console.warn("productVariantsBulkUpdate errors:", variantErrors);
-      }
-
-      const inventoryItemId = firstVariant?.inventoryItem?.id;
-      const inventoryQuantity = Number(inventory?.quantity);
-      if (
-        locationId &&
-        inventoryItemId &&
-        Number.isFinite(inventoryQuantity) &&
-        inventoryQuantity >= 0
-      ) {
-        const inventoryResult = await shopifyGraphQL(INVENTORY_SET_ON_HAND, {
-          input: {
-            reason: "correction",
-            setQuantities: [
-              { inventoryItemId, locationId, quantity: inventoryQuantity },
-            ],
-          },
-        });
-        const inventoryErrors =
-          inventoryResult?.data?.inventorySetOnHandQuantities?.userErrors || [];
-        if (inventoryErrors.length) {
-          console.warn("inventorySetOnHandQuantities errors:", inventoryErrors);
-        }
-      }
-    }
-
-    // --- 3) Fetch permanent CDN image URLs ---
-    const cdnUrls: string[] = await fetchCdnUrlsWithRetry(product.id);
-
-    if (!cdnUrls.length) {
-      console.warn("[create] CDN images not ready; saving without image URLs.");
-    }
-
-    // --- 4) Mirror to Firestore ---
+    // --- Mirror to Firestore for admin review only.
+    // Shopify creation is intentionally deferred until queue approval.
     const now = Date.now();
-    const shopifyVariantIds = finalVariantNodes
-      .map((variant: any) => String(variant?.id || ""))
-      .filter(Boolean);
-    const shopifyVariantNumericIds = shopifyVariantIds.map(
-      (variantId: string) => variantId.split("/").pop() || "",
-    );
-    const hydratedVariantMeasurements = normalizedVariantDraft?.variants?.length
-      ? normalizedVariantDraft.variants.map((variant: any, index: number) => ({
-          variantId: finalVariantNodes[index]?.id || null,
-          title: finalVariantNodes[index]?.title || variant.title,
-          optionValues: variant.optionValues,
-          measurements: variant.measurements,
-        }))
-      : variantMeasurements;
-    const shopifyProductNumericId = String(product.id).split("/").pop() || "";
     const sellerStatus = "pending";
     const isMultipleVariantProduct =
       normalizedVariantMode === "multiple" ||
@@ -935,17 +772,28 @@ export default async function handler(req: any, res: any) {
       sku,
       barcode: barcode || null,
       seo: seo || null,
-      shopifyProductId: product.id,
-      shopifyProductNumericId,
-      shopifyVariantIds,
-      shopifyVariantNumericIds,
-      inventoryItemId: finalVariantNodes[0]?.inventoryItem?.id || null,
+      shopifyProductId: null,
+      shopifyProductNumericId: null,
+      shopifyVariantIds: [],
+      shopifyVariantNumericIds: [],
+      inventoryItemId: null,
+      inventory: {
+        quantity:
+          inventory?.quantity == null || inventory.quantity === ""
+            ? null
+            : Number(inventory.quantity),
+        tracked: inventory?.tracked !== false,
+        cost:
+          inventory?.cost == null || inventory.cost === ""
+            ? null
+            : Number(inventory.cost),
+      },
       tags: shopifyTags,
 
-      // Permanent CDN URLs only.
-      image: cdnUrls[0] || null,
-      images: cdnUrls,
-      imageUrls: cdnUrls,
+      image: reviewImageUrls[0] || null,
+      images: reviewImageUrls,
+      imageUrls: reviewImageUrls,
+      resourceUrls: baseMediaUrls,
 
       stock: Number.isFinite(totalVariantStock) ? totalVariantStock : null,
       vendor: vendor || "DRIPPR Marketplace",
@@ -959,42 +807,19 @@ export default async function handler(req: any, res: any) {
       weightGrams: toFiniteNumber(weightGrams) ?? null,
       variantMode: isMultipleVariantProduct ? "multiple" : "single",
       variantDraft: normalizedVariantDraft,
-      variantMeasurements: hydratedVariantMeasurements,
+      variantMeasurements,
       measurements: normalizedMeasurements,
       adminNotes: null,
       createdAt: now,
       updatedAt: now,
     };
 
-    const ownerRef = shopifyProductNumericId
-      ? adminDb.collection("shopifyProductOwners").doc(shopifyProductNumericId)
-      : null;
-
-    await adminDb.runTransaction(async (tx: any) => {
-      tx.set(docRef, mirrorDoc);
-
-      if (ownerRef) {
-        tx.set(
-          ownerRef,
-          {
-            shopifyProductNumericId,
-            shopifyProductId: product.id,
-            merchantId,
-            merchantProductDocId: docRef.id,
-            createdAt: now,
-            updatedAt: now,
-          },
-          { merge: true },
-        );
-      }
-    });
+    await docRef.set(mirrorDoc);
 
     return res.status(200).json({
       ok: true,
-      productId: product.id,
-      variantId: shopifyVariantIds[0] || firstVariant.id,
       firestoreId: docRef.id,
-      inReview: Boolean(normalizedVariantDraft),
+      inReview: true,
     });
   } catch (error: any) {
     try {

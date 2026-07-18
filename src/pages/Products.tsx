@@ -1424,12 +1424,9 @@ export default function Products() {
       }
       let resourceUrls: string[] = [];
       if (localFiles.length) {
-        const targets = await startStagedUploads(idToken, localFiles);
-        if (targets.length !== localFiles.length)
-          throw new Error("Upload target count mismatch");
         resourceUrls = [];
-        for (let i = 0; i < localFiles.length; i++) {
-          const url = await uploadFileToShopify(targets[i], localFiles[i]);
+        for (const file of localFiles) {
+          const url = await uploadPendingReviewImage(idToken, file);
           resourceUrls.push(url);
         }
       }
@@ -1461,17 +1458,9 @@ export default function Products() {
           ...restoredColorFiles,
         ];
         if (colorFiles.length) {
-          const targets = await startStagedUploads(
-            idToken,
-            colorFiles.map((item) => item.file),
-          );
-          if (targets.length !== colorFiles.length) {
-            throw new Error("Variant image upload target count mismatch");
-          }
-          for (let index = 0; index < colorFiles.length; index += 1) {
-            const item = colorFiles[index];
-            const resourceUrl = await uploadFileToShopify(
-              targets[index],
+          for (const item of colorFiles) {
+            const resourceUrl = await uploadPendingReviewImage(
+              idToken,
               item.file,
             );
             variantColorMediaUrls[item.color] = [
