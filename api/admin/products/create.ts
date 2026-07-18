@@ -146,6 +146,14 @@ function isNonNegativeNumber(value: any) {
   return parsed !== undefined && parsed >= 0;
 }
 
+const SELLER_DELIVERY_PRICE_BUMP = 100;
+
+function sellerVariantPriceForShopify(price: unknown, fallback: unknown) {
+  if (price == null || price === "") return Number(fallback);
+  const raw = Number(price);
+  return Number.isFinite(raw) ? raw + SELLER_DELIVERY_PRICE_BUMP : raw;
+}
+
 function missingMeasurementFields(measurements: any, category: any) {
   const normalizedCategory = category === "Bottoms" ? "Bottoms" : "Tops";
   const requiredFields =
@@ -531,7 +539,7 @@ async function createShopifyVariants(args: {
         optionName: option.name,
         name: variant.optionValues[optionIndex],
       })),
-      price: String(variant.price ?? args.basePrice),
+      price: String(sellerVariantPriceForShopify(variant.price, args.basePrice)),
       ...((variant.compareAtPrice ?? args.baseCompareAtPrice) != null
         ? { compareAtPrice: String(variant.compareAtPrice ?? args.baseCompareAtPrice) }
         : {}),

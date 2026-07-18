@@ -135,6 +135,14 @@ function chunkItems<T>(items: T[], size: number) {
   return chunks;
 }
 
+const SELLER_DELIVERY_PRICE_BUMP = 100;
+
+function sellerVariantPriceForShopify(price: unknown, fallback: unknown) {
+  if (price == null || price === "") return Number(fallback);
+  const raw = Number(price);
+  return Number.isFinite(raw) ? raw + SELLER_DELIVERY_PRICE_BUMP : raw;
+}
+
 async function setMetafieldsInBatches(metafields: any[]) {
   for (const batch of chunkItems(metafields, 25)) {
     const result = await shopifyGraphQL(METAFIELDS_SET, { metafields: batch });
@@ -931,7 +939,7 @@ async function createShopifyVariantsForApproval(args: {
           variant.options?.[optionIndex] ||
           option.values?.[0],
       })),
-      price: String(variant.price ?? args.basePrice),
+      price: String(sellerVariantPriceForShopify(variant.price, args.basePrice)),
       ...((variant.compareAtPrice ?? args.baseCompareAtPrice) != null
         ? {
             compareAtPrice: String(

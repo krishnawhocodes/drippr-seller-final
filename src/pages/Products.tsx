@@ -3567,26 +3567,26 @@ export default function Products() {
                       : p.image || (p.images?.[0] ?? "");
                     const statusClass = isLocalDraft
                       ? "bg-purple-500/10 text-purple-700 border-purple-500/20"
-                      : isShopifyDraft
-                        ? "bg-sky-500/10 text-sky-700 border-sky-500/20"
-                      : p.status === "approved" || p.status === "active"
-                        ? "bg-green-500/10 text-green-700 border-green-500/20"
-                        : p.status === "pending"
+                      : p.status === "pending"
                           ? "bg-yellow-500/10 text-yellow-700 border-yellow-500/20"
                           : p.status === "update_in_review"
                             ? "bg-blue-500/10 text-blue-700 border-blue-500/20"
-                            : "bg-muted text-muted-foreground border-muted";
+                            : isShopifyDraft
+                              ? "bg-sky-500/10 text-sky-700 border-sky-500/20"
+                              : p.status === "approved" || p.status === "active"
+                                ? "bg-green-500/10 text-green-700 border-green-500/20"
+                                : "bg-muted text-muted-foreground border-muted";
                     const statusText = isLocalDraft
                       ? "Draft"
-                      : isShopifyDraft
-                        ? "Shopify draft"
-                      : p.status === "approved" || p.status === "active"
-                        ? "Active"
-                        : p.status === "pending"
-                          ? "In review"
+                      : p.status === "pending"
+                          ? "Approval pending"
                           : p.status === "update_in_review"
                             ? "Update in review"
-                            : "Rejected";
+                            : isShopifyDraft
+                              ? "Shopify draft"
+                              : p.status === "approved" || p.status === "active"
+                                ? "Active"
+                                : "Rejected";
                     return (
                       <TableRow key={p.id}>
                         <TableCell>
