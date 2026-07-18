@@ -661,16 +661,32 @@ export default function Products() {
 
     const draft = readCurrentAddDraft();
     if (hasMeaningfulAddDraft(draft)) {
-      await saveAddProductDraft(uid, () => draft);
+      let savedDraft = draft;
+      if (
+        imagePreviews.some((preview) => preview.startsWith("data:")) ||
+        Object.values(variantColorImagePreviews).some((previews) =>
+          previews.some((preview) => preview.startsWith("data:")),
+        )
+      ) {
+        try {
+          savedDraft = await buildCloudImageDraft(draft);
+        } catch (err) {
+          console.warn("Failed to upload draft photos", err);
+          toast.error(
+            "Draft saved on this device. Photo cloud sync could not finish.",
+          );
+        }
+      }
+      await saveAddProductDraft(uid, () => savedDraft);
       setLocalDrafts((drafts) => [
-        draft,
-        ...drafts.filter((item) => item.id !== draft.id),
+        savedDraft,
+        ...drafts.filter((item) => item.id !== savedDraft.id),
       ]);
     }
     setActiveDraftId(null);
     clearAddProductFormState();
     setIsAddProductOpen(false);
-    toast.success("Draft saved locally. You can reopen it from Products.");
+    toast.success("Draft saved. You can reopen it from Products.");
   }
 
   function handleSubmitForReviewClick() {
@@ -766,21 +782,36 @@ export default function Products() {
   const filtered = useMemo<ProductListItem[]>(() => {
     const remoteProducts: ProductListItem[] = products
       .filter((p) => p.status !== "deleted")
-      .map((p) =>
-        p.status === "local_draft" && p.draft
+      .map((p) => {
+        if (p.status !== "local_draft" || !p.draft) return p;
+        const localDraft = localDrafts.find((draft) => draft.id === p.id);
+        const mergedDraft = localDraft
           ? {
-              ...p,
-              isLocalDraft: true,
-              imagePreview:
-                p.image ??
-                p.draft.imagePreviews?.[0] ??
-                Object.values(p.draft.variantColorImagePreviews || {}).find(
-                  (items) => items.length,
-                )?.[0] ??
-                null,
+              ...p.draft,
+              ...localDraft,
+              imagePreviews: localDraft.imagePreviews?.length
+                ? localDraft.imagePreviews
+                : p.draft.imagePreviews,
+              variantColorImagePreviews: Object.keys(
+                localDraft.variantColorImagePreviews || {},
+              ).length
+                ? localDraft.variantColorImagePreviews
+                : p.draft.variantColorImagePreviews,
             }
-          : p,
-      );
+          : p.draft;
+        return {
+          ...p,
+          draft: mergedDraft,
+          isLocalDraft: true,
+          imagePreview:
+            mergedDraft.imagePreviews?.[0] ??
+            Object.values(mergedDraft.variantColorImagePreviews || {}).find(
+              (items) => items.length,
+            )?.[0] ??
+            p.image ??
+            null,
+        };
+      });
     const allProducts = [...localDraftProducts, ...remoteProducts];
 
     const s = search.trim().toLowerCase();
@@ -791,7 +822,7 @@ export default function Products() {
         .toLowerCase()
         .includes(s),
     );
-  }, [products, search, localDraftProducts]);
+  }, [products, search, localDraftProducts, localDrafts]);
 
   /** ====== Variants builder state (used by Add & Edit) ====== */
   const [options, setOptions] = useState<VariantOption[]>([
@@ -1139,11 +1170,39 @@ export default function Products() {
       const draft = readCurrentAddDraft();
       const shouldSaveDraft = hasMeaningfulAddDraft(draft);
       if (shouldSaveDraft) {
+        const selectedSingleImages = [...selectedImages];
+        const selectedColorImages = Object.fromEntries(
+          Object.entries(variantColorImages).map(([color, files]) => [
+            color,
+            [...files],
+          ]),
+        );
         saveAddProductDraft(uid, () => draft);
         setLocalDrafts((drafts) => [
           draft,
           ...drafts.filter((item) => item.id !== draft.id),
         ]);
+        if (
+          selectedSingleImages.length ||
+          Object.values(selectedColorImages).some((files) => files.length)
+        ) {
+          void (async () => {
+            try {
+              const uploadedDraft = await buildCloudImageDraft(
+                draft,
+                selectedSingleImages,
+                selectedColorImages,
+              );
+              await saveAddProductDraft(uid, () => uploadedDraft);
+              setLocalDrafts((drafts) => [
+                uploadedDraft,
+                ...drafts.filter((item) => item.id !== uploadedDraft.id),
+              ]);
+            } catch (err) {
+              console.warn("Failed to upload draft photos", err);
+            }
+          })();
+        }
       }
       skipNextDraftAutosave.current = true;
       setActiveDraftId(null);
@@ -1296,6 +1355,70 @@ export default function Products() {
       throw new Error(uploadJson.message || "Variant photo upload failed");
     }
     return String(uploadJson.url);
+  }
+
+  async function buildCloudImageDraft(
+    draft: AddProductDraft,
+    singleImageFiles: File[] = selectedImages,
+    colorImageFiles: Record<string, File[]> = variantColorImages,
+  ) {
+    const idToken = await getIdToken();
+    const isRemoteUrl = (url: string) => /^https?:\/\//i.test(url);
+
+    if (draft.variantMode === "single") {
+      const uploadedUrls =
+        singleImageFiles.length > 0
+          ? await Promise.all(
+              singleImageFiles
+                .slice(0, 5)
+                .map((file) => uploadPendingReviewImage(idToken, file)),
+            )
+          : await Promise.all(
+              (draft.imagePreviews || [])
+                .filter((preview) => preview.startsWith("data:"))
+                .slice(0, 5)
+                .map(async (preview, index) =>
+                  uploadPendingReviewImage(
+                    idToken,
+                    await dataUrlToFile(preview, index),
+                  ),
+                ),
+            );
+      return {
+        ...draft,
+        imagePreviews: uploadedUrls.length
+          ? uploadedUrls
+          : (draft.imagePreviews || []).filter(isRemoteUrl).slice(0, 5),
+      };
+    }
+
+    const variantColorImagePreviews: Record<string, string[]> = {
+      ...(draft.variantColorImagePreviews || {}),
+    };
+    for (const [color, files] of Object.entries(colorImageFiles)) {
+      if (!files.length) continue;
+      variantColorImagePreviews[color] = await Promise.all(
+        files.slice(0, 5).map((file) => uploadPendingReviewImage(idToken, file)),
+      );
+    }
+    for (const [color, previews] of Object.entries(variantColorImagePreviews)) {
+      if ((colorImageFiles[color] || []).length) continue;
+      const dataPreviews = previews.filter((preview) => preview.startsWith("data:"));
+      if (dataPreviews.length) {
+        variantColorImagePreviews[color] = await Promise.all(
+          dataPreviews.slice(0, 5).map(async (preview, index) =>
+            uploadPendingReviewImage(
+              idToken,
+              await dataUrlToFile(preview, index),
+            ),
+          ),
+        );
+      } else {
+        variantColorImagePreviews[color] = previews.filter(isRemoteUrl).slice(0, 5);
+      }
+    }
+
+    return { ...draft, variantColorImagePreviews };
   }
 
   /** ====== ADD submit ====== */
@@ -1495,12 +1618,20 @@ export default function Products() {
         variantMode === "single"
           ? (selectedImages.length ? selectedImages : restoredPreviewFiles).slice(0, 5)
           : [];
-      if (variantMode === "single" && !localFiles.length) {
+      const restoredRemoteUrls =
+        variantMode === "single"
+          ? imagePreviews.filter((preview) => /^https?:\/\//i.test(preview)).slice(0, 5)
+          : [];
+      if (
+        variantMode === "single" &&
+        !localFiles.length &&
+        !restoredRemoteUrls.length
+      ) {
         return showSubmitError(
           "Please re-upload at least one product photo before submitting.",
         );
       }
-      let resourceUrls: string[] = [];
+      let resourceUrls: string[] = restoredRemoteUrls;
       if (localFiles.length) {
         resourceUrls = [];
         for (const file of localFiles) {
@@ -1514,6 +1645,14 @@ export default function Products() {
       );
       const variantColorMediaUrls: Record<string, string[]> = {};
       if (variantMode === "multiple") {
+        for (const [color, previews] of Object.entries(
+          variantColorImagePreviews,
+        )) {
+          const remoteUrls = (previews || []).filter((preview) =>
+            /^https?:\/\//i.test(preview),
+          );
+          if (remoteUrls.length) variantColorMediaUrls[color] = remoteUrls.slice(0, 5);
+        }
         const restoredColorFiles = await Promise.all(
           Object.entries(variantColorImagePreviews).flatMap(([color, previews]) =>
             (previews || [])
@@ -1544,7 +1683,7 @@ export default function Products() {
             variantColorMediaUrls[item.color] = [
               ...(variantColorMediaUrls[item.color] || []),
               resourceUrl,
-            ];
+            ].slice(0, 5);
           }
         }
       }
@@ -3740,311 +3879,18 @@ export default function Products() {
                   </div>
                 </div>
 
-                <div className="space-y-4 rounded-lg border bg-muted/20 p-4">
-                  <div>
-                    <h3 className="font-semibold">Fallback Product Measurements</h3>
-                    <p className="text-xs text-muted-foreground">
-                      Update product-level measurements when there are no
-                      size-wise values, or use these as fallback values.
-                    </p>
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[130px_1fr_150px_150px_auto] lg:items-end">
-                    <div className="space-y-2">
-                      <Label>Size</Label>
-                      <Select
-                        value={fallbackSize}
-                        onValueChange={(value) => {
-                          setFallbackSize(value);
-                          autofillEditFallbackMeasurements(
-                            value,
-                            garmentCategory,
-                            fitType,
-                          );
-                        }}
-                      >
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          {sizesForCategory(garmentCategory).map((size) => (
-                            <SelectItem key={size} value={size}>{size}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Garment category</Label>
-                      <Select
-                        value={garmentCategory}
-                        onValueChange={(value) => {
-                          const category = value as GarmentCategory;
-                          setGarmentCategory(category);
-                          const categorySizes = sizesForCategory(category);
-                          const nextSize = categorySizes.includes(fallbackSize as never)
-                            ? fallbackSize
-                            : categorySizes[0];
-                          setFallbackSize(nextSize);
-                          autofillEditFallbackMeasurements(nextSize, category, fitType);
-                          generateVariants(category, fitType);
-                        }}
-                      >
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="Tops">Tops</SelectItem>
-                          <SelectItem value="Bottoms">Bottoms</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Fit type</Label>
-                      <Select
-                        value={fitType}
-                        onValueChange={(value) => {
-                          const fit = value as FitType;
-                          setFitType(fit);
-                          autofillEditFallbackMeasurements(
-                            fallbackSize,
-                            garmentCategory,
-                            fit,
-                          );
-                          generateVariants(garmentCategory, fit);
-                        }}
-                      >
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="Slim">Slim</SelectItem>
-                          <SelectItem value="Regular">Regular</SelectItem>
-                          <SelectItem value="Oversized">Oversized</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() => autofillEditFallbackMeasurements()}
-                    >
-                      Auto-fill size
-                    </Button>
-                  </div>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="space-y-2">
-                      <Label>Chest/Bust (in)</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        step="0.1"
-                        value={eBustSize}
-                        onChange={(event) =>
-                          setEBustSize(
-                            event.target.value === ""
-                              ? ""
-                              : Number(event.target.value),
-                          )
-                        }
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Waist (in)</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        step="0.1"
-                        value={eWaistSize}
-                        onChange={(event) =>
-                          setEWaistSize(
-                            event.target.value === ""
-                              ? ""
-                              : Number(event.target.value),
-                          )
-                        }
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Hip (in)</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        step="0.1"
-                        value={eHipSize}
-                        onChange={(event) =>
-                          setEHipSize(
-                            event.target.value === ""
-                              ? ""
-                              : Number(event.target.value),
-                          )
-                        }
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Length (in)</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        step="0.1"
-                        value={eLengthSize}
-                        onChange={(event) =>
-                          setELengthSize(
-                            event.target.value === ""
-                              ? ""
-                              : Number(event.target.value),
-                          )
-                        }
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Shoulder (in)</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        step="0.1"
-                        value={eShoulderSize}
-                        onChange={(event) =>
-                          setEShoulderSize(
-                            event.target.value === ""
-                              ? ""
-                              : Number(event.target.value),
-                          )
-                        }
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Inseam (in)</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        step="0.1"
-                        value={eInseamSize}
-                        onChange={(event) =>
-                          setEInseamSize(
-                            event.target.value === ""
-                              ? ""
-                              : Number(event.target.value),
-                          )
-                        }
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Variant images */}
+                {/* Product images */}
                 <div className="border-t pt-4 space-y-3">
-                  <div>
-                    <h3 className="font-semibold">Photos by colour variant</h3>
-                    <p className="text-xs text-muted-foreground">
-                      New photos are sent with this update for admin approval.
-                      Each set is linked to every size using that colour.
-                    </p>
-                  </div>
-
                   {loadingDetails ? (
-                    <div className="text-sm text-muted-foreground">Loading variant photos...</div>
-                  ) : editColorGroups.length === 0 ? (
-                    <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-                      No live variants were found for photo assignment.
+                    <div className="text-sm text-muted-foreground">
+                      Loading product photos...
                     </div>
-                  ) : (
-                    <div className="grid gap-4 md:grid-cols-2">
-                      {editColorGroups.map((group) => (
-                        <div key={group.label} className="space-y-3 rounded-lg border p-4">
-                          <div className="flex items-center justify-between gap-3">
-                            <div>
-                              <div className="font-medium">{group.label}</div>
-                              <div className="text-xs text-muted-foreground">
-                                {group.variantIds.length} size variant{group.variantIds.length === 1 ? "" : "s"}
-                              </div>
-                            </div>
-                            <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted/50">
-                              <ImagePlus className="h-4 w-4" />
-                              Add photos
-                              <input
-                                type="file"
-                                accept="image/png,image/jpeg,image/jpg,image/webp"
-                                multiple
-                                className="hidden"
-                                onChange={(event) => {
-                                  addEditColorImages(group.label, Array.from(event.target.files || []));
-                                  event.target.value = "";
-                                }}
-                              />
-                            </label>
-                          </div>
-                          {group.existingUrls.length > 0 && (
-                            <div>
-                              <div className="mb-2 text-xs font-medium text-muted-foreground">Currently linked</div>
-                              <div className="flex flex-wrap gap-2">
-                                {group.existingUrls.map((url) => (
-                                  <img key={url} src={url} alt={`${group.label} current variant`} className="h-16 w-16 rounded-md border object-cover" />
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          {(editColorImagePreviews[group.label] || []).length > 0 && (
-                            <div>
-                              <div className="mb-2 text-xs font-medium text-emerald-700">Pending approval</div>
-                              <div className="flex flex-wrap gap-2">
-                                {(editColorImagePreviews[group.label] || []).map((preview, index) => (
-                                  <div key={`${group.label}-${index}`} className="relative">
-                                    <img src={preview} alt={`${group.label} pending variant ${index + 1}`} className="h-16 w-16 rounded-md border border-emerald-300 object-cover" />
-                                    <button
-                                      type="button"
-                                      onClick={() => removeEditColorImage(group.label, index)}
-                                      className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-xs text-destructive-foreground"
-                                      aria-label={`Remove pending ${group.label} photo ${index + 1}`}
-                                    >
-                                      {"\u00D7"}
-                                    </button>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <h4 className="border-t pt-3 text-sm font-medium">All current product images</h4>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted/50">
-                      <ImagePlus className="h-4 w-4" />
-                      Choose product photos
-                      <input
-                        type="file"
-                        accept="image/png,image/jpeg,image/jpg,image/webp"
-                        multiple
-                        className="hidden"
-                        onChange={(event) => {
-                          onEditChooseImages(event);
-                          event.target.value = "";
-                        }}
-                      />
-                    </label>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={onEditAttachImages}
-                      disabled={imageBusy || !imageAddFiles.length}
-                    >
-                      {imageBusy ? "Uploading..." : `Add selected${imageAddFiles.length ? ` (${imageAddFiles.length})` : ""}`}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      onClick={onEditDeleteSelected}
-                      disabled={
-                        imageBusy || !Object.values(deleteSel).some(Boolean)
-                      }
-                    >
-                      <ImageMinus className="h-4 w-4 mr-2" />
-                      {imageBusy ? "Removing..." : "Remove selected"}
-                    </Button>
-                  </div>
-
-                  {!!editColorGroups.length && (
+                  ) : editColorGroups.length > 0 ? (
                     <div className="space-y-4 rounded-md border bg-muted/20 p-3">
                       <div>
-                        <h4 className="text-sm font-semibold">
-                          Variant-wise photos
-                        </h4>
+                        <h3 className="font-semibold">
+                          Photos by colour variant
+                        </h3>
                         <p className="text-xs text-muted-foreground">
                           Remove or add photos under the exact colour group.
                           Changes are sent to admin review.
@@ -4053,7 +3899,12 @@ export default function Products() {
                       {editColorGroups.map((group) => (
                         <div key={group.label} className="space-y-2 border-t pt-3 first:border-t-0 first:pt-0">
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="font-medium">{group.label}</div>
+                            <div>
+                              <div className="font-medium">{group.label}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {group.variantIds.length} size variant{group.variantIds.length === 1 ? "" : "s"}
+                              </div>
+                            </div>
                             <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm hover:bg-muted/50">
                               <ImagePlus className="h-4 w-4" />
                               Add {group.label} photos
@@ -4142,44 +3993,79 @@ export default function Products() {
                         </div>
                       ))}
                     </div>
-                  )}
-
-                  {loadingDetails ? (
-                    <div className="text-sm text-muted-foreground">
-                      Loading images...
-                    </div>
-                  ) : imagesLive.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">
-                      No images.
-                    </div>
                   ) : (
-                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                      {imagesLive.map((u) => (
-                        <label
-                          key={u}
-                          className={`relative block rounded-md overflow-hidden border cursor-pointer ${deleteSel[u] ? "ring-2 ring-destructive" : ""}`}
-                        >
-                          <img
-                            src={u}
-                            alt="img"
-                            className="w-full h-40 object-cover"
+                    <>
+                      <h3 className="font-semibold">Current product photos</h3>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted/50">
+                          <ImagePlus className="h-4 w-4" />
+                          Choose product photos
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/jpg,image/webp"
+                            multiple
+                            className="hidden"
+                            onChange={(event) => {
+                              onEditChooseImages(event);
+                              event.target.value = "";
+                            }}
                           />
-                          <div className="absolute top-2 left-2 bg-white/80 px-1.5 py-0.5 rounded text-xs">
-                            <input
-                              type="checkbox"
-                              checked={!!deleteSel[u]}
-                              onChange={(e) =>
-                                setDeleteSel((prev) => ({
-                                  ...prev,
-                                  [u]: e.target.checked,
-                                }))
-                              }
-                            />{" "}
-                            Delete
-                          </div>
                         </label>
-                      ))}
-                    </div>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={onEditAttachImages}
+                          disabled={imageBusy || !imageAddFiles.length}
+                        >
+                          {imageBusy ? "Uploading..." : `Add selected${imageAddFiles.length ? ` (${imageAddFiles.length})` : ""}`}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          onClick={onEditDeleteSelected}
+                          disabled={
+                            imageBusy || !Object.values(deleteSel).some(Boolean)
+                          }
+                        >
+                          <ImageMinus className="h-4 w-4 mr-2" />
+                          {imageBusy ? "Removing..." : "Remove selected"}
+                        </Button>
+                      </div>
+
+                      {imagesLive.length === 0 ? (
+                        <div className="text-sm text-muted-foreground">
+                          No images.
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                          {imagesLive.map((u) => (
+                            <label
+                              key={u}
+                              className={`relative block rounded-md overflow-hidden border cursor-pointer ${deleteSel[u] ? "ring-2 ring-destructive" : ""}`}
+                            >
+                              <img
+                                src={u}
+                                alt="img"
+                                className="w-full h-40 object-cover"
+                              />
+                              <div className="absolute top-2 left-2 bg-white/80 px-1.5 py-0.5 rounded text-xs">
+                                <input
+                                  type="checkbox"
+                                  checked={!!deleteSel[u]}
+                                  onChange={(e) =>
+                                    setDeleteSel((prev) => ({
+                                      ...prev,
+                                      [u]: e.target.checked,
+                                    }))
+                                  }
+                                />{" "}
+                                Delete
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
 
