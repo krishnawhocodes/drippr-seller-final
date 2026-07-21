@@ -138,9 +138,29 @@ function chunkItems<T>(items: T[], size: number) {
 const SELLER_DELIVERY_PRICE_BUMP = 100;
 
 function sellerVariantPriceForShopify(price: unknown, fallback: unknown) {
-  if (price == null || price === "") return Number(fallback);
-  const raw = Number(price);
+  const raw = Number(price == null || price === "" ? fallback : price);
   return Number.isFinite(raw) ? raw + SELLER_DELIVERY_PRICE_BUMP : raw;
+}
+
+function sellerDescriptionToHtml(value: unknown) {
+  const normalized = String(value || "").replace(/\r\n?/g, "\n");
+  const escapeHtml = (text: string) =>
+    text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  const preserveSpacing = (line: string) => {
+    const expanded = escapeHtml(line.replace(/\t/g, "    "));
+    const withLeadingSpacing = expanded.replace(/^ +/, (spaces) =>
+      "&nbsp;".repeat(spaces.length),
+    );
+    return withLeadingSpacing.replace(/ {2,}/g, (spaces) =>
+      ` ${"&nbsp;".repeat(spaces.length - 1)}`,
+    );
+  };
+  return normalized.split("\n").map(preserveSpacing).join("<br>");
 }
 
 async function setMetafieldsInBatches(metafields: any[]) {
@@ -1197,7 +1217,7 @@ async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
 
   const productInput = {
     title: approved.title,
-    descriptionHtml: approved.description || "",
+    descriptionHtml: sellerDescriptionToHtml(approved.description),
     vendor: approved.vendor || "DRIPPR Marketplace",
     productType: approved.productType || undefined,
     status: "DRAFT",
@@ -1274,7 +1294,9 @@ async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
       variants: [
         {
           id: firstVariant.id,
-          price: String(approved.price),
+          price: String(
+            sellerVariantPriceForShopify(approved.price, approved.price),
+          ),
           ...(approved.compareAtPrice != null
             ? { compareAtPrice: String(approved.compareAtPrice) }
             : {}),
@@ -1503,7 +1525,9 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
   };
   if (pendingUpdates.title !== undefined) productInput.title = pendingUpdates.title;
   if (pendingUpdates.description !== undefined)
-    productInput.descriptionHtml = pendingUpdates.description || "";
+    productInput.descriptionHtml = sellerDescriptionToHtml(
+      pendingUpdates.description,
+    );
   if (pendingUpdates.vendor !== undefined) productInput.vendor = pendingUpdates.vendor;
   if (pendingUpdates.productType !== undefined)
     productInput.productType = pendingUpdates.productType || "";

@@ -1474,7 +1474,10 @@ export default function Products() {
 
     const form = new FormData(formElement);
     const title = String(form.get("title") || "").trim();
-    const description = String(form.get("description") || "").trim();
+    const description = String(form.get("description") || "").replace(
+      /\r\n?/g,
+      "\n",
+    );
 
     const rawPrice =
       basePriceInput !== "" ? basePriceInput : String(form.get("price") ?? "");
@@ -1523,7 +1526,8 @@ export default function Products() {
     )
       return showSubmitError("Please add at least one photo for the single variant.");
     if (!title) return showSubmitError("Product title is required.");
-    if (!description) return showSubmitError("Product description is required.");
+    if (!description.trim())
+      return showSubmitError("Product description is required.");
     if (rawPrice.trim() === "" || !Number.isFinite(parsedPrice) || parsedPrice <= 0)
       return showSubmitError("Please enter a valid selling price.");
     if (Number.isNaN(compareAtPrice))
@@ -2258,8 +2262,8 @@ export default function Products() {
       // 2) REVIEW updates (go to admin queue)
       if (eTitle.trim() && eTitle.trim() !== (editing.title || ""))
         payload.title = eTitle.trim();
-      if (eDescription.trim() !== (editing.description || ""))
-        payload.description = eDescription.trim();
+      if (eDescription !== (editing.description || ""))
+        payload.description = eDescription.replace(/\r\n?/g, "\n");
       if (eProductType.trim() !== (editing.productType || ""))
         payload.productType = eProductType.trim();
       if (eVendor.trim() !== (editing.vendor || ""))
@@ -4494,7 +4498,11 @@ function ProductTypeCombobox(props: {
               />
             </div>
           </div>
-          <div className="max-h-72 overflow-y-auto p-1">
+          <div
+            className="max-h-72 overflow-y-auto overscroll-contain p-1"
+            style={{ maxHeight: "18rem", overflowY: "auto" }}
+            onWheel={(event) => event.stopPropagation()}
+          >
             {filteredOptions.length ? (
               filteredOptions.map((option) => (
                 <button

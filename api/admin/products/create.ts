@@ -149,8 +149,7 @@ function isNonNegativeNumber(value: any) {
 const SELLER_DELIVERY_PRICE_BUMP = 100;
 
 function sellerVariantPriceForShopify(price: unknown, fallback: unknown) {
-  if (price == null || price === "") return Number(fallback);
-  const raw = Number(price);
+  const raw = Number(price == null || price === "" ? fallback : price);
   return Number.isFinite(raw) ? raw + SELLER_DELIVERY_PRICE_BUMP : raw;
 }
 

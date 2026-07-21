@@ -93,13 +93,15 @@ function readMeasurementMetafields(nodes: any[]) {
 function textFromHtml(value: unknown) {
   return String(value || "")
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/(?:p|div)>/gi, "\n")
     .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
+    .replace(/(?:&nbsp;|&#160;)/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
-    .trim();
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n$/, "");
 }
 
 function valuesEqual(left: any, right: any) {
