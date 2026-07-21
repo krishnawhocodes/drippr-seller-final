@@ -137,9 +137,13 @@ function chunkItems<T>(items: T[], size: number) {
 
 const SELLER_DELIVERY_PRICE_BUMP = 100;
 
-function sellerVariantPriceForShopify(price: unknown, fallback: unknown) {
+function sellerVariantPriceForShopify(
+  price: unknown,
+  fallback: unknown,
+  deliveryChargeAmount = SELLER_DELIVERY_PRICE_BUMP,
+) {
   const raw = Number(price == null || price === "" ? fallback : price);
-  return Number.isFinite(raw) ? raw + SELLER_DELIVERY_PRICE_BUMP : raw;
+  return Number.isFinite(raw) ? raw + deliveryChargeAmount : raw;
 }
 
 function sellerDescriptionToHtml(value: unknown) {
@@ -935,6 +939,7 @@ async function createShopifyVariantsForApproval(args: {
   tracked: boolean;
   cost?: number;
   locationId: string | null;
+  deliveryChargeAmount: number;
 }) {
   const { variantDraft } = args;
   if (!variantDraft?.options?.length || !variantDraft?.variants?.length) {
@@ -960,7 +965,13 @@ async function createShopifyVariantsForApproval(args: {
           variant.options?.[optionIndex] ||
           option.values?.[0],
       })),
-      price: String(sellerVariantPriceForShopify(variant.price, args.basePrice)),
+      price: String(
+        sellerVariantPriceForShopify(
+          variant.price,
+          args.basePrice,
+          args.deliveryChargeAmount,
+        ),
+      ),
       ...((variant.compareAtPrice ?? args.baseCompareAtPrice) != null
         ? {
             compareAtPrice: String(
@@ -1257,6 +1268,16 @@ async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
   let finalVariantNodes: any[] = [firstVariant];
   let variantMediaSync = { colors: 0, variants: 0, media: 0 };
   const warnings: string[] = [];
+  const hasExplicitDeliveryCharge =
+    approved.deliveryChargeAmount !== undefined &&
+    approved.deliveryChargeAmount !== null;
+  const deliveryChargeAmount = hasExplicitDeliveryCharge
+    ? Number(approved.deliveryChargeAmount) === 0
+      ? 0
+      : SELLER_DELIVERY_PRICE_BUMP
+    : isMultipleVariantProduct
+      ? SELLER_DELIVERY_PRICE_BUMP
+      : 0;
 
   if (variantDraft?.variants?.length) {
     finalVariantNodes =
@@ -1273,8 +1294,9 @@ async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
         cost:
           approved.inventory?.cost == null || approved.inventory.cost === ""
             ? undefined
-          : Number(approved.inventory.cost),
+            : Number(approved.inventory.cost),
         locationId,
+        deliveryChargeAmount,
       })) || [firstVariant];
 
     try {
@@ -1295,7 +1317,11 @@ async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
         {
           id: firstVariant.id,
           price: String(
-            sellerVariantPriceForShopify(approved.price, approved.price),
+            sellerVariantPriceForShopify(
+              approved.price,
+              approved.price,
+              deliveryChargeAmount,
+            ),
           ),
           ...(approved.compareAtPrice != null
             ? { compareAtPrice: String(approved.compareAtPrice) }

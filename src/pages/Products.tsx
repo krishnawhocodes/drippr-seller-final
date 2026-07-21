@@ -1482,9 +1482,7 @@ export default function Products() {
     const rawPrice =
       basePriceInput !== "" ? basePriceInput : String(form.get("price") ?? "");
     const parsedPrice = Number(rawPrice || 0);
-    const price = Number.isFinite(parsedPrice)
-      ? parsedPrice + (handleDeliveryCharge ? 100 : 0)
-      : 0;
+    const price = Number.isFinite(parsedPrice) ? parsedPrice : 0;
     const compareAtPriceRaw = String(form.get("compare-price") ?? "");
     const compareAtPrice =
       compareAtPriceRaw === "" ? NaN : Number(compareAtPriceRaw);
@@ -1790,6 +1788,7 @@ export default function Products() {
         title,
         description,
         price,
+        deliveryChargeAmount: handleDeliveryCharge ? 100 : 0,
         compareAtPrice,
         barcode,
         weightGrams,
@@ -2741,7 +2740,7 @@ export default function Products() {
 
     // NEW: delivery charge flag (defaults to true, like the Add form)
     const handleDelivery = boolFromCell(map["handledeliverycharge"], true);
-    const price = basePrice + (handleDelivery ? 100 : 0);
+    const price = basePrice;
 
     const compareAtPrice = requireBulkField(
       positiveNum(map["compareatprice"]),
@@ -2793,7 +2792,8 @@ export default function Products() {
     return {
       title,
       description: String(map["description"] ?? "").trim(),
-      price, // <- final price with delivery logic applied
+      price,
+      deliveryChargeAmount: handleDelivery ? 100 : 0,
       compareAtPrice,
       barcode,
       weightGrams,

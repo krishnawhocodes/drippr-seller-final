@@ -669,6 +669,7 @@ export default async function handler(req: any, res: any) {
       title,
       description,
       price,
+      deliveryChargeAmount,
       compareAtPrice,
       barcode,
       weightGrams,
@@ -690,6 +691,8 @@ export default async function handler(req: any, res: any) {
 
     const sku = normSku(rawSku);
     const normalizedMeasurements = normalizeMeasurements(measurements);
+    const normalizedDeliveryChargeAmount =
+      Number(deliveryChargeAmount) === 0 ? 0 : SELLER_DELIVERY_PRICE_BUMP;
     const normalizedVariantDraft = normalizeVariantDraft(variantDraft);
     const normalizedVariantMode = inferVariantMode(
       variantMode,
@@ -772,6 +775,7 @@ export default async function handler(req: any, res: any) {
       title,
       description: description || "",
       price: Number(price),
+      deliveryChargeAmount: normalizedDeliveryChargeAmount,
       compareAtPrice: Number(compareAtPrice),
       currency,
       status: sellerStatus,
