@@ -108,6 +108,112 @@ function valuesEqual(left: any, right: any) {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
+const SELLER_DELIVERY_PRICE_BUMP = 100;
+
+function finiteMoney(value: unknown) {
+  if (value === "" || value == null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function moneyEquals(left: unknown, right: unknown) {
+  const leftNumber = finiteMoney(left);
+  const rightNumber = finiteMoney(right);
+  return (
+    leftNumber != null &&
+    rightNumber != null &&
+    Math.abs(leftNumber - rightNumber) < 0.005
+  );
+}
+
+function optionValuesKey(values: unknown[]) {
+  return values
+    .map((value) => String(value || "").trim().toLowerCase())
+    .join("|");
+}
+
+function storedVariantBasePrice(
+  doc: any,
+  shopifyVariant: any,
+  index: number,
+) {
+  const draftVariants = Array.isArray(doc.variantDraft?.variants)
+    ? doc.variantDraft.variants
+    : [];
+  const variantId = String(shopifyVariant?.id || "").trim();
+  const sku = String(shopifyVariant?.sku || "").trim().toUpperCase();
+  const selectedValues = Array.isArray(shopifyVariant?.selectedOptions)
+    ? shopifyVariant.selectedOptions.map((option: any) => option?.value)
+    : [];
+  const selectedKey = optionValuesKey(selectedValues);
+
+  const matchingDraft =
+    draftVariants.find((variant: any) => {
+      const savedId = String(
+        variant?.variantId || variant?.shopifyVariantId || "",
+      ).trim();
+      return savedId && savedId === variantId;
+    }) ||
+    draftVariants.find(
+      (variant: any) =>
+        sku &&
+        String(variant?.sku || "").trim().toUpperCase() === sku,
+    ) ||
+    draftVariants.find((variant: any) => {
+      const values = Array.isArray(variant?.optionValues)
+        ? variant.optionValues
+        : Array.isArray(variant?.options)
+          ? variant.options
+          : [];
+      return selectedKey && optionValuesKey(values) === selectedKey;
+    }) ||
+    draftVariants[index];
+
+  const variantPrice = finiteMoney(matchingDraft?.price);
+  if (variantPrice != null) {
+    return { price: variantPrice, includesDelivery: false };
+  }
+
+  const productPrice = finiteMoney(doc.price);
+  if (productPrice == null) return null;
+  const legacySinglePrice =
+    doc.priceIncludesDelivery === true ||
+    (doc.deliveryChargeAmount == null &&
+      String(doc.variantMode || "").trim().toLowerCase() === "single");
+  return { price: productPrice, includesDelivery: legacySinglePrice };
+}
+
+function reconcileShopifyVariantPrices(doc: any, shopifyVariants: any[]) {
+  const updates: Array<{ id: string; price: string }> = [];
+  const finalPrices: number[] = [];
+
+  shopifyVariants.forEach((variant: any, index: number) => {
+    const livePrice = finiteMoney(variant?.price);
+    const stored = storedVariantBasePrice(doc, variant, index);
+    if (livePrice == null || !stored) {
+      if (livePrice != null) finalPrices[index] = livePrice;
+      return;
+    }
+
+    const expectedPrice = stored.includesDelivery
+      ? stored.price
+      : stored.price + SELLER_DELIVERY_PRICE_BUMP;
+    if (
+      variant?.id &&
+      !moneyEquals(livePrice, expectedPrice) &&
+      moneyEquals(livePrice, stored.price)
+    ) {
+      updates.push({ id: String(variant.id), price: String(expectedPrice) });
+      finalPrices[index] = expectedPrice;
+      return;
+    }
+
+    finalPrices[index] = livePrice;
+  });
+
+  return { updates, finalPrices };
+}
+
 function buildChangeSummary(
   current: Record<string, any>,
   requested: Record<string, any>,
@@ -227,6 +333,22 @@ const PRODUCT_STATUS_QUERY = /* GraphQL */ `
     product(id: $id) {
       id
       status
+      variants(first: 100) {
+        nodes {
+          id
+          sku
+          price
+          selectedOptions {
+            name
+            value
+          }
+        }
+      }
+      images(first: 1) {
+        nodes {
+          url
+        }
+      }
     }
   }
 `;
@@ -606,9 +728,16 @@ export default async function handler(req: any, res: any) {
               draft.basePriceInput && Number.isFinite(Number(draft.basePriceInput))
                 ? Number(draft.basePriceInput)
                 : null,
+            sellerDisplayPrice:
+              draft.basePriceInput && Number.isFinite(Number(draft.basePriceInput))
+                ? Number(draft.basePriceInput) + SELLER_DELIVERY_PRICE_BUMP
+                : null,
+            deliveryChargeAmount: SELLER_DELIVERY_PRICE_BUMP,
+            priceIncludesDelivery: false,
             compareAtPrice:
               draft.compareAtPrice == null ? null : Number(draft.compareAtPrice),
             productType: draft.productType || null,
+            variantMode: draft.variantMode || "single",
             collections: Array.isArray(draft.collections) ? draft.collections : [],
             sku: draft.sku || null,
             vendor: draft.vendor || null,
@@ -684,7 +813,11 @@ export default async function handler(req: any, res: any) {
               unresolved += 1;
               continue;
             }
-            if (!product) {
+            if (
+              !product ||
+              !Array.isArray(product?.variants?.nodes) ||
+              !Array.isArray(product?.images?.nodes)
+            ) {
               const result = await shopifyGraphQL(PRODUCT_STATUS_QUERY, {
                 id: shopifyProductId,
               });
@@ -714,6 +847,47 @@ export default async function handler(req: any, res: any) {
             if (["ACTIVE", "DRAFT", "ARCHIVED"].includes(shopifyStatus)) {
               const canonicalProductId =
                 normalizeShopifyProductId(product.id) || shopifyProductId;
+              const shopifyVariants = Array.isArray(product?.variants?.nodes)
+                ? product.variants.nodes
+                : [];
+              const priceReconciliation = reconcileShopifyVariantPrices(
+                doc,
+                shopifyVariants,
+              );
+              if (priceReconciliation.updates.length) {
+                const updateResult = await shopifyGraphQL(
+                  VARIANTS_BULK_UPDATE,
+                  {
+                    productId: canonicalProductId,
+                    variants: priceReconciliation.updates,
+                  },
+                );
+                const priceErrors =
+                  updateResult?.data?.productVariantsBulkUpdate?.userErrors ||
+                  [];
+                if (priceErrors.length) {
+                  console.warn(
+                    "Shopify delivery-price reconciliation failed:",
+                    priceErrors,
+                  );
+                  priceReconciliation.updates.forEach((update) => {
+                    const variantIndex = shopifyVariants.findIndex(
+                      (variant: any) => String(variant?.id) === update.id,
+                    );
+                    if (variantIndex >= 0) {
+                      priceReconciliation.finalPrices[variantIndex] =
+                        finiteMoney(shopifyVariants[variantIndex]?.price) ?? 0;
+                    }
+                  });
+                }
+              }
+              const firstShopifyPrice =
+                priceReconciliation.finalPrices.find(
+                  (price) => finiteMoney(price) != null,
+                ) ?? null;
+              const firstShopifyImage = String(
+                product?.images?.nodes?.[0]?.url || "",
+              ).trim();
               await ref.set(
                 {
                   shopifyProductId: canonicalProductId,
@@ -721,6 +895,13 @@ export default async function handler(req: any, res: any) {
                     canonicalProductId.split("/").pop() || null,
                   shopifyStatus,
                   published: shopifyStatus === "ACTIVE",
+                  ...(firstShopifyPrice != null
+                    ? {
+                        shopifyPrice: firstShopifyPrice,
+                        sellerDisplayPrice: firstShopifyPrice,
+                      }
+                    : {}),
+                  ...(firstShopifyImage ? { image: firstShopifyImage } : {}),
                   shopifyDeletedAt: null,
                   updatedAt: now,
                 },
@@ -927,10 +1108,16 @@ export default async function handler(req: any, res: any) {
         let imagesLive: string[] = [];
         let liveProduct: any = null;
 
-        if (doc.shopifyProductId) {
+        let shopifyProductId = resolveShopifyProductId(doc);
+        if (!shopifyProductId) {
+          const recoveredProduct = await recoverShopifyProductBySku(doc);
+          shopifyProductId = recoveredProduct?.id || null;
+        }
+
+        if (shopifyProductId) {
           try {
             const r = await shopifyGraphQL(PRODUCT_DETAILS_QUERY, {
-              id: doc.shopifyProductId,
+              id: shopifyProductId,
             });
             const p = r?.data?.product;
 
@@ -1059,9 +1246,9 @@ export default async function handler(req: any, res: any) {
         ]
           .map((url: unknown) => String(url || "").trim())
           .filter(Boolean);
-        imagesLive = savedProductImages.length
-          ? [...new Set(savedProductImages)]
-          : [...new Set(imagesLive)];
+        imagesLive = imagesLive.length
+          ? [...new Set(imagesLive)]
+          : [...new Set(savedProductImages)];
 
         const savedVariantMedia = [
           ...(Array.isArray(doc.variantDraft?.variants)
@@ -1072,8 +1259,34 @@ export default async function handler(req: any, res: any) {
             : []),
         ];
         if (savedVariantMedia.length && variants.length) {
+          const savedVariantSourceUrls = [
+            ...new Set(
+              savedVariantMedia.flatMap((item: any) =>
+                Array.isArray(item?.mediaUrls)
+                  ? item.mediaUrls
+                      .map((url: unknown) => String(url || "").trim())
+                      .filter(Boolean)
+                  : [],
+              ),
+            ),
+          ];
+          const liveUrlByLookupKey = new Map<string, string>();
+          imagesLive.forEach((url) => {
+            imageUrlLookupKeys(url).forEach((key) =>
+              liveUrlByLookupKey.set(key, url),
+            );
+          });
+          const liveUrlBySavedSource = new Map<string, string>();
+          savedVariantSourceUrls.forEach((savedUrl, index) => {
+            const exactLiveUrl = imageUrlLookupKeys(savedUrl)
+              .map((key) => liveUrlByLookupKey.get(key))
+              .find(Boolean);
+            const positionalLiveUrl = imagesLive[index];
+            const liveUrl = exactLiveUrl || positionalLiveUrl;
+            if (liveUrl) liveUrlBySavedSource.set(savedUrl, liveUrl);
+          });
+
           variants = variants.map((variant: any) => {
-            if (variant.mediaUrls?.length) return variant;
             const optionKey = (variant.optionValues || [])
               .map((value: unknown) => String(value).trim())
               .join("|");
@@ -1083,9 +1296,25 @@ export default async function handler(req: any, res: any) {
                   .map((value: unknown) => String(value).trim())
                   .join("|") === optionKey,
             );
-            return Array.isArray(saved?.mediaUrls) && saved.mediaUrls.length
-              ? { ...variant, mediaUrls: saved.mediaUrls }
-              : variant;
+            const savedMediaUrls = Array.isArray(saved?.mediaUrls)
+              ? saved.mediaUrls
+                  .map((url: unknown) => String(url || "").trim())
+                  .filter(Boolean)
+              : [];
+            const hydratedSavedUrls = savedMediaUrls
+              .map((url: string) =>
+                imagesLive.length ? liveUrlBySavedSource.get(url) : url,
+              )
+              .filter(Boolean);
+            const mediaUrls = [
+              ...new Set([
+                ...(Array.isArray(variant.mediaUrls)
+                  ? variant.mediaUrls
+                  : []),
+                ...hydratedSavedUrls,
+              ]),
+            ];
+            return mediaUrls.length ? { ...variant, mediaUrls } : variant;
           });
         }
         if (!productOptions.length && Array.isArray(doc.variantDraft?.options)) {
@@ -1152,6 +1381,38 @@ export default async function handler(req: any, res: any) {
         }
 
         const firstVariant = variants[0] || {};
+        if (liveProduct && shopifyProductId) {
+          const canonicalProductId =
+            normalizeShopifyProductId(liveProduct.id) || shopifyProductId;
+          await ref.set(
+            {
+              shopifyProductId: canonicalProductId,
+              shopifyProductNumericId:
+                canonicalProductId.split("/").pop() || null,
+              shopifyStatus: String(liveProduct.status || "")
+                .trim()
+                .toUpperCase(),
+              published:
+                String(liveProduct.status || "").trim().toUpperCase() ===
+                "ACTIVE",
+              ...(imagesLive.length
+                ? {
+                    image: imagesLive[0],
+                    images: imagesLive,
+                    imageUrls: imagesLive,
+                  }
+                : {}),
+              ...(firstVariant.price != null
+                ? {
+                    shopifyPrice: Number(firstVariant.price),
+                    sellerDisplayPrice: Number(firstVariant.price),
+                  }
+                : {}),
+              updatedAt: Date.now(),
+            },
+            { merge: true },
+          );
+        }
 
         return res.status(200).json({
           ok: true,
@@ -1342,8 +1603,12 @@ export default async function handler(req: any, res: any) {
         }
       }
 
-      if (quickPrice != null && !Number.isNaN(quickPrice))
+      if (quickPrice != null && !Number.isNaN(quickPrice)) {
         updates.price = quickPrice;
+        updates.shopifyPrice = quickPrice;
+        updates.sellerDisplayPrice = quickPrice;
+        updates.priceIncludesDelivery = true;
+      }
 
       if (quickQty != null && !Number.isNaN(quickQty)) {
         updates.stock = quickQty;

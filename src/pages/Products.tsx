@@ -87,6 +87,11 @@ type MerchantProduct = {
   title: string;
   description?: string;
   price?: number;
+  sellerDisplayPrice?: number | null;
+  shopifyPrice?: number | null;
+  deliveryChargeAmount?: number | null;
+  priceIncludesDelivery?: boolean;
+  variantMode?: "single" | "multiple";
   productType?: string;
   collections?: string[];
   status?:
@@ -164,6 +169,31 @@ type ProductDisplayStatus =
   | "in_store_draft"
   | "active"
   | "removed";
+
+const SELLER_DELIVERY_PRICE_BUMP = 100;
+
+function finitePrice(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sellerFacingProductPrice(product: ProductListItem) {
+  const shopifyPrice = finitePrice(product.shopifyPrice);
+  if (shopifyPrice != null) return shopifyPrice;
+
+  const storedDisplayPrice = finitePrice(product.sellerDisplayPrice);
+  if (storedDisplayPrice != null) return storedDisplayPrice;
+
+  const storedPrice = finitePrice(product.price);
+  if (storedPrice == null) return null;
+  if (product.priceIncludesDelivery === true) return storedPrice;
+
+  const isLegacySinglePrice =
+    product.deliveryChargeAmount == null && product.variantMode === "single";
+  if (isLegacySinglePrice) return storedPrice;
+
+  return storedPrice + SELLER_DELIVERY_PRICE_BUMP;
+}
 
 function resolveProductDisplayStatus(
   product: ProductListItem,
@@ -516,7 +546,6 @@ export default function Products() {
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [submitFeedback, setSubmitFeedback] = useState<string | null>(null);
-  const [handleDeliveryCharge, setHandleDeliveryCharge] = useState(true);
   const [basePriceInput, setBasePriceInput] = useState<string>("");
 
   // NEW: State for draft-supported text fields
@@ -625,7 +654,7 @@ export default function Products() {
       basePriceInput: basePriceInput || undefined,
       trackInventory,
       statusSel,
-      handleDeliveryCharge,
+      handleDeliveryCharge: true,
       imagePreviews,
       variantColorImagePreviews,
       options,
@@ -651,7 +680,6 @@ export default function Products() {
     setSelectedImages([]);
     setImagePreviews([]);
     setBasePriceInput("");
-    setHandleDeliveryCharge(true);
     setTrackInventory("yes");
     setStatusSel("active");
     setGarmentCategory("Tops");
@@ -886,14 +914,18 @@ export default function Products() {
           const basePrice = Number(draft.basePriceInput || 0);
           const finalPrice =
             Number.isFinite(basePrice) && basePrice > 0
-              ? basePrice + (draft.handleDeliveryCharge ? 100 : 0)
+              ? basePrice + SELLER_DELIVERY_PRICE_BUMP
               : undefined;
 
           return {
             id: `__local_draft__:${draft.id}`,
             title: draft.title || "Untitled local draft",
             description: draft.description,
-            price: finalPrice,
+            price: Number.isFinite(basePrice) && basePrice > 0
+              ? basePrice
+              : undefined,
+            sellerDisplayPrice: finalPrice,
+            deliveryChargeAmount: SELLER_DELIVERY_PRICE_BUMP,
             productType: draft.productType,
             collections: draft.collections,
             status: "pending",
@@ -1217,7 +1249,6 @@ export default function Products() {
     basePriceInput,
     trackInventory,
     statusSel,
-    handleDeliveryCharge,
     imagePreviews,
     options,
     variantRows,
@@ -1281,8 +1312,6 @@ export default function Products() {
       setDraftInseamSize(String(saved.measurements.inseam));
     if (saved.trackInventory) setTrackInventory(saved.trackInventory);
     if (saved.statusSel) setStatusSel(saved.statusSel);
-    if (typeof saved.handleDeliveryCharge === "boolean")
-      setHandleDeliveryCharge(saved.handleDeliveryCharge);
     if (saved.options) setOptions(saved.options);
     if (saved.variantRows) {
       const rowsMap: Record<string, VariantRow> = {};
@@ -1890,7 +1919,7 @@ export default function Products() {
         title,
         description,
         price,
-        deliveryChargeAmount: handleDeliveryCharge ? 100 : 0,
+        deliveryChargeAmount: SELLER_DELIVERY_PRICE_BUMP,
         compareAtPrice,
         barcode,
         weightGrams,
@@ -2724,15 +2753,6 @@ export default function Products() {
       .map((t) => t.trim())
       .filter(Boolean);
   }
-  function boolFromCell(v: any, defaultVal = true) {
-    const s = String(v ?? "")
-      .trim()
-      .toLowerCase();
-    if (!s) return defaultVal;
-    if (["yes", "y", "true", "1"].includes(s)) return true;
-    if (["no", "n", "false", "0"].includes(s)) return false;
-    return defaultVal;
-  }
   function positiveNum(v: any) {
     const n = num(v);
     return n != null && n > 0 ? n : undefined;
@@ -2843,8 +2863,6 @@ export default function Products() {
     const basePrice = positiveNum(map["price"]); // treat as base price
     if (!title || basePrice == null) throw new Error("Missing Title or valid Price");
 
-    // NEW: delivery charge flag (defaults to true, like the Add form)
-    const handleDelivery = boolFromCell(map["handledeliverycharge"], true);
     const price = basePrice;
 
     const compareAtPrice = requireBulkField(
@@ -2898,7 +2916,7 @@ export default function Products() {
       title,
       description: String(map["description"] ?? "").trim(),
       price,
-      deliveryChargeAmount: handleDelivery ? 100 : 0,
+      deliveryChargeAmount: SELLER_DELIVERY_PRICE_BUMP,
       compareAtPrice,
       barcode,
       weightGrams,
@@ -3386,20 +3404,9 @@ export default function Products() {
                     onChange={(e) => setBasePriceInput(e.target.value)}
                   />
 
-                  {/* DELIVERY CHARGE CHECKBOX */}
-                  <label className="inline-flex items-center gap-2 mt-2">
-                    <input
-                      type="checkbox"
-                      checked={handleDeliveryCharge}
-                      onChange={(e) =>
-                        setHandleDeliveryCharge(e.target.checked)
-                      }
-                      className="h-4 w-4"
-                    />
-                    <span className="text-sm">
-                      Pass the delivery charge to the customer
-                    </span>
-                  </label>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {"\u20B9"}100 delivery is included automatically.
+                  </p>
 
                   {/* FINAL BASE PRICE DISPLAY */}
                   <div className="mt-2 text-sm">
@@ -3411,18 +3418,14 @@ export default function Products() {
                       {"\u20B9"}
                       {(
                         Number(basePriceInput || 0) +
-                        (handleDeliveryCharge ? 100 : 0)
+                        SELLER_DELIVERY_PRICE_BUMP
                       ).toLocaleString("en-IN", {
                         minimumFractionDigits: 0,
                         maximumFractionDigits: 2,
                       })}
                     </span>
                     <span className="ml-2 text-xs text-muted-foreground">
-                      (
-                      {handleDeliveryCharge
-                        ? `+\u20B9100 delivery`
-                        : "no delivery added"}
-                      )
+                      (+{"\u20B9"}100 delivery)
                     </span>
                   </div>
                 </div>
@@ -3700,8 +3703,8 @@ export default function Products() {
                             : "-"}
                         </TableCell>
                         <TableCell>
-                          {p.price != null
-                            ? `\u20B9${Number(p.price).toLocaleString("en-IN")}`
+                          {sellerFacingProductPrice(p) != null
+                            ? `\u20B9${sellerFacingProductPrice(p)!.toLocaleString("en-IN")}`
                             : "-"}
                         </TableCell>
                         <TableCell>
@@ -4904,7 +4907,8 @@ function VariantPlanner(props: {
                 <tr>
                   <th className="w-[140px] text-left p-2">Variant</th>
                   <th className="w-[125px] text-left p-2">
-                    Price ({"\u20B9"}) <span className="text-destructive">*</span>
+                    Base price ({"\u20B9"}){" "}
+                    <span className="text-destructive">*</span>
                   </th>
                   <th className="w-[140px] text-left p-2">
                     Compare at ({"\u20B9"}) <span className="text-destructive">*</span>
@@ -4955,6 +4959,15 @@ function VariantPlanner(props: {
                             }))
                           }
                         />
+                        {finitePrice(row?.price) != null ? (
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Final: {"\u20B9"}
+                            {(
+                              finitePrice(row?.price)! +
+                              SELLER_DELIVERY_PRICE_BUMP
+                            ).toLocaleString("en-IN")}
+                          </p>
+                        ) : null}
                       </td>
                       <td className="p-2">
                         <Input
