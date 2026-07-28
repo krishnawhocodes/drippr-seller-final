@@ -157,6 +157,81 @@ type ProductListItem = MerchantProduct & {
   draft?: AddProductDraft;
 };
 
+type ProductDisplayStatus =
+  | "draft"
+  | "review_pending"
+  | "rejected"
+  | "in_store_draft"
+  | "active"
+  | "removed";
+
+function resolveProductDisplayStatus(
+  product: ProductListItem,
+): ProductDisplayStatus {
+  const workflowStatus = String(product.status || "").trim().toLowerCase();
+  const shopifyStatus = String(product.shopifyStatus || "")
+    .trim()
+    .toUpperCase();
+
+  if (product.isLocalDraft === true || workflowStatus === "local_draft") {
+    return "draft";
+  }
+  if (workflowStatus === "pending" || workflowStatus === "update_in_review") {
+    return "review_pending";
+  }
+  if (workflowStatus === "rejected") return "rejected";
+  if (workflowStatus === "deleted" || shopifyStatus === "DELETED") {
+    return "removed";
+  }
+  if (shopifyStatus === "ACTIVE") return "active";
+  if (shopifyStatus === "DRAFT" || shopifyStatus === "ARCHIVED") {
+    return "in_store_draft";
+  }
+  if (product.shopifyProductId && product.published === true) return "active";
+  if (product.shopifyProductId && product.published === false) {
+    return "in_store_draft";
+  }
+  if (workflowStatus === "approved" || workflowStatus === "active") {
+    return "active";
+  }
+  return "draft";
+}
+
+function productStatusPresentation(status: ProductDisplayStatus) {
+  switch (status) {
+    case "draft":
+      return {
+        label: "Draft",
+        className: "bg-purple-500/10 text-purple-700 border-purple-500/20",
+      };
+    case "review_pending":
+      return {
+        label: "Review Pending",
+        className: "bg-yellow-500/10 text-yellow-700 border-yellow-500/20",
+      };
+    case "rejected":
+      return {
+        label: "Rejected",
+        className: "bg-muted text-muted-foreground border-muted",
+      };
+    case "in_store_draft":
+      return {
+        label: "Instore Draft",
+        className: "bg-sky-500/10 text-sky-700 border-sky-500/20",
+      };
+    case "active":
+      return {
+        label: "Active",
+        className: "bg-green-500/10 text-green-700 border-green-500/20",
+      };
+    case "removed":
+      return {
+        label: "Removed",
+        className: "bg-red-500/10 text-red-700 border-red-500/20",
+      };
+  }
+}
+
 type VariantOption = { name: string; values: string[] };
 type VariantRow = Variant & {
   id: string;
@@ -486,7 +561,7 @@ export default function Products() {
     Record<string, string[]>
   >({});
   const skipNextDraftAutosave = useRef(false);
-  const lastShopifySyncKey = useRef("");
+  const shopifySyncInFlight = useRef(false);
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
 
   // ----- list / search -----
@@ -740,38 +815,63 @@ export default function Products() {
     return () => unsub();
   }, [uid]);
 
-  useEffect(() => {
-    if (!uid || !products.length) return;
-    const ids = products
-      .filter(
-        (product) =>
-          product.shopifyProductId &&
-          product.status !== "deleted" &&
-          product.status !== "local_draft",
-      )
-      .map((product) => product.id)
-      .sort();
-    if (!ids.length) return;
-    const syncKey = ids.join("|");
-    if (lastShopifySyncKey.current === syncKey) return;
-    lastShopifySyncKey.current = syncKey;
+  const shopifySyncProductIds = useMemo(
+    () =>
+      products
+        .filter(
+          (product) =>
+            product.shopifyProductId &&
+            product.status !== "deleted" &&
+            product.status !== "local_draft",
+        )
+        .map((product) => product.id)
+        .sort(),
+    [products],
+  );
+  const shopifySyncKey = shopifySyncProductIds.join("|");
 
-    void (async () => {
+  useEffect(() => {
+    const productIds = shopifySyncKey.split("|").filter(Boolean);
+    if (!uid || !productIds.length) return;
+
+    const syncShopifyStatuses = async () => {
+      if (shopifySyncInFlight.current) return;
+      shopifySyncInFlight.current = true;
       try {
         const idToken = await getIdToken();
-        await fetch("/api/admin/products/update", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${idToken}`,
-          },
-          body: JSON.stringify({ op: "syncShopifyProducts", ids }),
-        });
+        for (let index = 0; index < productIds.length; index += 25) {
+          const ids = productIds.slice(index, index + 25);
+          const response = await fetch("/api/admin/products/update", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${idToken}`,
+            },
+            body: JSON.stringify({ op: "syncShopifyProducts", ids }),
+          });
+          if (!response.ok) {
+            const result = await response.json().catch(() => ({}));
+            throw new Error(
+              result?.error || `Shopify status sync failed (${response.status})`,
+            );
+          }
+        }
       } catch (error) {
         console.warn("Failed to sync Shopify product statuses", error);
+      } finally {
+        shopifySyncInFlight.current = false;
       }
-    })();
-  }, [uid, products]);
+    };
+
+    void syncShopifyStatuses();
+    const intervalId = window.setInterval(syncShopifyStatuses, 60_000);
+    window.addEventListener("focus", syncShopifyStatuses);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", syncShopifyStatuses);
+    };
+  }, [uid, shopifySyncKey]);
 
   const localDraftProducts = useMemo<ProductListItem[]>(
     () =>
@@ -818,38 +918,36 @@ export default function Products() {
   );
 
   const filtered = useMemo<ProductListItem[]>(() => {
-    const remoteProducts: ProductListItem[] = products
-      .filter((p) => p.status !== "deleted")
-      .map((p) => {
-        if (p.status !== "local_draft" || !p.draft) return p;
-        const localDraft = localDrafts.find((draft) => draft.id === p.id);
-        const mergedDraft = localDraft
-          ? {
-              ...p.draft,
-              ...localDraft,
-              imagePreviews: localDraft.imagePreviews?.length
-                ? localDraft.imagePreviews
-                : p.draft.imagePreviews,
-              variantColorImagePreviews: Object.keys(
-                localDraft.variantColorImagePreviews || {},
-              ).length
-                ? localDraft.variantColorImagePreviews
-                : p.draft.variantColorImagePreviews,
-            }
-          : p.draft;
-        return {
-          ...p,
-          draft: mergedDraft,
-          isLocalDraft: true,
-          imagePreview:
-            mergedDraft.imagePreviews?.[0] ??
-            Object.values(mergedDraft.variantColorImagePreviews || {}).find(
-              (items) => items.length,
-            )?.[0] ??
-            p.image ??
-            null,
-        };
-      });
+    const remoteProducts: ProductListItem[] = products.map((p) => {
+      if (p.status !== "local_draft" || !p.draft) return p;
+      const localDraft = localDrafts.find((draft) => draft.id === p.id);
+      const mergedDraft = localDraft
+        ? {
+            ...p.draft,
+            ...localDraft,
+            imagePreviews: localDraft.imagePreviews?.length
+              ? localDraft.imagePreviews
+              : p.draft.imagePreviews,
+            variantColorImagePreviews: Object.keys(
+              localDraft.variantColorImagePreviews || {},
+            ).length
+              ? localDraft.variantColorImagePreviews
+              : p.draft.variantColorImagePreviews,
+          }
+        : p.draft;
+      return {
+        ...p,
+        draft: mergedDraft,
+        isLocalDraft: true,
+        imagePreview:
+          mergedDraft.imagePreviews?.[0] ??
+          Object.values(mergedDraft.variantColorImagePreviews || {}).find(
+            (items) => items.length,
+          )?.[0] ??
+          p.image ??
+          null,
+      };
+    });
     const allProducts = [...localDraftProducts, ...remoteProducts];
 
     const s = search.trim().toLowerCase();
@@ -2214,6 +2312,9 @@ export default function Products() {
   const handleEditProduct = (id: string) => {
     const p = products.find((x) => x.id === id);
     if (!p) return toast.error("Product not found");
+    if (resolveProductDisplayStatus(p) === "removed") {
+      return toast.error("Removed products cannot be edited.");
+    }
     openEdit(p);
   };
 
@@ -3562,35 +3663,13 @@ export default function Products() {
                   {filtered.map((p) => {
                     const isLocalDraft =
                       p.isLocalDraft === true || p.status === "local_draft";
-                    const isShopifyDraft =
-                      !isLocalDraft &&
-                      (String(p.shopifyStatus || "").toUpperCase() === "DRAFT" ||
-                        p.published === false);
+                    const displayStatus = resolveProductDisplayStatus(p);
+                    const statusPresentation =
+                      productStatusPresentation(displayStatus);
+                    const isRemoved = displayStatus === "removed";
                     const img = isLocalDraft
                       ? p.imagePreview || ""
                       : p.image || (p.images?.[0] ?? "");
-                    const statusClass = isLocalDraft
-                      ? "bg-purple-500/10 text-purple-700 border-purple-500/20"
-                      : p.status === "pending"
-                          ? "bg-yellow-500/10 text-yellow-700 border-yellow-500/20"
-                          : p.status === "update_in_review"
-                            ? "bg-blue-500/10 text-blue-700 border-blue-500/20"
-                            : isShopifyDraft
-                              ? "bg-sky-500/10 text-sky-700 border-sky-500/20"
-                              : p.status === "approved" || p.status === "active"
-                                ? "bg-green-500/10 text-green-700 border-green-500/20"
-                                : "bg-muted text-muted-foreground border-muted";
-                    const statusText = isLocalDraft
-                      ? "Draft"
-                      : p.status === "pending"
-                          ? "Review pending"
-                          : p.status === "update_in_review"
-                            ? "Review pending"
-                            : isShopifyDraft
-                              ? "In store draft"
-                              : p.status === "approved" || p.status === "active"
-                                ? "Active"
-                                : "Rejected";
                     return (
                       <TableRow key={p.id}>
                         <TableCell>
@@ -3622,7 +3701,9 @@ export default function Products() {
                             : "-"}
                         </TableCell>
                         <TableCell>
-                          <Badge className={statusClass}>{statusText}</Badge>
+                          <Badge className={statusPresentation.className}>
+                            {statusPresentation.label}
+                          </Badge>
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-2">
@@ -3667,8 +3748,13 @@ export default function Products() {
                                 <Button
                                   variant="ghost"
                                   size="icon"
+                                  disabled={isRemoved}
                                   onClick={() => handleEditProduct(p.id)}
-                                  title="Edit"
+                                  title={
+                                    isRemoved
+                                      ? "Removed products cannot be edited"
+                                      : "Edit"
+                                  }
                                 >
                                   <Edit className="h-4 w-4" />
                                 </Button>
