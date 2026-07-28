@@ -14,7 +14,7 @@ export async function shopifyGraphQL(query: string, variables?: any) {
     },
     body: JSON.stringify({ query, variables }),
   });
-  const json = await res.json();
+  const json: any = await res.json();
   if (!res.ok || json.errors || json.data?.userErrors?.length) {
     throw new Error(JSON.stringify(json));
   }

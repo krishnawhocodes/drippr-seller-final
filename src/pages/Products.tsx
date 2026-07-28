@@ -820,7 +820,6 @@ export default function Products() {
       products
         .filter(
           (product) =>
-            product.shopifyProductId &&
             product.status !== "deleted" &&
             product.status !== "local_draft",
         )
@@ -839,21 +838,26 @@ export default function Products() {
       shopifySyncInFlight.current = true;
       try {
         const idToken = await getIdToken();
-        for (let index = 0; index < productIds.length; index += 25) {
-          const ids = productIds.slice(index, index + 25);
-          const response = await fetch("/api/admin/products/update", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${idToken}`,
-            },
-            body: JSON.stringify({ op: "syncShopifyProducts", ids }),
-          });
-          if (!response.ok) {
-            const result = await response.json().catch(() => ({}));
-            throw new Error(
-              result?.error || `Shopify status sync failed (${response.status})`,
-            );
+        for (let index = 0; index < productIds.length; index += 10) {
+          const ids = productIds.slice(index, index + 10);
+          try {
+            const response = await fetch("/api/admin/products/update", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${idToken}`,
+              },
+              body: JSON.stringify({ op: "syncShopifyProducts", ids }),
+            });
+            if (!response.ok) {
+              const result = await response.json().catch(() => ({}));
+              console.warn(
+                result?.error ||
+                  `Shopify status sync failed (${response.status})`,
+              );
+            }
+          } catch (error) {
+            console.warn("Shopify status batch failed", error);
           }
         }
       } catch (error) {

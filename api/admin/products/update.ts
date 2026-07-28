@@ -222,6 +222,29 @@ const PRODUCT_DETAILS_QUERY = /* GraphQL */ `
   }
 `;
 
+const PRODUCT_STATUS_QUERY = /* GraphQL */ `
+  query productStatus($id: ID!) {
+    product(id: $id) {
+      id
+      status
+    }
+  }
+`;
+
+const PRODUCT_BY_SKU_QUERY = /* GraphQL */ `
+  query productBySku($query: String!) {
+    productVariants(first: 10, query: $query) {
+      nodes {
+        sku
+        product {
+          id
+          status
+        }
+      }
+    }
+  }
+`;
+
 // live edits (price only here)
 const VARIANTS_BULK_UPDATE = /* GraphQL */ `
   mutation productVariantsBulkUpdate(
@@ -417,6 +440,59 @@ function imageUrlLookupKeys(url: string) {
   return [...keys].filter(Boolean);
 }
 
+function normalizeShopifyProductId(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (raw.startsWith("gid://shopify/Product/")) return raw;
+  const numericId = raw.split("/").pop() || "";
+  return /^\d+$/.test(numericId)
+    ? `gid://shopify/Product/${numericId}`
+    : null;
+}
+
+function resolveShopifyProductId(doc: any) {
+  return (
+    normalizeShopifyProductId(doc.shopifyProductId) ||
+    normalizeShopifyProductId(doc.shopifyProductNumericId) ||
+    normalizeShopifyProductId(doc.productId) ||
+    normalizeShopifyProductId(doc.shopifyId)
+  );
+}
+
+async function recoverShopifyProductBySku(doc: any) {
+  const workflowStatus = String(doc.status || "").trim().toLowerCase();
+  if (
+    [
+      "pending",
+      "update_in_review",
+      "rejected",
+      "local_draft",
+      "deleted",
+    ].includes(workflowStatus)
+  ) {
+    return null;
+  }
+
+  const sku = String(doc.sku || "").trim();
+  if (!sku) return null;
+  const escapedSku = sku.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const result = await shopifyGraphQL(PRODUCT_BY_SKU_QUERY, {
+    query: `sku:"${escapedSku}"`,
+  });
+  const expectedSku = sku.toUpperCase();
+  const match = (result?.data?.productVariants?.nodes || []).find(
+    (node: any) =>
+      String(node?.sku || "").trim().toUpperCase() === expectedSku &&
+      normalizeShopifyProductId(node?.product?.id),
+  );
+  if (!match?.product) return null;
+
+  return {
+    id: normalizeShopifyProductId(match.product.id),
+    status: String(match.product.status || "").trim().toUpperCase(),
+  };
+}
+
 /* ---------------- Handler ---------------- */
 
 export default async function handler(req: any, res: any) {
@@ -570,15 +646,14 @@ export default async function handler(req: any, res: any) {
       }
 
       if (op === "syncShopifyProducts") {
-        const ids = Array.isArray(body.ids)
-          ? [
-              ...new Set(
-                body.ids
-                  .map((id: unknown) => String(id || "").trim())
-                  .filter(Boolean),
-              ),
-            ]
-          : [];
+        const rawIds: unknown[] = Array.isArray(body.ids) ? body.ids : [];
+        const ids = [
+          ...new Set(
+            rawIds
+              .map((id) => String(id || "").trim())
+              .filter(Boolean),
+          ),
+        ];
         if (!ids.length) {
           return res.status(200).json({ ok: true, synced: 0, deleted: 0 });
         }
@@ -586,6 +661,8 @@ export default async function handler(req: any, res: any) {
         const now = Date.now();
         let synced = 0;
         let deleted = 0;
+        let linked = 0;
+        let unresolved = 0;
         for (const id of ids.slice(0, 25)) {
           const ref = adminDb.collection("merchantProducts").doc(id);
           const snap = await ref.get();
@@ -593,14 +670,26 @@ export default async function handler(req: any, res: any) {
           const doc = snap.data() || {};
           if (doc.merchantId && doc.merchantId !== uid) continue;
           if (doc.status === "deleted") continue;
-          const shopifyProductId = String(doc.shopifyProductId || "").trim();
-          if (!shopifyProductId) continue;
 
           try {
-            const result = await shopifyGraphQL(PRODUCT_DETAILS_QUERY, {
-              id: shopifyProductId,
-            });
-            const product = result?.data?.product || null;
+            let shopifyProductId = resolveShopifyProductId(doc);
+            let product: any = null;
+
+            if (!shopifyProductId) {
+              product = await recoverShopifyProductBySku(doc);
+              shopifyProductId = product?.id || null;
+              if (shopifyProductId) linked += 1;
+            }
+            if (!shopifyProductId) {
+              unresolved += 1;
+              continue;
+            }
+            if (!product) {
+              const result = await shopifyGraphQL(PRODUCT_STATUS_QUERY, {
+                id: shopifyProductId,
+              });
+              product = result?.data?.product || null;
+            }
             if (!product) {
               await ref.set(
                 {
@@ -623,10 +712,16 @@ export default async function handler(req: any, res: any) {
               .trim()
               .toUpperCase();
             if (["ACTIVE", "DRAFT", "ARCHIVED"].includes(shopifyStatus)) {
+              const canonicalProductId =
+                normalizeShopifyProductId(product.id) || shopifyProductId;
               await ref.set(
                 {
+                  shopifyProductId: canonicalProductId,
+                  shopifyProductNumericId:
+                    canonicalProductId.split("/").pop() || null,
                   shopifyStatus,
                   published: shopifyStatus === "ACTIVE",
+                  shopifyDeletedAt: null,
                   updatedAt: now,
                 },
                 { merge: true },
@@ -638,7 +733,9 @@ export default async function handler(req: any, res: any) {
           }
         }
 
-        return res.status(200).json({ ok: true, synced, deleted });
+        return res
+          .status(200)
+          .json({ ok: true, synced, deleted, linked, unresolved });
       }
 
       /* ---------- New: image edit pipeline ---------- */
