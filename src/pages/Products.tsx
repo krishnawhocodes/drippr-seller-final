@@ -110,6 +110,9 @@ type MerchantProduct = {
     | "active";
   shopifyProductId?: string | null;
   shopifyStatus?: "ACTIVE" | "DRAFT" | "ARCHIVED" | "DELETED" | string | null;
+  shopifyDeletedAt?: number | null;
+  removedEditUsed?: boolean;
+  removedRecoveryReview?: boolean | null;
   published?: boolean;
   images?: string[];
   imageUrls?: string[];
@@ -293,6 +296,20 @@ function resolveProductDisplayStatus(
     return "active";
   }
   return "draft";
+}
+
+function canEditProduct(product: ProductListItem) {
+  const displayStatus = resolveProductDisplayStatus(product);
+  if (displayStatus === "removed") {
+    const removedByShopify =
+      String(product.shopifyStatus || "").trim().toUpperCase() === "DELETED" ||
+      product.shopifyDeletedAt != null;
+    return removedByShopify && product.removedEditUsed !== true;
+  }
+  if (displayStatus === "rejected" && product.removedEditUsed === true) {
+    return false;
+  }
+  return true;
 }
 
 function productStatusPresentation(status: ProductDisplayStatus) {
@@ -2413,8 +2430,12 @@ export default function Products() {
   const handleEditProduct = (id: string) => {
     const p = products.find((x) => x.id === id);
     if (!p) return toast.error("Product not found");
-    if (resolveProductDisplayStatus(p) === "removed") {
-      return toast.error("Removed products cannot be edited.");
+    if (!canEditProduct(p)) {
+      return toast.error(
+        p.removedEditUsed
+          ? "The one-time edit chance for this removed product has already been used."
+          : "This product cannot be edited.",
+      );
     }
     openEdit(p);
   };
@@ -2428,6 +2449,9 @@ export default function Products() {
       const idToken = await getIdToken();
 
       const payload: any = { id: editing.id };
+      const isRemovedRecovery =
+        resolveProductDisplayStatus(editing) === "removed";
+      if (isRemovedRecovery) payload.removedRecovery = true;
 
       // 1) LIVE updates (push instantly to Shopify)
       if (ePrice !== "" && ePrice !== editing.price)
@@ -3742,6 +3766,7 @@ export default function Products() {
                     const statusPresentation =
                       productStatusPresentation(displayStatus);
                     const isRemoved = displayStatus === "removed";
+                    const editAllowed = canEditProduct(p);
                     const thumbnailCandidates = productThumbnailCandidates(
                       p,
                       isRemoved,
@@ -3823,11 +3848,15 @@ export default function Products() {
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  disabled={isRemoved}
+                                  disabled={!editAllowed}
                                   onClick={() => handleEditProduct(p.id)}
                                   title={
-                                    isRemoved
-                                      ? "Removed products cannot be edited"
+                                    isRemoved && editAllowed
+                                      ? "Use the one-time edit chance"
+                                      : !editAllowed
+                                        ? p.removedEditUsed
+                                          ? "One-time edit chance already used"
+                                          : "This product cannot be edited"
                                       : "Edit"
                                   }
                                 >
@@ -3873,6 +3902,12 @@ export default function Products() {
 
             {editing && (
               <form onSubmit={handleEditSubmit} className="min-w-0 space-y-6">
+                {resolveProductDisplayStatus(editing) === "removed" ? (
+                  <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                    This is the only edit request available for this removed
+                    product. The chance is used when you submit it for review.
+                  </div>
+                ) : null}
                 {/* Basics */}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -3995,6 +4030,14 @@ export default function Products() {
                       placeholder="Brand name"
                       value={eVendor}
                       onChange={(event) => setEVendor(event.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>SKU ID</Label>
+                    <Input
+                      value={editing.sku || ""}
+                      readOnly
+                      className="bg-muted/40"
                     />
                   </div>
                   <div className="space-y-2">

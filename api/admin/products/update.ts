@@ -222,6 +222,202 @@ function reconcileShopifyVariantPrices(doc: any, shopifyVariants: any[]) {
   return { updates, finalPrices };
 }
 
+function mergeRemovedRecoveryVariantDraft(args: {
+  currentDraft: any;
+  requestedDraft: any;
+  quickVariants: any[];
+  shopifyVariantIds: unknown[];
+  mediaUpdates: any[];
+  removeVariantIds: unknown[];
+}) {
+  const currentOptions = Array.isArray(args.currentDraft?.options)
+    ? args.currentDraft.options
+    : [];
+  const requestedOptions = Array.isArray(args.requestedDraft?.options)
+    ? args.requestedDraft.options
+    : [];
+  const options = currentOptions.map((option: any) => ({
+    ...option,
+    name: String(option?.name || "").trim(),
+    values: Array.isArray(option?.values) ? [...option.values] : [],
+  }));
+  for (const requestedOption of requestedOptions) {
+    const name = String(requestedOption?.name || "").trim();
+    if (!name) continue;
+    const existing = options.find(
+      (option: any) => option.name.toLowerCase() === name.toLowerCase(),
+    );
+    const values = Array.isArray(requestedOption?.values)
+      ? requestedOption.values
+      : [];
+    if (existing) {
+      existing.values = [
+        ...new Set([
+          ...existing.values,
+          ...values.map((value: unknown) => String(value).trim()).filter(Boolean),
+        ]),
+      ];
+    } else {
+      options.push({
+        ...requestedOption,
+        name,
+        values: values
+          .map((value: unknown) => String(value).trim())
+          .filter(Boolean),
+      });
+    }
+  }
+
+  const currentVariants = Array.isArray(args.currentDraft?.variants)
+    ? args.currentDraft.variants
+    : [];
+  const requestedVariants = Array.isArray(args.requestedDraft?.variants)
+    ? args.requestedDraft.variants
+    : [];
+  let variants = currentVariants.map((variant: any) => ({
+    ...variant,
+    optionValues: Array.isArray(variant?.optionValues)
+      ? [...variant.optionValues]
+      : Array.isArray(variant?.options)
+        ? [...variant.options]
+        : [],
+    mediaUrls: Array.isArray(variant?.mediaUrls)
+      ? [...variant.mediaUrls]
+      : [],
+  }));
+  const variantKey = (variant: any) =>
+    optionValuesKey(
+      Array.isArray(variant?.optionValues)
+        ? variant.optionValues
+        : Array.isArray(variant?.options)
+          ? variant.options
+          : [],
+    );
+  for (const requestedVariant of requestedVariants) {
+    const key = variantKey(requestedVariant);
+    const index = variants.findIndex((variant: any) => variantKey(variant) === key);
+    if (index >= 0) {
+      variants[index] = {
+        ...variants[index],
+        ...requestedVariant,
+        mediaUrls: [
+          ...new Set([
+            ...(variants[index].mediaUrls || []),
+            ...(Array.isArray(requestedVariant?.mediaUrls)
+              ? requestedVariant.mediaUrls
+              : []),
+          ]),
+        ],
+      };
+    } else {
+      variants.push({
+        ...requestedVariant,
+        optionValues: Array.isArray(requestedVariant?.optionValues)
+          ? [...requestedVariant.optionValues]
+          : Array.isArray(requestedVariant?.options)
+            ? [...requestedVariant.options]
+            : [],
+        mediaUrls: Array.isArray(requestedVariant?.mediaUrls)
+          ? [...requestedVariant.mediaUrls]
+          : [],
+      });
+    }
+  }
+
+  const savedVariantIds = Array.isArray(args.shopifyVariantIds)
+    ? args.shopifyVariantIds.map((id) => String(id || ""))
+    : [];
+  const removeVariantIds = new Set(
+    (args.removeVariantIds || []).map((id) => String(id || "")),
+  );
+  for (const quickVariant of args.quickVariants || []) {
+    const index = savedVariantIds.indexOf(String(quickVariant?.id || ""));
+    if (index < 0 || !variants[index]) continue;
+    if (quickVariant.price != null && quickVariant.price !== "") {
+      variants[index].price = Number(quickVariant.price);
+    }
+    if (quickVariant.quantity != null && quickVariant.quantity !== "") {
+      variants[index].quantity = Number(quickVariant.quantity);
+    }
+  }
+  if (removeVariantIds.size) {
+    variants = variants.filter(
+      (_variant: any, index: number) =>
+        !removeVariantIds.has(savedVariantIds[index] || ""),
+    );
+  }
+
+  const colorOptionIndex = options.findIndex(
+    (option: any) => option.name.toLowerCase() === "color",
+  );
+  const mediaGroups = Array.isArray(args.mediaUpdates)
+    ? args.mediaUpdates
+    : [];
+  for (const group of mediaGroups) {
+    const groupLabel = String(group?.color || "").trim().toLowerCase();
+    const additions = Array.isArray(group?.resourceUrls)
+      ? group.resourceUrls.map((url: unknown) => String(url).trim()).filter(Boolean)
+      : [];
+    const removals = new Set(
+      Array.isArray(group?.removeResourceUrls)
+        ? group.removeResourceUrls
+            .map((url: unknown) => String(url).trim())
+            .filter(Boolean)
+        : [],
+    );
+    variants.forEach((variant: any) => {
+      const values = variant.optionValues || variant.options || [];
+      const variantLabel =
+        colorOptionIndex >= 0
+          ? String(values[colorOptionIndex] || "").trim().toLowerCase()
+          : variants.length === 1
+            ? groupLabel
+            : "";
+      if (!groupLabel || variantLabel !== groupLabel) return;
+      variant.mediaUrls = [
+        ...new Set([
+          ...(Array.isArray(variant.mediaUrls)
+            ? variant.mediaUrls.filter((url: string) => !removals.has(url))
+            : []),
+          ...additions,
+        ]),
+      ];
+    });
+  }
+
+  return variants.length ? { options, variants } : null;
+}
+
+function mergeRemovedRecoveryProductImages(doc: any, mediaUpdates: any[]) {
+  const sellerUploads = Array.isArray(doc.resourceUrls)
+    ? doc.resourceUrls
+    : [];
+  const currentShopifyImages = [
+    ...(Array.isArray(doc.images) ? doc.images : []),
+    ...(Array.isArray(doc.imageUrls) ? doc.imageUrls : []),
+    doc.image,
+  ];
+  const current = (sellerUploads.length ? sellerUploads : currentShopifyImages)
+    .map((url: unknown) => String(url || "").trim())
+    .filter(Boolean);
+  const additions = (mediaUpdates || []).flatMap((group: any) =>
+    Array.isArray(group?.resourceUrls) ? group.resourceUrls : [],
+  );
+  const removals = new Set(
+    (mediaUpdates || []).flatMap((group: any) =>
+      Array.isArray(group?.removeResourceUrls)
+        ? group.removeResourceUrls.map((url: unknown) => String(url).trim())
+        : [],
+    ),
+  );
+  return [
+    ...new Set([
+      ...current.filter((url: string) => !removals.has(url)),
+      ...additions.map((url: unknown) => String(url).trim()).filter(Boolean),
+    ]),
+  ];
+}
+
 function buildChangeSummary(
   current: Record<string, any>,
   requested: Record<string, any>,
@@ -1130,6 +1326,12 @@ export default async function handler(req: any, res: any) {
             const p = r?.data?.product;
 
             if (!p) {
+              const removedRecoveryAvailable =
+                doc.removedEditUsed !== true &&
+                (String(doc.shopifyStatus || "").trim().toUpperCase() ===
+                  "DELETED" ||
+                  doc.shopifyDeletedAt != null ||
+                  doc.status === "deleted");
               await ref.set(
                 {
                   ...(doc.status === "update_in_review"
@@ -1142,11 +1344,14 @@ export default async function handler(req: any, res: any) {
                 },
                 { merge: true },
               );
-              return res.status(404).json({
-                ok: false,
-                error:
-                  "This product no longer exists in Shopify and was removed from the seller list.",
-              });
+              if (!removedRecoveryAvailable) {
+                return res.status(404).json({
+                  ok: false,
+                  error:
+                    "This product no longer exists in Shopify and its one-time edit chance is unavailable.",
+                });
+              }
+              shopifyProductId = null;
             }
 
             if (p) {
@@ -1247,13 +1452,35 @@ export default async function handler(req: any, res: any) {
           }
         }
 
-        const savedProductImages = [
+        const savedSellerUploadImages = [
+          ...(Array.isArray(doc.resourceUrls) ? doc.resourceUrls : []),
+          ...(Array.isArray(doc.variantDraft?.variants)
+            ? doc.variantDraft.variants.flatMap((variant: any) =>
+                Array.isArray(variant?.mediaUrls) ? variant.mediaUrls : [],
+              )
+            : []),
+          ...(Array.isArray(doc.pendingUpdates?.variantDraft?.variants)
+            ? doc.pendingUpdates.variantDraft.variants.flatMap((variant: any) =>
+                Array.isArray(variant?.mediaUrls) ? variant.mediaUrls : [],
+              )
+            : []),
+        ]
+          .map((url: unknown) => String(url || "").trim())
+          .filter(Boolean);
+        const savedCurrentImages = [
           ...(Array.isArray(doc.images) ? doc.images : []),
           ...(Array.isArray(doc.imageUrls) ? doc.imageUrls : []),
           doc.image,
         ]
           .map((url: unknown) => String(url || "").trim())
           .filter(Boolean);
+        const isRemovedShopifyProduct =
+          String(doc.shopifyStatus || "").trim().toUpperCase() === "DELETED" ||
+          doc.shopifyDeletedAt != null ||
+          doc.status === "deleted";
+        const savedProductImages = isRemovedShopifyProduct
+          ? [...savedSellerUploadImages, ...savedCurrentImages]
+          : [...savedCurrentImages, ...savedSellerUploadImages];
         imagesLive = imagesLive.length
           ? [...new Set(imagesLive)]
           : [...new Set(savedProductImages)];
@@ -1387,7 +1614,11 @@ export default async function handler(req: any, res: any) {
             };
           });
         }
-        if (variants.length === 1 && imagesLive.length) {
+        if (
+          variants.length === 1 &&
+          imagesLive.length &&
+          (liveProduct || !variants[0]?.mediaUrls?.length)
+        ) {
           variants[0] = {
             ...variants[0],
             mediaUrls: [
@@ -1399,6 +1630,32 @@ export default async function handler(req: any, res: any) {
               ]),
             ],
           };
+        }
+        if (
+          !variants.length &&
+          isRemovedShopifyProduct &&
+          doc.removedEditUsed !== true
+        ) {
+          const recoveryLabel =
+            firstNonEmptyString(doc.singleColor, doc.color, "Product photos");
+          productOptions = [
+            { name: "Title", values: [recoveryLabel] },
+          ];
+          variants = [
+            {
+              id: "removed-recovery-default",
+              title: recoveryLabel,
+              optionValues: [recoveryLabel],
+              price: finiteMoney(doc.price) ?? undefined,
+              compareAtPrice: finiteMoney(doc.compareAtPrice) ?? undefined,
+              quantity:
+                finiteMoney(doc.stock ?? doc.inventory?.quantity) ?? undefined,
+              sku: doc.sku || undefined,
+              barcode: doc.barcode || undefined,
+              measurements: normalizeMeasurements(doc.measurements),
+              mediaUrls: imagesLive,
+            },
+          ];
         }
 
         const firstVariant = variants[0] || {};
@@ -1578,6 +1835,25 @@ export default async function handler(req: any, res: any) {
       }
 
       const shopifyProductId: string | undefined = doc.shopifyProductId;
+      const isShopifyRemoved =
+        String(doc.shopifyStatus || "").trim().toUpperCase() === "DELETED" ||
+        doc.shopifyDeletedAt != null ||
+        doc.status === "deleted";
+      const isRemovedRecovery =
+        isShopifyRemoved && body.removedRecovery === true;
+      if (isShopifyRemoved && !isRemovedRecovery) {
+        return res.status(409).json({
+          ok: false,
+          error:
+            "This removed product can only be changed through its one-time edit request.",
+        });
+      }
+      if (isRemovedRecovery && doc.removedEditUsed === true) {
+        return res.status(409).json({
+          ok: false,
+          error: "The one-time edit chance for this product has already been used.",
+        });
+      }
       const defaultVariantId: string | undefined = Array.isArray(
         doc.shopifyVariantIds,
       )
@@ -1611,7 +1887,7 @@ export default async function handler(req: any, res: any) {
           : [];
 
       const variantsPayload: any[] = [];
-      if (shopifyProductId) {
+      if (!isRemovedRecovery && shopifyProductId) {
         if (
           defaultVariantId &&
           quickPrice != null &&
@@ -1649,14 +1925,18 @@ export default async function handler(req: any, res: any) {
         }
       }
 
-      if (quickPrice != null && !Number.isNaN(quickPrice)) {
+      if (
+        !isRemovedRecovery &&
+        quickPrice != null &&
+        !Number.isNaN(quickPrice)
+      ) {
         updates.price = quickPrice;
         updates.shopifyPrice = quickPrice;
         updates.sellerDisplayPrice = quickPrice;
         updates.priceIncludesDelivery = true;
       }
 
-      if (quickQty != null && !Number.isNaN(quickQty)) {
+      if (!isRemovedRecovery && quickQty != null && !Number.isNaN(quickQty)) {
         updates.stock = quickQty;
 
         const locationId = normalizeLocationId(
@@ -1746,17 +2026,55 @@ export default async function handler(req: any, res: any) {
         }
       }
 
+      if (isRemovedRecovery) {
+        if (quickPrice != null && !Number.isNaN(quickPrice)) {
+          changedForReview.price = quickPrice;
+        }
+        if (quickQty != null && !Number.isNaN(quickQty)) {
+          changedForReview.stock = quickQty;
+          changedForReview.inventory = {
+            ...(doc.inventory || {}),
+            quantity: quickQty,
+          };
+        }
+
+        const recoveryVariantDraft = mergeRemovedRecoveryVariantDraft({
+          currentDraft: doc.variantDraft,
+          requestedDraft: changedForReview.variantDraft,
+          quickVariants,
+          shopifyVariantIds: doc.shopifyVariantIds || [],
+          mediaUpdates: changedForReview.variantMediaUpdates || [],
+          removeVariantIds: changedForReview.removeVariantIds || [],
+        });
+        if (recoveryVariantDraft) {
+          changedForReview.variantDraft = recoveryVariantDraft;
+        } else {
+          const recoveryImages = mergeRemovedRecoveryProductImages(
+            doc,
+            changedForReview.variantMediaUpdates || [],
+          );
+          changedForReview.resourceUrls = recoveryImages;
+          changedForReview.images = recoveryImages;
+          changedForReview.imageUrls = recoveryImages;
+          changedForReview.image = recoveryImages[0] || null;
+        }
+        delete changedForReview.removeVariantIds;
+        delete changedForReview.variantMediaUpdates;
+      }
+
       if (Object.keys(changedForReview).length) {
         adminNeedsReview = true;
         const mergedPendingUpdates = {
           ...(doc.pendingUpdates || {}),
           ...changedForReview,
         };
-        const instantApplied = [
-          quickPrice != null && !Number.isNaN(quickPrice) ? "price" : null,
-          quickQty != null && !Number.isNaN(quickQty) ? "stock" : null,
-          quickVariants?.length ? "variant price/stock" : null,
-        ].filter(Boolean) as string[];
+        const instantApplied = isRemovedRecovery
+          ? []
+          : [
+              quickPrice != null && !Number.isNaN(quickPrice) ? "price" : null,
+              quickQty != null && !Number.isNaN(quickQty) ? "stock" : null,
+              quickVariants?.length ? "variant price/stock" : null,
+            ].filter(Boolean) as string[];
 
         updates.pendingUpdates = mergedPendingUpdates;
         updates.changeSummary = buildChangeSummary(
@@ -1769,19 +2087,68 @@ export default async function handler(req: any, res: any) {
             ? doc.preReviewStatus || "approved"
             : doc.status || "approved";
         updates.status = "update_in_review";
+        if (isRemovedRecovery) {
+          updates.removedRecoveryReview = true;
+        }
       }
 
-      await ref.set(updates, { merge: true });
+      if (isRemovedRecovery) {
+        if (!adminNeedsReview) {
+          return res.status(400).json({
+            ok: false,
+            error: "Make at least one change before using the one-time edit request.",
+          });
+        }
+        try {
+          await adminDb.runTransaction(async (transaction: any) => {
+            const freshSnap = await transaction.get(ref);
+            if (!freshSnap.exists) {
+              const error: any = new Error("Product not found.");
+              error.statusCode = 404;
+              throw error;
+            }
+            const fresh = freshSnap.data() || {};
+            if (fresh.removedEditUsed === true) {
+              const error: any = new Error(
+                "The one-time edit chance for this product has already been used.",
+              );
+              error.statusCode = 409;
+              throw error;
+            }
+            transaction.set(
+              ref,
+              {
+                ...updates,
+                removedEditUsed: true,
+                removedEditUsedAt: Date.now(),
+              },
+              { merge: true },
+            );
+          });
+        } catch (error: any) {
+          if (error?.statusCode) {
+            return res
+              .status(error.statusCode)
+              .json({ ok: false, error: error.message });
+          }
+          throw error;
+        }
+      } else {
+        await ref.set(updates, { merge: true });
+      }
 
       const live =
-        quickPrice != null ||
-        quickQty != null ||
-        (quickVariants && quickVariants.length > 0);
+        !isRemovedRecovery &&
+        (quickPrice != null ||
+          quickQty != null ||
+          (quickVariants && quickVariants.length > 0));
       return res.status(200).json({
         ok: true,
         review: adminNeedsReview,
         note: adminNeedsReview
-          ? `Price/stock updated live where possible.${live ? " Other changes queued for admin review." : ""}`
+          ? isRemovedRecovery
+            ? "One-time recovery request sent to admin review."
+            : `Price/stock updated live where possible.${live ? " Other changes queued for admin review." : ""}`
           : live
             ? "Updated live on Shopify."
             : "No changes detected.",

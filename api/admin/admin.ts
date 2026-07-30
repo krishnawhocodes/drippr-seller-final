@@ -2156,7 +2156,7 @@ export default async function handler(req: any, res: any) {
             [],
         );
 
-        const shopifyResult = await applyApprovedChangesToShopify(
+        const shopifyResult: any = await applyApprovedChangesToShopify(
           qdoc,
           approvalUpdates,
         );
@@ -2190,6 +2190,7 @@ export default async function handler(req: any, res: any) {
             status: "approved",
             published: shopifyResult.shopifyStatus !== "DRAFT",
             shopifyStatus: shopifyResult.shopifyStatus || "DRAFT",
+            shopifyDeletedAt: null,
             shopifyProductId: shopifyResult.productId,
             shopifyProductNumericId:
               shopifyResult.productId.split("/").pop() ||
@@ -2231,6 +2232,7 @@ export default async function handler(req: any, res: any) {
             pendingUpdates: null,
             changeSummary: null,
             preReviewStatus: null,
+            removedRecoveryReview: null,
             approvalState: null,
             approvalStartedAt: null,
             reviewerUid: me.uid,
@@ -2285,16 +2287,21 @@ export default async function handler(req: any, res: any) {
 
         const qdoc = snap.data() as any;
         const isUpdateReview = qdoc.status === "update_in_review";
+        const isRemovedRecoveryReview =
+          isUpdateReview && qdoc.removedRecoveryReview === true;
         await ref.set(
           {
-            status: isUpdateReview
-              ? qdoc.preReviewStatus || "approved"
-              : "rejected",
+            status: isRemovedRecoveryReview
+              ? "rejected"
+              : isUpdateReview
+                ? qdoc.preReviewStatus || "approved"
+                : "rejected",
             ...(isUpdateReview
               ? {
                   pendingUpdates: null,
                   changeSummary: null,
                   preReviewStatus: null,
+                  removedRecoveryReview: null,
                 }
               : {}),
             reviewerUid: me.uid,
