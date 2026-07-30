@@ -241,6 +241,8 @@ type ProductDisplayStatus =
   | "active"
   | "removed";
 
+type ProductStatusFilter = "all" | ProductDisplayStatus;
+
 const SELLER_DELIVERY_PRICE_BUMP = 100;
 
 function finitePrice(value: unknown) {
@@ -683,6 +685,8 @@ export default function Products() {
   const [products, setProducts] = useState<MerchantProduct[]>([]);
   const [localDrafts, setLocalDrafts] = useState<AddProductDraft[]>([]);
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] =
+    useState<ProductStatusFilter>("all");
 
   // --- Bulk upload dialog state (kept as-is) ---
   const [isBulkOpen, setIsBulkOpen] = useState(false);
@@ -1070,16 +1074,23 @@ export default function Products() {
       };
     });
     const allProducts = [...localDraftProducts, ...remoteProducts];
+    const statusFilteredProducts =
+      statusFilter === "all"
+        ? allProducts
+        : allProducts.filter(
+            (product) =>
+              resolveProductDisplayStatus(product) === statusFilter,
+          );
 
     const s = search.trim().toLowerCase();
-    if (!s) return allProducts;
+    if (!s) return statusFilteredProducts;
 
-    return allProducts.filter((p) =>
+    return statusFilteredProducts.filter((p) =>
       `${p.title} ${p.productType ?? ""} ${(p.collections || []).join(" ")} ${p.sku ?? ""}`
         .toLowerCase()
         .includes(s),
     );
-  }, [products, search, localDraftProducts, localDrafts]);
+  }, [products, search, statusFilter, localDraftProducts, localDrafts]);
 
   /** ====== Variants builder state (used by Add & Edit) ====== */
   const [options, setOptions] = useState<VariantOption[]>([
@@ -3734,14 +3745,40 @@ export default function Products() {
           <CardHeader>
             <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
               <CardTitle>All Products</CardTitle>
-              <div className="relative w-full sm:w-64">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Search products..."
-                  className="pl-9"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
+              <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
+                <Select
+                  value={statusFilter}
+                  onValueChange={(value) =>
+                    setStatusFilter(value as ProductStatusFilter)
+                  }
+                >
+                  <SelectTrigger
+                    className="w-full sm:w-48"
+                    aria-label="Filter products by status"
+                  >
+                    <SelectValue placeholder="All Products" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Products</SelectItem>
+                    <SelectItem value="active">Active</SelectItem>
+                    <SelectItem value="draft">Draft</SelectItem>
+                    <SelectItem value="in_store_draft">
+                      In store draft
+                    </SelectItem>
+                    <SelectItem value="rejected">Rejected</SelectItem>
+                    <SelectItem value="removed">Removed</SelectItem>
+                    <SelectItem value="review_pending">In review</SelectItem>
+                  </SelectContent>
+                </Select>
+                <div className="relative w-full sm:w-64">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search products..."
+                    className="pl-9"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                </div>
               </div>
             </div>
           </CardHeader>
@@ -3880,10 +3917,10 @@ export default function Products() {
                   {filtered.length === 0 && (
                     <TableRow>
                       <TableCell
-                        colSpan={5}
+                        colSpan={6}
                         className="text-center text-muted-foreground"
                       >
-                        No products yet.
+                        No matching products.
                       </TableCell>
                     </TableRow>
                   )}
