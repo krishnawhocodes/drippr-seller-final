@@ -104,6 +104,14 @@ function textFromHtml(value: unknown) {
     .replace(/\n$/, "");
 }
 
+function firstNonEmptyString(...values: unknown[]) {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
 function valuesEqual(left: any, right: any) {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
@@ -1379,8 +1387,43 @@ export default async function handler(req: any, res: any) {
             };
           });
         }
+        if (variants.length === 1 && imagesLive.length) {
+          variants[0] = {
+            ...variants[0],
+            mediaUrls: [
+              ...new Set([
+                ...(Array.isArray(variants[0]?.mediaUrls)
+                  ? variants[0].mediaUrls
+                  : []),
+                ...imagesLive,
+              ]),
+            ],
+          };
+        }
 
         const firstVariant = variants[0] || {};
+        const hydratedSeo = {
+          title: firstNonEmptyString(
+            liveProduct?.seo?.title,
+            doc.pendingUpdates?.seo?.title,
+            doc.seo?.title,
+            doc.seoTitle,
+            doc.seo_title,
+            doc.draft?.seoTitle,
+            liveProduct?.title,
+            doc.title,
+          ),
+          description: firstNonEmptyString(
+            liveProduct?.seo?.description,
+            doc.pendingUpdates?.seo?.description,
+            doc.seo?.description,
+            doc.seoDescription,
+            doc.seo_description,
+            doc.draft?.seoDescription,
+            textFromHtml(liveProduct?.descriptionHtml),
+            doc.description,
+          ),
+        };
         if (liveProduct && shopifyProductId) {
           const canonicalProductId =
             normalizeShopifyProductId(liveProduct.id) || shopifyProductId;
@@ -1432,7 +1475,10 @@ export default async function handler(req: any, res: any) {
               : Array.isArray(doc.tags)
                 ? doc.tags
                 : [],
-            seo: liveProduct?.seo || doc.seo || null,
+            seo:
+              hydratedSeo.title || hydratedSeo.description
+                ? hydratedSeo
+                : null,
             compareAtPrice:
               firstVariant.compareAtPrice != null
                 ? Number(firstVariant.compareAtPrice)
