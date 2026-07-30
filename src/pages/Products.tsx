@@ -82,6 +82,12 @@ type ProductMeasurements = {
   unit?: "in";
 };
 
+type StoredVariantMediaDraft = {
+  variants?: Array<{
+    mediaUrls?: string[];
+  }>;
+};
+
 type MerchantProduct = {
   id: string;
   title: string;
@@ -108,6 +114,11 @@ type MerchantProduct = {
   images?: string[];
   imageUrls?: string[];
   image?: string | null;
+  resourceUrls?: string[];
+  variantDraft?: StoredVariantMediaDraft | null;
+  pendingUpdates?: {
+    variantDraft?: StoredVariantMediaDraft | null;
+  } | null;
   createdAt?: number;
   sku?: string; // now used for delete confirmation & required on create
   stock?: number;
@@ -161,6 +172,63 @@ type ProductListItem = MerchantProduct & {
   imagePreview?: string | null;
   draft?: AddProductDraft;
 };
+
+function productThumbnailCandidates(
+  product: ProductListItem,
+  preferSellerUploads: boolean,
+) {
+  const sellerUploadUrls = uniqueImageUrls([
+    ...(Array.isArray(product.resourceUrls) ? product.resourceUrls : []),
+    ...(product.variantDraft?.variants || []).flatMap((variant) =>
+      Array.isArray(variant.mediaUrls) ? variant.mediaUrls : [],
+    ),
+    ...(product.pendingUpdates?.variantDraft?.variants || []).flatMap(
+      (variant) =>
+        Array.isArray(variant.mediaUrls) ? variant.mediaUrls : [],
+    ),
+    ...(product.draft?.imagePreviews || []),
+    ...Object.values(product.draft?.variantColorImagePreviews || {}).flat(),
+  ]);
+  const currentImageUrls = uniqueImageUrls([
+    product.image,
+    ...(Array.isArray(product.images) ? product.images : []),
+    ...(Array.isArray(product.imageUrls) ? product.imageUrls : []),
+    product.imagePreview,
+  ]);
+
+  return preferSellerUploads
+    ? uniqueImageUrls([...sellerUploadUrls, ...currentImageUrls])
+    : uniqueImageUrls([...currentImageUrls, ...sellerUploadUrls]);
+}
+
+function ProductThumbnail(props: {
+  candidates: string[];
+  alt: string;
+}) {
+  const { candidates, alt } = props;
+  const [candidateIndex, setCandidateIndex] = useState(0);
+  const candidateKey = candidates.join("|");
+
+  useEffect(() => {
+    setCandidateIndex(0);
+  }, [candidateKey]);
+
+  const src =
+    candidates[candidateIndex] || "https://placehold.co/64x64?text=IMG";
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className="h-10 w-10 rounded-md object-cover bg-muted"
+      onError={() => {
+        if (candidateIndex < candidates.length) {
+          setCandidateIndex((current) => current + 1);
+        }
+      }}
+    />
+  );
+}
 
 type ProductDisplayStatus =
   | "draft"
@@ -3674,17 +3742,17 @@ export default function Products() {
                     const statusPresentation =
                       productStatusPresentation(displayStatus);
                     const isRemoved = displayStatus === "removed";
-                    const img = isLocalDraft
-                      ? p.imagePreview || ""
-                      : p.image || (p.images?.[0] ?? "");
+                    const thumbnailCandidates = productThumbnailCandidates(
+                      p,
+                      isRemoved,
+                    );
                     return (
                       <TableRow key={p.id}>
                         <TableCell>
                           <div className="flex items-center gap-3">
-                            <img
-                              src={img || "https://placehold.co/64x64?text=IMG"}
+                            <ProductThumbnail
+                              candidates={thumbnailCandidates}
                               alt={p.title}
-                              className="h-10 w-10 rounded-md object-cover bg-muted"
                             />
                             <div className="flex flex-col">
                               <span className="font-medium">{p.title}</span>
