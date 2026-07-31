@@ -310,12 +310,28 @@ const PRODUCT_VARIANT_MEDIA_QUERY = /* GraphQL */ `
       variants(first: 100) {
         nodes {
           id
+          selectedOptions {
+            name
+            value
+          }
           media(first: 100) {
             nodes {
               id
             }
           }
         }
+      }
+    }
+  }
+`;
+
+const PRODUCT_IMAGE_DELETE = /* GraphQL */ `
+  mutation productImageDelete($id: ID!) {
+    productImageDelete(id: $id) {
+      deletedImageId
+      userErrors {
+        field
+        message
       }
     }
   }
@@ -908,64 +924,151 @@ async function deleteProductMediaByIds(productId: string, input: unknown) {
   if (!requestedIds.length) return 0;
 
   const before = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, { id: productId });
+  const beforeProduct = before?.data?.product;
+  if (!beforeProduct) return 0;
+  const beforeMediaNodes = beforeProduct.media?.nodes || [];
+  const beforeImageNodes = beforeProduct.images?.nodes || [];
   const existingIds = new Set<string>(
-    (before?.data?.product?.media?.nodes || [])
+    beforeMediaNodes
       .map((node: any) => String(node?.id || "").trim())
       .filter(Boolean),
   );
   const idsToDelete = requestedIds.filter((id) => existingIds.has(id));
-  let deleted = 0;
+  if (!idsToDelete.length) return 0;
+
+  const mediaUrlById = new Map<string, string>();
+  for (const node of beforeMediaNodes) {
+    const mediaId = String(node?.id || "").trim();
+    const mediaUrl = String(node?.image?.url || "").trim();
+    if (mediaId && mediaUrl) mediaUrlById.set(mediaId, mediaUrl);
+  }
+  const imageIdsByKey = new Map<string, Set<string>>();
+  for (const node of beforeImageNodes) {
+    const imageId = String(node?.id || "").trim();
+    const imageUrl = String(node?.url || "").trim();
+    if (!imageId || !imageUrl) continue;
+    for (const key of imageUrlLookupKeys(imageUrl)) {
+      const ids = imageIdsByKey.get(key) || new Set<string>();
+      ids.add(imageId);
+      imageIdsByKey.set(key, ids);
+    }
+  }
+  const deleteErrors: string[] = [];
 
   for (const mediaId of idsToDelete) {
-    const result = await shopifyGraphQL(PRODUCT_DELETE_MEDIA, {
-      productId,
-      mediaIds: [mediaId],
-    });
-    const mediaErrors =
-      result?.data?.productDeleteMedia?.mediaUserErrors || [];
-    const fatalMediaErrors = mediaErrors.filter((error: any) => {
-      const details = `${String(error?.code || "")} ${String(error?.message || "")}`;
-      return !/does not exist|not found|already.*deleted/i.test(details);
-    });
-    if (fatalMediaErrors.length) {
-      throw new Error(
-        fatalMediaErrors.map((error: any) => error.message).join("; "),
-      );
-    }
-    throwUserErrors(result, "data.productDeleteMedia");
-    const deletedMediaIds =
-      result?.data?.productDeleteMedia?.deletedMediaIds || [];
-    const deletedProductImageIds =
-      result?.data?.productDeleteMedia?.deletedProductImageIds || [];
-    deleted += Math.max(
-      deletedMediaIds.length,
-      deletedProductImageIds.length,
-    );
-  }
-
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const verification = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, {
+    const current = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, {
       id: productId,
     });
-    const remainingIds = new Set<string>(
-      (verification?.data?.product?.media?.nodes || [])
+    const currentIds = new Set<string>(
+      (current?.data?.product?.media?.nodes || [])
         .map((node: any) => String(node?.id || "").trim())
         .filter(Boolean),
     );
-    const undeletedIds = requestedIds.filter((id) => remainingIds.has(id));
-    if (!undeletedIds.length) return deleted;
-    if (attempt < 4) await sleep(400 * (attempt + 1));
+    if (!currentIds.has(mediaId)) continue;
+
+    try {
+      const result = await shopifyGraphQL(PRODUCT_DELETE_MEDIA, {
+        productId,
+        mediaIds: [mediaId],
+      });
+      const errors = [
+        ...(result?.data?.productDeleteMedia?.mediaUserErrors || []),
+        ...(result?.data?.productDeleteMedia?.userErrors || []),
+      ];
+      const fatalErrors = errors.filter((error: any) => {
+        const details = `${String(error?.code || "")} ${String(error?.message || "")}`;
+        return !/does not exist|not found|already.*deleted|already.*removed/i.test(
+          details,
+        );
+      });
+      if (fatalErrors.length) {
+        deleteErrors.push(
+          ...fatalErrors.map((error: any) => String(error?.message || error)),
+        );
+      }
+    } catch (error: any) {
+      const message = String(error?.message || error);
+      if (!/does not exist|not found|already.*deleted|already.*removed/i.test(message)) {
+        deleteErrors.push(message);
+      }
+    }
   }
 
-  throw new Error("Shopify did not remove every selected product photo.");
+  let after = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, { id: productId });
+  let remainingIds = new Set<string>(
+    (after?.data?.product?.media?.nodes || [])
+      .map((node: any) => String(node?.id || "").trim())
+      .filter(Boolean),
+  );
+  const undeletedIds = idsToDelete.filter((id) => remainingIds.has(id));
+
+  if (undeletedIds.length) {
+    const fallbackImageIds = new Set<string>();
+    for (const mediaId of undeletedIds) {
+      const mediaUrl = mediaUrlById.get(mediaId);
+      if (!mediaUrl) continue;
+      for (const key of imageUrlLookupKeys(mediaUrl)) {
+        for (const imageId of imageIdsByKey.get(key) || []) {
+          fallbackImageIds.add(imageId);
+        }
+      }
+    }
+    for (const imageId of fallbackImageIds) {
+      try {
+        const result = await shopifyGraphQL(PRODUCT_IMAGE_DELETE, {
+          id: imageId,
+        });
+        const errors = result?.data?.productImageDelete?.userErrors || [];
+        const fatalErrors = errors.filter(
+          (error: any) =>
+            !/does not exist|not found|already.*deleted|already.*removed/i.test(
+              String(error?.message || ""),
+            ),
+        );
+        if (fatalErrors.length) {
+          deleteErrors.push(
+            ...fatalErrors.map((error: any) => String(error?.message || error)),
+          );
+        }
+      } catch (error: any) {
+        const message = String(error?.message || error);
+        if (!/does not exist|not found|already.*deleted|already.*removed/i.test(message)) {
+          deleteErrors.push(message);
+        }
+      }
+    }
+  }
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    after = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, { id: productId });
+    remainingIds = new Set<string>(
+      (after?.data?.product?.media?.nodes || [])
+        .map((node: any) => String(node?.id || "").trim())
+        .filter(Boolean),
+    );
+    const stillPresent = idsToDelete.filter((id) => remainingIds.has(id));
+    if (!stillPresent.length) return idsToDelete.length;
+    if (attempt < 5) await sleep(500 * (attempt + 1));
+  }
+
+  const detail = deleteErrors.find(Boolean);
+  throw new Error(
+    detail
+      ? `Shopify did not remove every selected product photo: ${detail}`
+      : "Shopify did not remove every selected product photo.",
+  );
 }
 
 async function deleteProductImagesByUrl(productId: string, urls: string[]) {
   const uniqueUrls = [...new Set(urls.map((url) => String(url).trim()).filter(Boolean))];
   if (!uniqueUrls.length) return 0;
   const response = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, { id: productId });
-  const mediaNodes = response?.data?.product?.media?.nodes || [];
+  const product = response?.data?.product;
+  if (!product) return 0;
+  const mediaNodes = product.media?.nodes || [];
+  const imageNodes = product.images?.nodes || [];
   const mediaIdsByKey = new Map<string, Set<string>>();
+  const imageIdsByKey = new Map<string, Set<string>>();
   for (const node of mediaNodes) {
     const url = String(node?.image?.url || "").trim();
     const id = String(node?.id || "").trim();
@@ -976,25 +1079,97 @@ async function deleteProductImagesByUrl(productId: string, urls: string[]) {
       mediaIdsByKey.set(key, ids);
     }
   }
+  for (const node of imageNodes) {
+    const url = String(node?.url || "").trim();
+    const id = String(node?.id || "").trim();
+    if (!url || !id) continue;
+    for (const key of imageUrlLookupKeys(url)) {
+      const ids = imageIdsByKey.get(key) || new Set<string>();
+      ids.add(id);
+      imageIdsByKey.set(key, ids);
+    }
+  }
 
   const mediaIds = new Set<string>();
-  const unresolvedUrls: string[] = [];
+  const imageIds = new Set<string>();
   for (const url of uniqueUrls) {
-    let matched = false;
     for (const key of imageUrlLookupKeys(url)) {
       for (const mediaId of mediaIdsByKey.get(key) || []) {
         mediaIds.add(mediaId);
-        matched = true;
+      }
+      for (const imageId of imageIdsByKey.get(key) || []) {
+        imageIds.add(imageId);
       }
     }
-    if (!matched) unresolvedUrls.push(url);
   }
-  if (unresolvedUrls.length) {
-    throw new Error(
-      `Shopify could not resolve ${unresolvedUrls.length} selected photo(s). Refresh the product and submit the photo removal again.`,
-    );
+  const deletedByMediaId = await deleteProductMediaByIds(productId, [
+    ...mediaIds,
+  ]);
+
+  let verification = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, {
+    id: productId,
+  });
+  const requestedKeys = new Set(uniqueUrls.flatMap(imageUrlLookupKeys));
+  const remainingImageIds = new Set<string>();
+  for (const node of verification?.data?.product?.images?.nodes || []) {
+    const imageUrl = String(node?.url || "").trim();
+    if (
+      imageUrl &&
+      imageUrlLookupKeys(imageUrl).some((key) => requestedKeys.has(key))
+    ) {
+      const imageId = String(node?.id || "").trim();
+      if (imageId) remainingImageIds.add(imageId);
+    }
   }
-  return deleteProductMediaByIds(productId, [...mediaIds]);
+  for (const imageId of remainingImageIds.size ? remainingImageIds : imageIds) {
+    try {
+      const result = await shopifyGraphQL(PRODUCT_IMAGE_DELETE, {
+        id: imageId,
+      });
+      const errors = result?.data?.productImageDelete?.userErrors || [];
+      const fatalErrors = errors.filter(
+        (error: any) =>
+          !/does not exist|not found|already.*deleted|already.*removed/i.test(
+            String(error?.message || ""),
+          ),
+      );
+      if (fatalErrors.length) {
+        throw new Error(
+          fatalErrors.map((error: any) => error.message).join("; "),
+        );
+      }
+    } catch (error: any) {
+      const message = String(error?.message || error);
+      if (!/does not exist|not found|already.*deleted|already.*removed/i.test(message)) {
+        throw error;
+      }
+    }
+  }
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    verification = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, {
+      id: productId,
+    });
+    const remainingUrls = [
+      ...(verification?.data?.product?.images?.nodes || []).map(
+        (node: any) => node?.url,
+      ),
+      ...(verification?.data?.product?.media?.nodes || []).map(
+        (node: any) => node?.image?.url,
+      ),
+    ]
+      .map((url: unknown) => String(url || "").trim())
+      .filter(Boolean)
+      .filter((url: string) =>
+        imageUrlLookupKeys(url).some((key) => requestedKeys.has(key)),
+      );
+    if (!remainingUrls.length) {
+      return Math.max(deletedByMediaId, mediaIds.size, imageIds.size);
+    }
+    if (attempt < 5) await sleep(500 * (attempt + 1));
+  }
+
+  throw new Error("Shopify did not remove every selected product photo.");
 }
 
 async function waitForMediaReady(productId: string, mediaIds: string[]) {
@@ -1564,18 +1739,8 @@ async function applyVariantMediaUpdates(
       `Shopify photo removal failed: ${String(error?.message || error)}`,
     );
   }
-  const fallbackDeleteUrls = groups.flatMap((group) =>
-    group.removeResourceUrls.filter((url) => {
-      const mappedIds = group.removeMediaIdsByUrl[url] || [];
-      if (mappedIds.length) return false;
-      if (
-        !Object.keys(group.removeMediaIdsByUrl).length &&
-        group.removeMediaIds.length >= group.removeResourceUrls.length
-      ) {
-        return false;
-      }
-      return true;
-    }),
+  const fallbackDeleteUrls = groups.flatMap(
+    (group) => group.removeResourceUrls,
   );
   let deletedByUrl = 0;
   try {
@@ -1625,47 +1790,85 @@ async function applyVariantMediaUpdates(
     (url) => !mediaIdByUrl.has(url),
   );
   if (missingResourceUrls.length) {
-    const createResult = await shopifyGraphQL(PRODUCT_CREATE_MEDIA, {
-      productId,
-      media: missingResourceUrls.map((url) => {
-        const color = groups.find((group) =>
-          group.resourceUrls.includes(url),
-        )?.color;
-        return {
-          originalSource: url,
-          mediaContentType: "IMAGE",
-          alt: mediaAltText(color || "", url),
-        };
-      }),
-    });
-    const mediaErrors =
-      createResult?.data?.productCreateMedia?.mediaUserErrors || [];
-    if (mediaErrors.length) {
-      throw new Error(
-        mediaErrors.map((error: any) => error.message).join("; "),
-      );
+    for (const url of missingResourceUrls) {
+      const color = groups.find((group) =>
+        group.resourceUrls.includes(url),
+      )?.color;
+      const createResult = await shopifyGraphQL(PRODUCT_CREATE_MEDIA, {
+        productId,
+        media: [
+          {
+            originalSource: url,
+            mediaContentType: "IMAGE",
+            alt: mediaAltText(color || "", url),
+          },
+        ],
+      });
+      const mediaErrors =
+        createResult?.data?.productCreateMedia?.mediaUserErrors || [];
+      if (mediaErrors.length) {
+        throw new Error(
+          mediaErrors.map((error: any) => error.message).join("; "),
+        );
+      }
+      const mediaId = String(
+        createResult?.data?.productCreateMedia?.media?.[0]?.id || "",
+      ).trim();
+      if (!mediaId) {
+        throw new Error("Shopify did not return the uploaded product photo ID.");
+      }
+      mediaIdByUrl.set(url, mediaId);
+      await waitForMediaReady(productId, [mediaId]);
     }
-    const createdMedia = createResult?.data?.productCreateMedia?.media || [];
-    missingResourceUrls.forEach((url, index) => {
-      const mediaId = String(createdMedia[index]?.id || "").trim();
-      if (mediaId) mediaIdByUrl.set(url, mediaId);
-    });
-    await waitForMediaReady(
-      productId,
-      missingResourceUrls
-        .map((url) => mediaIdByUrl.get(url))
-        .filter((mediaId): mediaId is string => Boolean(mediaId)),
-    );
   }
   if (mediaIdByUrl.size !== resourceUrls.length) {
     throw new Error("Shopify did not return every uploaded variant photo ID.");
   }
 
+  const liveVariantResult = await shopifyGraphQL(
+    PRODUCT_VARIANT_MEDIA_QUERY,
+    { id: productId },
+  );
+  const liveVariants =
+    liveVariantResult?.data?.product?.variants?.nodes || [];
+  const liveVariantIds = new Set<string>(
+    liveVariants
+      .map((variant: any) => String(variant?.id || "").trim())
+      .filter(Boolean),
+  );
   const variantMedia = groups.flatMap((group) => {
     const mediaIds = group.resourceUrls
       .map((url) => mediaIdByUrl.get(url))
       .filter(Boolean);
-    return group.variantIds.flatMap((variantId) =>
+    if (!mediaIds.length) return [];
+    const normalizedColor = group.color.trim().toLowerCase();
+    const colorVariantIds = liveVariants
+      .filter((variant: any) =>
+        (variant?.selectedOptions || []).some(
+          (option: any) =>
+            ["color", "colour"].includes(
+              String(option?.name || "").trim().toLowerCase(),
+            ) &&
+            String(option?.value || "").trim().toLowerCase() ===
+              normalizedColor,
+        ),
+      )
+      .map((variant: any) => String(variant?.id || "").trim())
+      .filter(Boolean);
+    const requestedLiveVariantIds = group.variantIds.filter((variantId) =>
+      liveVariantIds.has(variantId),
+    );
+    const targetVariantIds = [
+      ...new Set(
+        colorVariantIds.length ? colorVariantIds : requestedLiveVariantIds,
+      ),
+    ];
+    if (!targetVariantIds.length) {
+      throw new Error(
+        `Shopify could not find the live ${group.color || "colour"} variants for the new photos.`,
+      );
+    }
+    return targetVariantIds.flatMap((variantId) =>
       mediaIds.map((mediaId) => ({ variantId, mediaIds: [mediaId] })),
     );
   });
@@ -1747,11 +1950,10 @@ function meaningfulVariantMediaUpdates(input: unknown) {
         }))
         .filter(
           (group) =>
-            group.variantIds.length &&
-            (group.resourceUrls.length ||
-              group.removeResourceUrls.length ||
-              group.removeMediaIds.length ||
-              Object.keys(group.removeMediaIdsByUrl).length),
+            group.resourceUrls.length ||
+            group.removeResourceUrls.length ||
+            group.removeMediaIds.length ||
+            Object.keys(group.removeMediaIdsByUrl).length,
         )
     : [];
 }
