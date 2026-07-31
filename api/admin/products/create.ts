@@ -242,7 +242,10 @@ function validateCreatePayload(args: {
     ? args.variantDraft.options
     : [];
   const colorOption = options.find(
-    (option: any) => String(option?.name || "").trim().toLowerCase() === "color",
+    (option: any) =>
+      ["color", "colour"].includes(
+        String(option?.name || "").trim().toLowerCase(),
+      ),
   );
   if (!colorOption?.values?.length) {
     return "Add a Color option for variant-wise photos.";
@@ -785,6 +788,7 @@ export default async function handler(req: any, res: any) {
       status: sellerStatus,
       published: false,
       sku,
+      sellerSku: String(rawSku || "").trim(),
       barcode: barcode || null,
       seo: seo || null,
       shopifyProductId: null,

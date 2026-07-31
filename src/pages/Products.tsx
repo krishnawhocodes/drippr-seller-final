@@ -1853,7 +1853,8 @@ export default function Products() {
     }
     if (variantMode === "multiple") {
       const colorOption = options.find(
-        (option) => option.name.trim().toLowerCase() === "color",
+        (option) =>
+          ["color", "colour"].includes(option.name.trim().toLowerCase()),
       );
       if (!colorOption?.values.length) {
         return showSubmitError("Add a Color option for variant-wise photos.");
@@ -1989,7 +1990,8 @@ export default function Products() {
         Object.keys(variantRows).length > 0
       ) {
         const colorOptionIndex = enabledOptions.findIndex(
-          (option) => option.name.trim().toLowerCase() === "color",
+          (option) =>
+            ["color", "colour"].includes(option.name.trim().toLowerCase()),
         );
         const variants = Object.values(variantRows).map((v) => ({
           options: v.options,
@@ -2146,17 +2148,18 @@ export default function Products() {
 
   const editColorGroups = useMemo(() => {
     const colorIndex = existingProductOptions.findIndex(
-      (option) => option.name.trim().toLowerCase() === "color",
+      (option) =>
+        ["color", "colour"].includes(option.name.trim().toLowerCase()),
     );
+    if (colorIndex < 0) return [];
+
     const groups = new Map<
       string,
       { label: string; variantIds: string[]; existingUrls: string[] }
     >();
     for (const variant of existingVariants) {
-      const label =
-        colorIndex >= 0
-          ? variant.optionValues[colorIndex] || variant.title
-          : variant.optionValues.join(" / ") || variant.title;
+      const label = String(variant.optionValues[colorIndex] || "").trim();
+      if (!label) continue;
       const current = groups.get(label) || {
         label,
         variantIds: [],
@@ -2577,7 +2580,8 @@ export default function Products() {
       );
       if (enabledOptions.length > 0 && Object.keys(variantRows).length > 0) {
         const colorOptionIndex = enabledOptions.findIndex(
-          (option) => option.name.trim().toLowerCase() === "color",
+          (option) =>
+            ["color", "colour"].includes(option.name.trim().toLowerCase()),
         );
         const newVariantColorMediaUrls: Record<string, string[]> = {};
         const newVariantColorFiles = Object.entries(variantColorImages).flatMap(
@@ -4844,7 +4848,8 @@ function VariantPlanner(props: {
   } = props;
 
   const colorOption = options.find(
-    (option) => option.name.trim().toLowerCase() === "color",
+    (option) =>
+      ["color", "colour"].includes(option.name.trim().toLowerCase()),
   );
 
   const measurementFields =

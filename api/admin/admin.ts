@@ -1078,7 +1078,9 @@ async function applyVariantDraftMediaToShopify(args: {
   const colorOptionIndex = Array.isArray(args.variantDraft?.options)
     ? args.variantDraft.options.findIndex(
         (option: any) =>
-          String(option?.name || "").trim().toLowerCase() === "color",
+          ["color", "colour"].includes(
+            String(option?.name || "").trim().toLowerCase(),
+          ),
       )
     : -1;
   const keyForValues = (values: unknown[]) =>

@@ -112,6 +112,45 @@ function firstNonEmptyString(...values: unknown[]) {
   return "";
 }
 
+function generatedVariantBaseSku(variants: any[]) {
+  if (!Array.isArray(variants) || variants.length < 2) return "";
+  const baseSkus = variants.map((variant, index) => {
+    const sku = String(variant?.sku || "").trim();
+    const suffix = `-${index + 1}`;
+    return sku.toUpperCase().endsWith(suffix)
+      ? sku.slice(0, -suffix.length)
+      : "";
+  });
+  const firstBase = baseSkus[0];
+  return firstBase &&
+    baseSkus.every(
+      (baseSku) => baseSku.toUpperCase() === firstBase.toUpperCase(),
+    )
+    ? firstBase
+    : "";
+}
+
+function sellerSkuForEdit(doc: any, variants: any[]) {
+  const exactSellerSku = firstNonEmptyString(
+    doc.sellerSku,
+    doc.submittedSku,
+    doc.originalSku,
+    doc.draft?.sku,
+  );
+  if (exactSellerSku) return exactSellerSku;
+
+  const storedSku = firstNonEmptyString(doc.sku);
+  const firstVariantSku = firstNonEmptyString(variants?.[0]?.sku);
+  const generatedBaseSku = generatedVariantBaseSku(variants);
+  if (
+    generatedBaseSku &&
+    (!storedSku || normSku(storedSku) === normSku(firstVariantSku))
+  ) {
+    return generatedBaseSku;
+  }
+  return storedSku || generatedBaseSku || firstVariantSku;
+}
+
 function valuesEqual(left: any, right: any) {
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
@@ -348,7 +387,8 @@ function mergeRemovedRecoveryVariantDraft(args: {
   }
 
   const colorOptionIndex = options.findIndex(
-    (option: any) => option.name.toLowerCase() === "color",
+    (option: any) =>
+      ["color", "colour"].includes(option.name.toLowerCase()),
   );
   const mediaGroups = Array.isArray(args.mediaUpdates)
     ? args.mediaUpdates
@@ -1422,7 +1462,9 @@ export default async function handler(req: any, res: any) {
               if (mediaUrlsByColor.size) {
                 const colorOptionIndex = productOptions.findIndex(
                   (option: any) =>
-                    String(option?.name || "").trim().toLowerCase() === "color",
+                    ["color", "colour"].includes(
+                      String(option?.name || "").trim().toLowerCase(),
+                    ),
                 );
                 if (colorOptionIndex >= 0) {
                   variants = variants.map((variant: any) => {
@@ -1659,6 +1701,7 @@ export default async function handler(req: any, res: any) {
         }
 
         const firstVariant = variants[0] || {};
+        const hydratedSellerSku = sellerSkuForEdit(doc, variants);
         const hydratedSeo = {
           title: firstNonEmptyString(
             liveProduct?.seo?.title,
@@ -1741,6 +1784,7 @@ export default async function handler(req: any, res: any) {
                 ? Number(firstVariant.compareAtPrice)
                 : doc.compareAtPrice ?? null,
             barcode: firstVariant.barcode || doc.barcode || "",
+            sku: hydratedSellerSku,
             price:
               firstVariant.price != null ? Number(firstVariant.price) : doc.price,
             stock:
