@@ -117,7 +117,7 @@ type MerchantProduct = {
   images?: string[];
   imageUrls?: string[];
   image?: string | null;
-  mediaIdsByUrl?: Record<string, string>;
+  mediaIdsByUrl?: Record<string, string | string[]>;
   resourceUrls?: string[];
   variantDraft?: StoredVariantMediaDraft | null;
   pendingUpdates?: {
@@ -2145,7 +2145,7 @@ export default function Products() {
   >({});
   const [imagesLive, setImagesLive] = useState<string[]>([]);
   const [editMediaIdsByUrl, setEditMediaIdsByUrl] = useState<
-    Record<string, string>
+    Record<string, string[]>
   >({});
   const [imageAddFiles, setImageAddFiles] = useState<File[]>([]);
   const [imageBusy, setImageBusy] = useState(false);
@@ -2369,7 +2369,7 @@ export default function Products() {
                 : [],
         ),
       );
-      const nextMediaIdsByUrl: Record<string, string> = {};
+      const nextMediaIdsByUrl: Record<string, string[]> = {};
       if (
         prod.mediaIdsByUrl &&
         typeof prod.mediaIdsByUrl === "object" &&
@@ -2377,9 +2377,15 @@ export default function Products() {
       ) {
         Object.entries(prod.mediaIdsByUrl).forEach(([url, mediaId]) => {
           const normalizedUrl = String(url || "").trim();
-          const normalizedMediaId = String(mediaId || "").trim();
-          if (normalizedUrl && normalizedMediaId) {
-            nextMediaIdsByUrl[normalizedUrl] = normalizedMediaId;
+          const normalizedMediaIds = [
+            ...new Set(
+              (Array.isArray(mediaId) ? mediaId : [mediaId])
+                .map((id) => String(id || "").trim())
+                .filter(Boolean),
+            ),
+          ];
+          if (normalizedUrl && normalizedMediaIds.length) {
+            nextMediaIdsByUrl[normalizedUrl] = normalizedMediaIds;
           }
         });
       }
@@ -2688,10 +2694,15 @@ export default function Products() {
             removeMediaIds: [
               ...new Set(
                 (removeUrlsByColor[group.label] || [])
-                  .map((url) => editMediaIdsByUrl[url])
+                  .flatMap((url) => editMediaIdsByUrl[url] || [])
                   .filter((mediaId): mediaId is string => Boolean(mediaId)),
               ),
             ],
+            removeMediaIdsByUrl: Object.fromEntries(
+              (removeUrlsByColor[group.label] || [])
+                .map((url) => [url, editMediaIdsByUrl[url] || []] as const)
+                .filter(([, mediaIds]) => mediaIds.length),
+            ),
           }));
       }
 

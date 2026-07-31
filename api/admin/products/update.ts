@@ -1364,7 +1364,7 @@ export default async function handler(req: any, res: any) {
         let productOptions: any[] = [];
         let variants: any[] = [];
         let imagesLive: string[] = [];
-        let mediaIdsByUrl: Record<string, string> = {};
+        let mediaIdsByUrl: Record<string, string[]> = {};
         let liveProduct: any = null;
 
         let shopifyProductId = resolveShopifyProductId(doc);
@@ -1500,24 +1500,33 @@ export default async function handler(req: any, res: any) {
               imagesLive = (p.images?.nodes || [])
                 .map((n: any) => String(n.url))
                 .filter(Boolean);
-              const mediaIdByLookupKey = new Map<string, string>();
+              const mediaIdsByLookupKey = new Map<string, string[]>();
               for (const mediaNode of p.media?.nodes || []) {
                 const mediaId = String(mediaNode?.id || "").trim();
                 const mediaUrl = String(mediaNode?.image?.url || "").trim();
                 if (!mediaId || !mediaUrl) continue;
-                imageUrlLookupKeys(mediaUrl).forEach((key) =>
-                  mediaIdByLookupKey.set(key, mediaId),
-                );
+                imageUrlLookupKeys(mediaUrl).forEach((key) => {
+                  mediaIdsByLookupKey.set(key, [
+                    ...new Set([
+                      ...(mediaIdsByLookupKey.get(key) || []),
+                      mediaId,
+                    ]),
+                  ]);
+                });
               }
               mediaIdsByUrl = Object.fromEntries(
                 imagesLive
                   .map((imageUrl) => {
-                    const mediaId = imageUrlLookupKeys(imageUrl)
-                      .map((key) => mediaIdByLookupKey.get(key))
-                      .find(Boolean);
-                    return mediaId ? [imageUrl, mediaId] : null;
+                    const mediaIds = [
+                      ...new Set(
+                        imageUrlLookupKeys(imageUrl).flatMap(
+                          (key) => mediaIdsByLookupKey.get(key) || [],
+                        ),
+                      ),
+                    ];
+                    return mediaIds.length ? [imageUrl, mediaIds] : null;
                   })
-                  .filter(Boolean) as Array<[string, string]>,
+                  .filter(Boolean) as Array<[string, string[]]>,
               );
             }
           } catch (err: any) {

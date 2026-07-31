@@ -438,6 +438,14 @@ export default function ProductQueue() {
           ? `${product.title} update approved`
           : `${product.title} approved`
       );
+      if (
+        result?.variantMediaSync?.deleted ||
+        result?.variantMediaSync?.media
+      ) {
+        toast.success(
+          `Shopify photos synced: ${Number(result.variantMediaSync.deleted || 0)} removed, ${Number(result.variantMediaSync.media || 0)} added.`,
+        );
+      }
       if (Array.isArray(result?.warnings) && result.warnings.length) {
         toast.warning(result.warnings.join("\n"), { duration: 10000 });
       }

@@ -290,11 +290,22 @@ const PRODUCT_IMAGES_QUERY = /* GraphQL */ `
         nodes {
           id
           alt
+          status
           mediaContentType
           ... on MediaImage {
             image {
               url
               altText
+            }
+          }
+        }
+      }
+      variants(first: 100) {
+        nodes {
+          id
+          media(first: 100) {
+            nodes {
+              id
             }
           }
         }
@@ -313,18 +324,6 @@ const PRODUCT_DELETE_MEDIA = /* GraphQL */ `
         message
         code
       }
-      userErrors {
-        field
-        message
-      }
-    }
-  }
-`;
-
-const PRODUCT_IMAGE_DELETE = /* GraphQL */ `
-  mutation productImageDelete($id: ID!) {
-    productImageDelete(id: $id) {
-      deletedImageId
       userErrors {
         field
         message
@@ -443,6 +442,27 @@ const PRODUCT_VARIANT_APPEND_MEDIA = /* GraphQL */ `
       userErrors {
         field
         message
+      }
+    }
+  }
+`;
+
+const PRODUCT_VARIANT_DETACH_MEDIA = /* GraphQL */ `
+  mutation productVariantDetachMedia(
+    $productId: ID!
+    $variantMedia: [ProductVariantDetachMediaInput!]!
+  ) {
+    productVariantDetachMedia(
+      productId: $productId
+      variantMedia: $variantMedia
+    ) {
+      productVariants {
+        id
+      }
+      userErrors {
+        field
+        message
+        code
       }
     }
   }
@@ -954,76 +974,134 @@ async function deleteProductMediaByIds(productId: string, input: unknown) {
   throw new Error("Shopify did not remove every selected product photo.");
 }
 
+async function detachProductMediaFromVariants(
+  productId: string,
+  pairs: Array<{ variantId: string; mediaId: string }>,
+) {
+  const variantMedia = [
+    ...new Map(
+      pairs
+        .map((pair) => {
+          const variantId = normalizeShopifyGid(
+            pair.variantId,
+            "ProductVariant",
+          );
+          const mediaId = normalizeShopifyMediaId(pair.mediaId);
+          return variantId && mediaId
+            ? [`${variantId}|${mediaId}`, { variantId, mediaIds: [mediaId] }]
+            : null;
+        })
+        .filter(Boolean) as Array<
+        [string, { variantId: string; mediaIds: string[] }]
+      >,
+    ).values(),
+  ];
+  for (const mediaInput of variantMedia) {
+    const result = await shopifyGraphQL(PRODUCT_VARIANT_DETACH_MEDIA, {
+      productId,
+      variantMedia: [mediaInput],
+    });
+    const errors = (
+      result?.data?.productVariantDetachMedia?.userErrors || []
+    ).filter(
+      (error: any) =>
+        !/not attached|not associated|does not exist|not found/i.test(
+          String(error?.message || ""),
+        ),
+    );
+    if (errors.length) {
+      throw new Error(errors.map((error: any) => error.message).join("; "));
+    }
+  }
+}
+
 async function deleteProductImagesByUrl(productId: string, urls: string[]) {
   const uniqueUrls = [...new Set(urls.map((url) => String(url).trim()).filter(Boolean))];
   if (!uniqueUrls.length) return 0;
   const response = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, { id: productId });
-  const imageNodes = response?.data?.product?.images?.nodes || [];
   const mediaNodes = response?.data?.product?.media?.nodes || [];
-  const imageIdByKey = new Map<string, string>();
-  const mediaIdByKey = new Map<string, string>();
-  for (const node of imageNodes) {
-    const url = String(node?.url || "").trim();
-    const id = String(node?.id || "").trim();
-    if (!url || !id) continue;
-    for (const key of imageUrlLookupKeys(url)) imageIdByKey.set(key, id);
-  }
+  const mediaIdsByKey = new Map<string, Set<string>>();
   for (const node of mediaNodes) {
     const url = String(node?.image?.url || "").trim();
     const id = String(node?.id || "").trim();
     if (!url || !id) continue;
-    for (const key of imageUrlLookupKeys(url)) mediaIdByKey.set(key, id);
+    for (const key of imageUrlLookupKeys(url)) {
+      const ids = mediaIdsByKey.get(key) || new Set<string>();
+      ids.add(id);
+      mediaIdsByKey.set(key, ids);
+    }
   }
 
   const mediaIds = new Set<string>();
-  const legacyImageIds = new Set<string>();
+  const unresolvedUrls: string[] = [];
   for (const url of uniqueUrls) {
+    let matched = false;
     for (const key of imageUrlLookupKeys(url)) {
-      const mediaId = mediaIdByKey.get(key);
-      if (mediaId) mediaIds.add(mediaId);
-      const imageId = imageIdByKey.get(key);
-      if (imageId) legacyImageIds.add(imageId);
-    }
-  }
-
-  let deleted = 0;
-  if (mediaIds.size) {
-    try {
-      const result = await shopifyGraphQL(PRODUCT_DELETE_MEDIA, {
-        productId,
-        mediaIds: [...mediaIds],
-      });
-      const mediaErrors =
-        result?.data?.productDeleteMedia?.mediaUserErrors || [];
-      if (mediaErrors.length) {
-        throw new Error(
-          mediaErrors.map((error: any) => error.message).join("; "),
-        );
+      for (const mediaId of mediaIdsByKey.get(key) || []) {
+        mediaIds.add(mediaId);
+        matched = true;
       }
-      throwUserErrors(result, "data.productDeleteMedia");
-      const deletedMediaIds =
-        result?.data?.productDeleteMedia?.deletedMediaIds || [];
-      const deletedProductImageIds =
-        result?.data?.productDeleteMedia?.deletedProductImageIds || [];
-      deleted += Math.max(
-        deletedMediaIds.length,
-        deletedProductImageIds.length,
-      );
-    } catch (error) {
-      console.warn("productDeleteMedia failed, falling back to productImageDelete", error);
     }
+    if (!matched) unresolvedUrls.push(url);
   }
+  if (unresolvedUrls.length) {
+    throw new Error(
+      `Shopify could not resolve ${unresolvedUrls.length} selected photo(s). Refresh the product and submit the photo removal again.`,
+    );
+  }
+  return deleteProductMediaByIds(productId, [...mediaIds]);
+}
 
-  for (const id of legacyImageIds) {
-    try {
-      const result = await shopifyGraphQL(PRODUCT_IMAGE_DELETE, { id });
-      throwUserErrors(result, "data.productImageDelete");
-      deleted += 1;
-    } catch (error) {
-      console.warn("productImageDelete fallback failed", error);
+async function waitForMediaReady(productId: string, mediaIds: string[]) {
+  const expectedIds = new Set(mediaIds);
+  if (!expectedIds.size) return;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const result = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, { id: productId });
+    const nodes = result?.data?.product?.media?.nodes || [];
+    const statusById = new Map<string, string>(
+      nodes.map((node: any) => [
+        String(node?.id || "").trim(),
+        String(node?.status || "").trim().toUpperCase(),
+      ]),
+    );
+    const failedId = [...expectedIds].find(
+      (id) => statusById.get(id) === "FAILED",
+    );
+    if (failedId) throw new Error("Shopify failed to process a new product photo.");
+    if (
+      [...expectedIds].every((id) => statusById.get(id) === "READY")
+    ) {
+      return;
     }
+    if (attempt < 7) await sleep(500 * (attempt + 1));
   }
-  return deleted;
+  throw new Error("Shopify did not finish processing every new product photo.");
+}
+
+async function verifyVariantMediaAssociations(
+  productId: string,
+  pairs: Array<{ variantId: string; mediaId: string }>,
+) {
+  if (!pairs.length) return;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const result = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, { id: productId });
+    const mediaByVariant = new Map<string, Set<string>>(
+      (result?.data?.product?.variants?.nodes || []).map((variant: any) => [
+        String(variant?.id || "").trim(),
+        new Set<string>(
+          (variant?.media?.nodes || [])
+            .map((node: any) => String(node?.id || "").trim())
+            .filter(Boolean),
+        ),
+      ]),
+    );
+    const missing = pairs.filter(
+      (pair) => !mediaByVariant.get(pair.variantId)?.has(pair.mediaId),
+    );
+    if (!missing.length) return;
+    if (attempt < 4) await sleep(400 * (attempt + 1));
+  }
+  throw new Error("Shopify did not attach every new photo to its colour variants.");
 }
 
 async function fetchCdnUrlsWithRetry(productId: string): Promise<string[]> {
@@ -1521,12 +1599,40 @@ async function applyVariantMediaUpdates(
   const groups = meaningfulVariantMediaUpdates(input);
   if (!groups.length) return { colors: 0, variants: 0, media: 0, deleted: 0 };
 
-  const removeMediaIds = groups.flatMap((group) => group.removeMediaIds);
+  const removeMediaIds = [
+    ...new Set(
+      groups.flatMap((group) => [
+        ...group.removeMediaIds,
+        ...Object.values(group.removeMediaIdsByUrl).flat(),
+      ]),
+    ),
+  ];
+  await detachProductMediaFromVariants(
+    productId,
+    groups.flatMap((group) =>
+      group.variantIds.flatMap((variantId) =>
+        [
+          ...new Set([
+            ...group.removeMediaIds,
+            ...Object.values(group.removeMediaIdsByUrl).flat(),
+          ]),
+        ].map((mediaId) => ({ variantId, mediaId })),
+      ),
+    ),
+  );
   const deletedById = await deleteProductMediaByIds(productId, removeMediaIds);
   const fallbackDeleteUrls = groups.flatMap((group) =>
-    group.removeMediaIds.length >= group.removeResourceUrls.length
-      ? []
-      : group.removeResourceUrls,
+    group.removeResourceUrls.filter((url) => {
+      const mappedIds = group.removeMediaIdsByUrl[url] || [];
+      if (mappedIds.length) return false;
+      if (
+        !Object.keys(group.removeMediaIdsByUrl).length &&
+        group.removeMediaIds.length >= group.removeResourceUrls.length
+      ) {
+        return false;
+      }
+      return true;
+    }),
   );
   const deletedByUrl = await deleteProductImagesByUrl(
     productId,
@@ -1594,6 +1700,12 @@ async function applyVariantMediaUpdates(
       const mediaId = String(createdMedia[index]?.id || "").trim();
       if (mediaId) mediaIdByUrl.set(url, mediaId);
     });
+    await waitForMediaReady(
+      productId,
+      missingResourceUrls
+        .map((url) => mediaIdByUrl.get(url))
+        .filter((mediaId): mediaId is string => Boolean(mediaId)),
+    );
   }
   if (mediaIdByUrl.size !== resourceUrls.length) {
     throw new Error("Shopify did not return every uploaded variant photo ID.");
@@ -1624,6 +1736,13 @@ async function applyVariantMediaUpdates(
       );
     }
   }
+  await verifyVariantMediaAssociations(
+    productId,
+    variantMedia.map((item) => ({
+      variantId: item.variantId,
+      mediaId: String(item.mediaIds[0]),
+    })),
+  );
 
   return {
     colors: groups.length,
@@ -1656,13 +1775,33 @@ function meaningfulVariantMediaUpdates(input: unknown) {
                 .map((id: unknown) => normalizeShopifyMediaId(id))
                 .filter(Boolean)
             : [],
+          removeMediaIdsByUrl:
+            group?.removeMediaIdsByUrl &&
+            typeof group.removeMediaIdsByUrl === "object" &&
+            !Array.isArray(group.removeMediaIdsByUrl)
+              ? Object.fromEntries(
+                  Object.entries(group.removeMediaIdsByUrl)
+                    .map(([url, ids]) => [
+                      String(url || "").trim(),
+                      [
+                        ...new Set(
+                          (Array.isArray(ids) ? ids : [ids])
+                            .map((id: unknown) => normalizeShopifyMediaId(id))
+                            .filter(Boolean),
+                        ),
+                      ],
+                    ])
+                    .filter(([url, ids]) => Boolean(url) && (ids as unknown[]).length),
+                )
+              : {},
         }))
         .filter(
           (group) =>
             group.variantIds.length &&
             (group.resourceUrls.length ||
               group.removeResourceUrls.length ||
-              group.removeMediaIds.length),
+              group.removeMediaIds.length ||
+              Object.keys(group.removeMediaIdsByUrl).length),
         )
     : [];
 }
@@ -2567,7 +2706,11 @@ export default async function handler(req: any, res: any) {
           );
         }
 
-        return res.status(200).json({ ok: true, warnings });
+        return res.status(200).json({
+          ok: true,
+          warnings,
+          variantMediaSync: shopifyResult.variantMediaSync || null,
+        });
       }
 
       case "queue.reject": {
