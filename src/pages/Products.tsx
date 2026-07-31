@@ -2691,6 +2691,9 @@ export default function Products() {
             variantIds: group.variantIds,
             resourceUrls: resourceUrlsByColor[group.label] || [],
             removeResourceUrls: removeUrlsByColor[group.label] || [],
+            retainedResourceUrls: group.existingUrls.filter(
+              (url) => !editColorImageRemovals[group.label]?.[url],
+            ),
             removeMediaIds: [
               ...new Set(
                 (removeUrlsByColor[group.label] || [])

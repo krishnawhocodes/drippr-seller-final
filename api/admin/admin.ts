@@ -1068,6 +1068,7 @@ async function deleteProductImagesByUrl(productId: string, urls: string[]) {
   const mediaNodes = product.media?.nodes || [];
   const imageNodes = product.images?.nodes || [];
   const mediaIdsByKey = new Map<string, Set<string>>();
+  const mediaIdsBySourceToken = new Map<string, Set<string>>();
   const imageIdsByKey = new Map<string, Set<string>>();
   for (const node of mediaNodes) {
     const url = String(node?.image?.url || "").trim();
@@ -1077,6 +1078,14 @@ async function deleteProductImagesByUrl(productId: string, urls: string[]) {
       const ids = mediaIdsByKey.get(key) || new Set<string>();
       ids.add(id);
       mediaIdsByKey.set(key, ids);
+    }
+    const sourceToken = mediaSourceTokenFromAlt(
+      node?.alt || node?.image?.altText,
+    );
+    if (sourceToken) {
+      const ids = mediaIdsBySourceToken.get(sourceToken) || new Set<string>();
+      ids.add(id);
+      mediaIdsBySourceToken.set(sourceToken, ids);
     }
   }
   for (const node of imageNodes) {
@@ -1100,6 +1109,12 @@ async function deleteProductImagesByUrl(productId: string, urls: string[]) {
       for (const imageId of imageIdsByKey.get(key) || []) {
         imageIds.add(imageId);
       }
+    }
+    for (
+      const mediaId of
+        mediaIdsBySourceToken.get(mediaSourceToken(url).toLowerCase()) || []
+    ) {
+      mediaIds.add(mediaId);
     }
   }
   const deletedByMediaId = await deleteProductMediaByIds(productId, [
@@ -1723,12 +1738,122 @@ async function applyVariantMediaUpdates(
   const groups = meaningfulVariantMediaUpdates(input);
   if (!groups.length) return { colors: 0, variants: 0, media: 0, deleted: 0 };
 
+  const currentVariantResult = await shopifyGraphQL(
+    PRODUCT_VARIANT_MEDIA_QUERY,
+    { id: productId },
+  );
+  const currentVariants =
+    currentVariantResult?.data?.product?.variants?.nodes || [];
+  const currentVariantIds = new Set<string>(
+    currentVariants
+      .map((variant: any) => String(variant?.id || "").trim())
+      .filter(Boolean),
+  );
+  const targetVariantIdsForGroup = (group: (typeof groups)[number]) => {
+    const normalizedColor = group.color.trim().toLowerCase();
+    const colorVariantIds = currentVariants
+      .filter((variant: any) =>
+        (variant?.selectedOptions || []).some(
+          (option: any) =>
+            ["color", "colour"].includes(
+              String(option?.name || "").trim().toLowerCase(),
+            ) &&
+            String(option?.value || "").trim().toLowerCase() ===
+              normalizedColor,
+        ),
+      )
+      .map((variant: any) => String(variant?.id || "").trim())
+      .filter(Boolean);
+    const requestedLiveVariantIds = group.variantIds.filter((variantId) =>
+      currentVariantIds.has(variantId),
+    );
+    return [
+      ...new Set(
+        colorVariantIds.length ? colorVariantIds : requestedLiveVariantIds,
+      ),
+    ];
+  };
+
+  const currentMediaResult = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, {
+    id: productId,
+  });
+  const currentMediaNodes =
+    currentMediaResult?.data?.product?.media?.nodes || [];
+  const currentMediaIds = new Set<string>();
+  const mediaIdsByLookupKey = new Map<string, Set<string>>();
+  const mediaIdsBySourceToken = new Map<string, Set<string>>();
+  for (const node of currentMediaNodes) {
+    const mediaId = String(node?.id || "").trim();
+    const mediaUrl = String(node?.image?.url || "").trim();
+    if (!mediaId) continue;
+    currentMediaIds.add(mediaId);
+    if (mediaUrl) {
+      for (const key of imageUrlLookupKeys(mediaUrl)) {
+        const ids = mediaIdsByLookupKey.get(key) || new Set<string>();
+        ids.add(mediaId);
+        mediaIdsByLookupKey.set(key, ids);
+      }
+    }
+    const sourceToken = mediaSourceTokenFromAlt(
+      node?.alt || node?.image?.altText,
+    );
+    if (sourceToken) {
+      const ids = mediaIdsBySourceToken.get(sourceToken) || new Set<string>();
+      ids.add(mediaId);
+      mediaIdsBySourceToken.set(sourceToken, ids);
+    }
+  }
+  const mediaIdsForUrls = (urls: string[]) => {
+    const ids = new Set<string>();
+    for (const url of urls) {
+      for (const key of imageUrlLookupKeys(url)) {
+        for (const mediaId of mediaIdsByLookupKey.get(key) || []) {
+          ids.add(mediaId);
+        }
+      }
+      for (
+        const mediaId of
+          mediaIdsBySourceToken.get(mediaSourceToken(url).toLowerCase()) || []
+      ) {
+        ids.add(mediaId);
+      }
+    }
+    return ids;
+  };
+
+  const inferredRemoveMediaIds = new Set<string>();
+  for (const group of groups) {
+    if (!group.retainedResourceUrlsProvided) continue;
+    const retainedMediaIds = mediaIdsForUrls(group.retainedResourceUrls);
+    const targetVariantIds = new Set(targetVariantIdsForGroup(group));
+    for (const variant of currentVariants) {
+      const variantId = String(variant?.id || "").trim();
+      if (!targetVariantIds.has(variantId)) continue;
+      for (const node of variant?.media?.nodes || []) {
+        const mediaId = String(node?.id || "").trim();
+        if (
+          mediaId &&
+          currentMediaIds.has(mediaId) &&
+          !retainedMediaIds.has(mediaId)
+        ) {
+          inferredRemoveMediaIds.add(mediaId);
+        }
+      }
+    }
+  }
+
   const removeMediaIds = [
     ...new Set(
-      groups.flatMap((group) => [
-        ...group.removeMediaIds,
-        ...Object.values(group.removeMediaIdsByUrl).flat(),
-      ]),
+      [
+        ...groups.flatMap((group) => [
+          ...group.removeMediaIds,
+          ...Object.values(group.removeMediaIdsByUrl).flat(),
+        ]),
+        ...groups.flatMap((group) => [
+          ...mediaIdsForUrls(group.removeResourceUrls),
+        ]),
+        ...inferredRemoveMediaIds,
+      ].filter(Boolean),
     ),
   ];
   let deletedById = 0;
@@ -1923,6 +2048,14 @@ function meaningfulVariantMediaUpdates(input: unknown) {
                 .map((url: unknown) => String(url).trim())
                 .filter(Boolean)
             : [],
+          retainedResourceUrls: Array.isArray(group?.retainedResourceUrls)
+            ? group.retainedResourceUrls
+                .map((url: unknown) => String(url).trim())
+                .filter(Boolean)
+            : [],
+          retainedResourceUrlsProvided: Array.isArray(
+            group?.retainedResourceUrls,
+          ),
           removeMediaIds: Array.isArray(group?.removeMediaIds)
             ? group.removeMediaIds
                 .map((id: unknown) => normalizeShopifyMediaId(id))
