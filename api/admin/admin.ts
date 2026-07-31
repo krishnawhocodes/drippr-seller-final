@@ -300,6 +300,13 @@ const PRODUCT_IMAGES_QUERY = /* GraphQL */ `
           }
         }
       }
+    }
+  }
+`;
+
+const PRODUCT_VARIANT_MEDIA_QUERY = /* GraphQL */ `
+  query productVariantMedia($id: ID!) {
+    product(id: $id) {
       variants(first: 100) {
         nodes {
           id
@@ -442,27 +449,6 @@ const PRODUCT_VARIANT_APPEND_MEDIA = /* GraphQL */ `
       userErrors {
         field
         message
-      }
-    }
-  }
-`;
-
-const PRODUCT_VARIANT_DETACH_MEDIA = /* GraphQL */ `
-  mutation productVariantDetachMedia(
-    $productId: ID!
-    $variantMedia: [ProductVariantDetachMediaInput!]!
-  ) {
-    productVariantDetachMedia(
-      productId: $productId
-      variantMedia: $variantMedia
-    ) {
-      productVariants {
-        id
-      }
-      userErrors {
-        field
-        message
-        code
       }
     }
   }
@@ -974,47 +960,6 @@ async function deleteProductMediaByIds(productId: string, input: unknown) {
   throw new Error("Shopify did not remove every selected product photo.");
 }
 
-async function detachProductMediaFromVariants(
-  productId: string,
-  pairs: Array<{ variantId: string; mediaId: string }>,
-) {
-  const variantMedia = [
-    ...new Map(
-      pairs
-        .map((pair) => {
-          const variantId = normalizeShopifyGid(
-            pair.variantId,
-            "ProductVariant",
-          );
-          const mediaId = normalizeShopifyMediaId(pair.mediaId);
-          return variantId && mediaId
-            ? [`${variantId}|${mediaId}`, { variantId, mediaIds: [mediaId] }]
-            : null;
-        })
-        .filter(Boolean) as Array<
-        [string, { variantId: string; mediaIds: string[] }]
-      >,
-    ).values(),
-  ];
-  for (const mediaInput of variantMedia) {
-    const result = await shopifyGraphQL(PRODUCT_VARIANT_DETACH_MEDIA, {
-      productId,
-      variantMedia: [mediaInput],
-    });
-    const errors = (
-      result?.data?.productVariantDetachMedia?.userErrors || []
-    ).filter(
-      (error: any) =>
-        !/not attached|not associated|does not exist|not found/i.test(
-          String(error?.message || ""),
-        ),
-    );
-    if (errors.length) {
-      throw new Error(errors.map((error: any) => error.message).join("; "));
-    }
-  }
-}
-
 async function deleteProductImagesByUrl(productId: string, urls: string[]) {
   const uniqueUrls = [...new Set(urls.map((url) => String(url).trim()).filter(Boolean))];
   if (!uniqueUrls.length) return 0;
@@ -1056,7 +1001,9 @@ async function waitForMediaReady(productId: string, mediaIds: string[]) {
   const expectedIds = new Set(mediaIds);
   if (!expectedIds.size) return;
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    const result = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, { id: productId });
+    const result = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, {
+      id: productId,
+    });
     const nodes = result?.data?.product?.media?.nodes || [];
     const statusById = new Map<string, string>(
       nodes.map((node: any) => [
@@ -1084,7 +1031,9 @@ async function verifyVariantMediaAssociations(
 ) {
   if (!pairs.length) return;
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const result = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, { id: productId });
+    const result = await shopifyGraphQL(PRODUCT_VARIANT_MEDIA_QUERY, {
+      id: productId,
+    });
     const mediaByVariant = new Map<string, Set<string>>(
       (result?.data?.product?.variants?.nodes || []).map((variant: any) => [
         String(variant?.id || "").trim(),
@@ -1607,20 +1556,14 @@ async function applyVariantMediaUpdates(
       ]),
     ),
   ];
-  await detachProductMediaFromVariants(
-    productId,
-    groups.flatMap((group) =>
-      group.variantIds.flatMap((variantId) =>
-        [
-          ...new Set([
-            ...group.removeMediaIds,
-            ...Object.values(group.removeMediaIdsByUrl).flat(),
-          ]),
-        ].map((mediaId) => ({ variantId, mediaId })),
-      ),
-    ),
-  );
-  const deletedById = await deleteProductMediaByIds(productId, removeMediaIds);
+  let deletedById = 0;
+  try {
+    deletedById = await deleteProductMediaByIds(productId, removeMediaIds);
+  } catch (error: any) {
+    throw new Error(
+      `Shopify photo removal failed: ${String(error?.message || error)}`,
+    );
+  }
   const fallbackDeleteUrls = groups.flatMap((group) =>
     group.removeResourceUrls.filter((url) => {
       const mappedIds = group.removeMediaIdsByUrl[url] || [];
@@ -1634,10 +1577,17 @@ async function applyVariantMediaUpdates(
       return true;
     }),
   );
-  const deletedByUrl = await deleteProductImagesByUrl(
-    productId,
-    fallbackDeleteUrls,
-  );
+  let deletedByUrl = 0;
+  try {
+    deletedByUrl = await deleteProductImagesByUrl(
+      productId,
+      fallbackDeleteUrls,
+    );
+  } catch (error: any) {
+    throw new Error(
+      `Shopify photo removal failed: ${String(error?.message || error)}`,
+    );
+  }
   const deletedMedia = deletedById + deletedByUrl;
   const resourceUrls = [
     ...new Set(groups.flatMap((group) => group.resourceUrls)),
