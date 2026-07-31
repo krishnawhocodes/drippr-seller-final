@@ -117,6 +117,7 @@ type MerchantProduct = {
   images?: string[];
   imageUrls?: string[];
   image?: string | null;
+  mediaIdsByUrl?: Record<string, string>;
   resourceUrls?: string[];
   variantDraft?: StoredVariantMediaDraft | null;
   pendingUpdates?: {
@@ -2143,6 +2144,9 @@ export default function Products() {
     Record<string, Record<string, boolean>>
   >({});
   const [imagesLive, setImagesLive] = useState<string[]>([]);
+  const [editMediaIdsByUrl, setEditMediaIdsByUrl] = useState<
+    Record<string, string>
+  >({});
   const [imageAddFiles, setImageAddFiles] = useState<File[]>([]);
   const [imageBusy, setImageBusy] = useState(false);
   const [deleteSel, setDeleteSel] = useState<Record<string, boolean>>({}); // url -> selected
@@ -2365,6 +2369,21 @@ export default function Products() {
                 : [],
         ),
       );
+      const nextMediaIdsByUrl: Record<string, string> = {};
+      if (
+        prod.mediaIdsByUrl &&
+        typeof prod.mediaIdsByUrl === "object" &&
+        !Array.isArray(prod.mediaIdsByUrl)
+      ) {
+        Object.entries(prod.mediaIdsByUrl).forEach(([url, mediaId]) => {
+          const normalizedUrl = String(url || "").trim();
+          const normalizedMediaId = String(mediaId || "").trim();
+          if (normalizedUrl && normalizedMediaId) {
+            nextMediaIdsByUrl[normalizedUrl] = normalizedMediaId;
+          }
+        });
+      }
+      setEditMediaIdsByUrl(nextMediaIdsByUrl);
       setDeleteSel({});
       // planner defaults until details load
       setOptions([
@@ -2428,6 +2447,7 @@ export default function Products() {
     setEditColorImageFiles({});
     setEditColorImagePreviews({});
     setEditColorImageRemovals({});
+    setEditMediaIdsByUrl({});
     setVariantColorImages({});
     setVariantColorImagePreviews({});
     setExistingProductOptions([]);
@@ -2665,6 +2685,13 @@ export default function Products() {
             variantIds: group.variantIds,
             resourceUrls: resourceUrlsByColor[group.label] || [],
             removeResourceUrls: removeUrlsByColor[group.label] || [],
+            removeMediaIds: [
+              ...new Set(
+                (removeUrlsByColor[group.label] || [])
+                  .map((url) => editMediaIdsByUrl[url])
+                  .filter((mediaId): mediaId is string => Boolean(mediaId)),
+              ),
+            ],
           }));
       }
 

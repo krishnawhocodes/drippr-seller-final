@@ -569,6 +569,19 @@ const PRODUCT_DETAILS_QUERY = /* GraphQL */ `
           }
         }
       }
+      media(first: 100) {
+        nodes {
+          id
+          alt
+          mediaContentType
+          ... on MediaImage {
+            image {
+              url
+              altText
+            }
+          }
+        }
+      }
     }
   }
 `;
@@ -1351,6 +1364,7 @@ export default async function handler(req: any, res: any) {
         let productOptions: any[] = [];
         let variants: any[] = [];
         let imagesLive: string[] = [];
+        let mediaIdsByUrl: Record<string, string> = {};
         let liveProduct: any = null;
 
         let shopifyProductId = resolveShopifyProductId(doc);
@@ -1486,6 +1500,25 @@ export default async function handler(req: any, res: any) {
               imagesLive = (p.images?.nodes || [])
                 .map((n: any) => String(n.url))
                 .filter(Boolean);
+              const mediaIdByLookupKey = new Map<string, string>();
+              for (const mediaNode of p.media?.nodes || []) {
+                const mediaId = String(mediaNode?.id || "").trim();
+                const mediaUrl = String(mediaNode?.image?.url || "").trim();
+                if (!mediaId || !mediaUrl) continue;
+                imageUrlLookupKeys(mediaUrl).forEach((key) =>
+                  mediaIdByLookupKey.set(key, mediaId),
+                );
+              }
+              mediaIdsByUrl = Object.fromEntries(
+                imagesLive
+                  .map((imageUrl) => {
+                    const mediaId = imageUrlLookupKeys(imageUrl)
+                      .map((key) => mediaIdByLookupKey.get(key))
+                      .find(Boolean);
+                    return mediaId ? [imageUrl, mediaId] : null;
+                  })
+                  .filter(Boolean) as Array<[string, string]>,
+              );
             }
           } catch (err: any) {
             console.error(
@@ -1555,13 +1588,11 @@ export default async function handler(req: any, res: any) {
             );
           });
           const liveUrlBySavedSource = new Map<string, string>();
-          savedVariantSourceUrls.forEach((savedUrl, index) => {
+          savedVariantSourceUrls.forEach((savedUrl) => {
             const exactLiveUrl = imageUrlLookupKeys(savedUrl)
               .map((key) => liveUrlByLookupKey.get(key))
               .find(Boolean);
-            const positionalLiveUrl = imagesLive[index];
-            const liveUrl = exactLiveUrl || positionalLiveUrl;
-            if (liveUrl) liveUrlBySavedSource.set(savedUrl, liveUrl);
+            if (exactLiveUrl) liveUrlBySavedSource.set(savedUrl, exactLiveUrl);
           });
 
           variants = variants.map((variant: any) => {
@@ -1584,13 +1615,15 @@ export default async function handler(req: any, res: any) {
                 imagesLive.length ? liveUrlBySavedSource.get(url) : url,
               )
               .filter(Boolean);
+            const liveVariantMediaUrls = Array.isArray(variant.mediaUrls)
+              ? variant.mediaUrls
+              : [];
             const mediaUrls = [
-              ...new Set([
-                ...(Array.isArray(variant.mediaUrls)
-                  ? variant.mediaUrls
-                  : []),
-                ...hydratedSavedUrls,
-              ]),
+              ...new Set(
+                liveVariantMediaUrls.length
+                  ? liveVariantMediaUrls
+                  : hydratedSavedUrls,
+              ),
             ];
             return mediaUrls.length ? { ...variant, mediaUrls } : variant;
           });
@@ -1793,6 +1826,7 @@ export default async function handler(req: any, res: any) {
             productOptions,
             variants,
             imagesLive,
+            mediaIdsByUrl,
           },
         });
       }
