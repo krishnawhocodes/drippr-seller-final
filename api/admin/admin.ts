@@ -915,7 +915,14 @@ async function deleteProductImagesByUrl(productId: string, urls: string[]) {
         );
       }
       throwUserErrors(result, "data.productDeleteMedia");
-      deleted += result?.data?.productDeleteMedia?.deletedMediaIds?.length || 0;
+      const deletedMediaIds =
+        result?.data?.productDeleteMedia?.deletedMediaIds || [];
+      const deletedProductImageIds =
+        result?.data?.productDeleteMedia?.deletedProductImageIds || [];
+      deleted += Math.max(
+        deletedMediaIds.length,
+        deletedProductImageIds.length,
+      );
     } catch (error) {
       console.warn("productDeleteMedia failed, falling back to productImageDelete", error);
     }
@@ -1432,11 +1439,6 @@ async function applyVariantMediaUpdates(
 
   const deleteUrls = groups.flatMap((group) => group.removeResourceUrls);
   const deletedMedia = await deleteProductImagesByUrl(productId, deleteUrls);
-  if (deleteUrls.length && deletedMedia === 0) {
-    throw new Error(
-      "Selected product photos could not be matched in Shopify, so no photos were removed.",
-    );
-  }
   const resourceUrls = [
     ...new Set(groups.flatMap((group) => group.resourceUrls)),
   ];
@@ -1448,27 +1450,58 @@ async function applyVariantMediaUpdates(
       deleted: deletedMedia,
     };
   }
-  const createResult = await shopifyGraphQL(PRODUCT_CREATE_MEDIA, {
-    productId,
-    media: resourceUrls.map((url) => {
-      const color = groups.find((group) => group.resourceUrls.includes(url))?.color;
-      return {
-        originalSource: url,
-        mediaContentType: "IMAGE",
-        ...(color ? { alt: `DRIPPR_COLOR:${color}` } : {}),
-      };
-    }),
-  });
-  const mediaErrors = createResult?.data?.productCreateMedia?.mediaUserErrors || [];
-  if (mediaErrors.length) {
-    throw new Error(mediaErrors.map((error: any) => error.message).join("; "));
-  }
-  const createdMedia = createResult?.data?.productCreateMedia?.media || [];
   const mediaIdByUrl = new Map<string, string>();
-  resourceUrls.forEach((url, index) => {
-    const mediaId = String(createdMedia[index]?.id || "").trim();
-    if (mediaId) mediaIdByUrl.set(url, mediaId);
+  const existingMediaResult = await shopifyGraphQL(PRODUCT_IMAGES_QUERY, {
+    id: productId,
   });
+  const existingMediaNodes =
+    existingMediaResult?.data?.product?.media?.nodes || [];
+  const existingMediaIdByKey = new Map<string, string>();
+  for (const node of existingMediaNodes) {
+    const url = String(node?.image?.url || "").trim();
+    const id = String(node?.id || "").trim();
+    if (!url || !id) continue;
+    for (const key of imageUrlLookupKeys(url)) {
+      existingMediaIdByKey.set(key, id);
+    }
+  }
+  for (const resourceUrl of resourceUrls) {
+    const existingMediaId = imageUrlLookupKeys(resourceUrl)
+      .map((key) => existingMediaIdByKey.get(key))
+      .find(Boolean);
+    if (existingMediaId) mediaIdByUrl.set(resourceUrl, existingMediaId);
+  }
+
+  const missingResourceUrls = resourceUrls.filter(
+    (url) => !mediaIdByUrl.has(url),
+  );
+  if (missingResourceUrls.length) {
+    const createResult = await shopifyGraphQL(PRODUCT_CREATE_MEDIA, {
+      productId,
+      media: missingResourceUrls.map((url) => {
+        const color = groups.find((group) =>
+          group.resourceUrls.includes(url),
+        )?.color;
+        return {
+          originalSource: url,
+          mediaContentType: "IMAGE",
+          ...(color ? { alt: `DRIPPR_COLOR:${color}` } : {}),
+        };
+      }),
+    });
+    const mediaErrors =
+      createResult?.data?.productCreateMedia?.mediaUserErrors || [];
+    if (mediaErrors.length) {
+      throw new Error(
+        mediaErrors.map((error: any) => error.message).join("; "),
+      );
+    }
+    const createdMedia = createResult?.data?.productCreateMedia?.media || [];
+    missingResourceUrls.forEach((url, index) => {
+      const mediaId = String(createdMedia[index]?.id || "").trim();
+      if (mediaId) mediaIdByUrl.set(url, mediaId);
+    });
+  }
   if (mediaIdByUrl.size !== resourceUrls.length) {
     throw new Error("Shopify did not return every uploaded variant photo ID.");
   }
@@ -1486,7 +1519,17 @@ async function applyVariantMediaUpdates(
       productId,
       variantMedia: [mediaInput],
     });
-    throwUserErrors(appendResult, "data.productVariantAppendMedia");
+    const appendErrors = (
+      appendResult?.data?.productVariantAppendMedia?.userErrors || []
+    ).filter(
+      (error: any) =>
+        !/already|attached|associated/i.test(String(error?.message || "")),
+    );
+    if (appendErrors.length) {
+      throw new Error(
+        appendErrors.map((error: any) => error.message).join("; "),
+      );
+    }
   }
 
   return {
@@ -1716,10 +1759,16 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
     productId,
     pendingUpdates.variantMediaUpdates,
   );
-  const refreshedImageUrls =
-    (variantMediaSync.media || variantMediaSync.deleted)
-      ? await fetchCdnUrlsWithRetry(productId)
-      : null;
+  let refreshedImageUrls: string[] | null = null;
+  if (variantMediaSync.media || variantMediaSync.deleted) {
+    try {
+      refreshedImageUrls = await fetchCdnUrlsWithRetry(productId);
+    } catch (error: any) {
+      warnings.push(
+        `Variant photos were updated, but refreshed Shopify image URLs could not be loaded yet: ${String(error?.message || error)}`,
+      );
+    }
+  }
   if (
     !isMultipleVariantProduct &&
     locationId &&
