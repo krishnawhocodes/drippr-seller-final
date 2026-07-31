@@ -4,6 +4,17 @@ import { shopifyGraphQL } from "../_lib/shopify.js";
 
 const MEASUREMENT_METAFIELD_NAMESPACE = "garment_sizing";
 
+function normSku(raw: unknown) {
+  return String(raw || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "-");
+}
+
+function skuClaimId(uid: string, sku: string) {
+  return `${uid}__${normSku(sku)}`;
+}
+
 function normalizeMeasurements(input: any) {
   if (!input || typeof input !== "object") return null;
 
@@ -32,6 +43,11 @@ function hasAnyMeasurement(measurements: any) {
         (key) => typeof measurements[key] === "number",
       ),
   );
+}
+
+function comparableMeasurements(input: any) {
+  const measurements = normalizeMeasurements(input);
+  return hasAnyMeasurement(measurements) ? measurements : null;
 }
 
 function normalizeVariantMeasurements(input: any) {
@@ -1411,30 +1427,7 @@ async function applyVariantMediaUpdates(
   productId: string,
   input: unknown,
 ) {
-  const groups = Array.isArray(input)
-    ? input
-        .map((group: any) => ({
-          color: String(group?.color || "").trim(),
-          variantIds: Array.isArray(group?.variantIds)
-            ? group.variantIds
-                .map((id: unknown) => normalizeShopifyGid(id, "ProductVariant"))
-                .filter(Boolean)
-            : [],
-          resourceUrls: Array.isArray(group?.resourceUrls)
-            ? group.resourceUrls.map((url: unknown) => String(url).trim()).filter(Boolean)
-            : [],
-          removeResourceUrls: Array.isArray(group?.removeResourceUrls)
-            ? group.removeResourceUrls
-                .map((url: unknown) => String(url).trim())
-                .filter(Boolean)
-            : [],
-        }))
-        .filter(
-          (group) =>
-            group.variantIds.length &&
-            (group.resourceUrls.length || group.removeResourceUrls.length),
-        )
-    : [];
+  const groups = meaningfulVariantMediaUpdates(input);
   if (!groups.length) return { colors: 0, variants: 0, media: 0, deleted: 0 };
 
   const deleteUrls = groups.flatMap((group) => group.removeResourceUrls);
@@ -1504,6 +1497,33 @@ async function applyVariantMediaUpdates(
   };
 }
 
+function meaningfulVariantMediaUpdates(input: unknown) {
+  return Array.isArray(input)
+    ? input
+        .map((group: any) => ({
+          color: String(group?.color || "").trim(),
+          variantIds: Array.isArray(group?.variantIds)
+            ? group.variantIds
+                .map((id: unknown) => normalizeShopifyGid(id, "ProductVariant"))
+                .filter(Boolean)
+            : [],
+          resourceUrls: Array.isArray(group?.resourceUrls)
+            ? group.resourceUrls.map((url: unknown) => String(url).trim()).filter(Boolean)
+            : [],
+          removeResourceUrls: Array.isArray(group?.removeResourceUrls)
+            ? group.removeResourceUrls
+                .map((url: unknown) => String(url).trim())
+                .filter(Boolean)
+            : [],
+        }))
+        .filter(
+          (group) =>
+            group.variantIds.length &&
+            (group.resourceUrls.length || group.removeResourceUrls.length),
+        )
+    : [];
+}
+
 async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
   const savedProductId = resolveShopifyProductId(qdoc);
   const productId = savedProductId || (await recoverShopifyProductIdBySku(qdoc));
@@ -1551,6 +1571,7 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
     id: productId,
     status: preservedShopifyStatus,
   };
+  const warnings: string[] = [];
   if (pendingUpdates.title !== undefined) productInput.title = pendingUpdates.title;
   if (pendingUpdates.description !== undefined)
     productInput.descriptionHtml = sellerDescriptionToHtml(
@@ -1568,20 +1589,41 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
     };
   }
 
-  await updateShopifyProduct(productInput);
+  const currentShopifyStatus = String(qdoc.shopifyStatus || "")
+    .trim()
+    .toUpperCase();
+  const hasProductFieldChanges = Object.keys(productInput).some(
+    (field) => field !== "id" && field !== "status",
+  );
+  if (
+    hasProductFieldChanges ||
+    currentShopifyStatus !== preservedShopifyStatus
+  ) {
+    await updateShopifyProduct(productInput);
+  }
 
   const desiredCollections = normalizeCollectionTitles(
     pendingUpdates.collections !== undefined
       ? pendingUpdates.collections
       : qdoc.collections,
   );
-  if (desiredCollections.length) {
-    await syncShopifyCollections({
-      productId,
-      previousTitles: normalizeCollectionTitles(qdoc.collections),
-      desiredTitles: desiredCollections,
-      removeDeselected: qdoc.collectionsSynced === true,
-    });
+  const previousCollections = normalizeCollectionTitles(qdoc.collections);
+  const collectionsChanged =
+    JSON.stringify(previousCollections.map((title) => title.toLowerCase()).sort()) !==
+    JSON.stringify(desiredCollections.map((title) => title.toLowerCase()).sort());
+  if (desiredCollections.length && collectionsChanged) {
+    try {
+      await syncShopifyCollections({
+        productId,
+        previousTitles: previousCollections,
+        desiredTitles: desiredCollections,
+        removeDeselected: qdoc.collectionsSynced === true,
+      });
+    } catch (error: any) {
+      warnings.push(
+        `Product approved, but collection sync failed: ${String(error?.message || error)}`,
+      );
+    }
   }
 
   const defaultVariantId = normalizeShopifyGid(
@@ -1590,20 +1632,57 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
       : qdoc.shopifyVariantId || qdoc.variantId,
     "ProductVariant",
   );
+  const variantInputsById = new Map<string, Record<string, any>>();
+  const variantInputFor = (variantId: string) => {
+    const current = variantInputsById.get(variantId) || { id: variantId };
+    variantInputsById.set(variantId, current);
+    return current;
+  };
   if (defaultVariantId) {
-    const variantInput: Record<string, any> = { id: defaultVariantId };
+    const variantInput = variantInputFor(defaultVariantId);
     if (pendingUpdates.compareAtPrice !== undefined)
       variantInput.compareAtPrice = String(pendingUpdates.compareAtPrice);
     if (pendingUpdates.barcode !== undefined)
       variantInput.barcode = pendingUpdates.barcode || null;
+  }
 
-    if (Object.keys(variantInput).length > 1) {
-      const variantResult = await shopifyGraphQL(VARIANTS_BULK_UPDATE, {
-        productId,
-        variants: [variantInput],
-      });
-      throwUserErrors(variantResult, "data.productVariantsBulkUpdate");
-    }
+  if (pendingUpdates.sku !== undefined) {
+    const baseSku = normSku(pendingUpdates.sku);
+    if (!baseSku) throw new Error("Approved SKU ID cannot be empty.");
+    const variantIds = [
+      ...new Set(
+        (Array.isArray(qdoc.shopifyVariantIds)
+          ? qdoc.shopifyVariantIds
+          : [defaultVariantId]
+        )
+          .map((variantId: unknown) =>
+            normalizeShopifyGid(variantId, "ProductVariant"),
+          )
+          .filter(Boolean),
+      ),
+    ] as string[];
+    const savedVariants = Array.isArray(qdoc.variantDraft?.variants)
+      ? qdoc.variantDraft.variants
+      : [];
+    variantIds.forEach((variantId, index) => {
+      const explicitVariantSku = String(savedVariants[index]?.sku || "").trim();
+      variantInputFor(variantId).inventoryItem = {
+        sku:
+          explicitVariantSku ||
+          (variantIds.length > 1 ? `${baseSku}-${index + 1}` : baseSku),
+      };
+    });
+  }
+
+  const variantInputs = [...variantInputsById.values()].filter(
+    (variantInput) => Object.keys(variantInput).length > 1,
+  );
+  if (variantInputs.length) {
+    const variantResult = await shopifyGraphQL(VARIANTS_BULK_UPDATE, {
+      productId,
+      variants: variantInputs,
+    });
+    throwUserErrors(variantResult, "data.productVariantsBulkUpdate");
   }
 
   const removeVariantIds = Array.isArray(pendingUpdates.removeVariantIds)
@@ -1633,7 +1712,6 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
     (Array.isArray(approvedVariantDraft?.variants) &&
       approvedVariantDraft.variants.length > 1);
   const locationId = normalizeLocationId(process.env.SHOPIFY_LOCATION_ID);
-  const warnings: string[] = [];
   const variantMediaSync = await applyVariantMediaUpdates(
     productId,
     pendingUpdates.variantMediaUpdates,
@@ -2139,11 +2217,27 @@ export default async function handler(req: any, res: any) {
         if (queueItemMissing || !qdoc) {
           return res.status(404).json({ ok: false, error: "queue item not found" });
         }
-        const pendingUpdates =
+        const rawPendingUpdates =
           qdoc.pendingUpdates && typeof qdoc.pendingUpdates === "object"
             ? qdoc.pendingUpdates
             : {};
-        const approvalUpdates = {
+        const pendingUpdates: Record<string, any> = { ...rawPendingUpdates };
+        const meaningfulMediaUpdates = meaningfulVariantMediaUpdates(
+          pendingUpdates.variantMediaUpdates,
+        );
+        if (meaningfulMediaUpdates.length) {
+          pendingUpdates.variantMediaUpdates = meaningfulMediaUpdates;
+        } else {
+          delete pendingUpdates.variantMediaUpdates;
+        }
+        if (
+          pendingUpdates.measurements !== undefined &&
+          JSON.stringify(comparableMeasurements(pendingUpdates.measurements)) ===
+            JSON.stringify(comparableMeasurements(qdoc.measurements))
+        ) {
+          delete pendingUpdates.measurements;
+        }
+        const approvalUpdates: Record<string, any> = {
           ...pendingUpdates,
           collections: approvalCollections,
         };
@@ -2158,10 +2252,27 @@ export default async function handler(req: any, res: any) {
             [],
         );
 
-        const shopifyResult: any = await applyApprovedChangesToShopify(
-          qdoc,
-          approvalUpdates,
-        );
+        let shopifyResult: any;
+        try {
+          shopifyResult = await applyApprovedChangesToShopify(
+            qdoc,
+            approvalUpdates,
+          );
+        } catch (error: any) {
+          const approvalError = String(
+            error?.message || error || "Unable to approve this product update.",
+          );
+          await ref.set(
+            {
+              approvalState: null,
+              approvalStartedAt: null,
+              approvalError,
+              updatedAt: Date.now(),
+            },
+            { merge: true },
+          );
+          return res.status(400).json({ ok: false, error: approvalError });
+        }
         const warnings = [...(shopifyResult.warnings || [])];
         const effectiveVariantMeasurements =
           shopifyResult.variantMeasurements || approvedVariantMeasurements;
@@ -2237,6 +2348,7 @@ export default async function handler(req: any, res: any) {
             removedRecoveryReview: null,
             approvalState: null,
             approvalStartedAt: null,
+            approvalError: null,
             reviewerUid: me.uid,
             reviewNote: note || null,
             reviewedAt: Date.now(),
@@ -2244,6 +2356,36 @@ export default async function handler(req: any, res: any) {
           },
           { merge: true }
         );
+
+        const merchantId = String(qdoc.merchantId || "").trim();
+        const approvedSku = normSku(approvalUpdates.sku);
+        const previousSku = normSku(qdoc.sku);
+        if (merchantId && approvedSku && approvedSku !== previousSku) {
+          try {
+            await adminDb
+              .collection("skuClaims")
+              .doc(skuClaimId(merchantId, approvedSku))
+              .set(
+                {
+                  merchantId,
+                  productDocId: id,
+                  updatedAt: Date.now(),
+                },
+                { merge: true },
+              );
+            if (previousSku) {
+              await adminDb
+                .collection("skuClaims")
+                .doc(skuClaimId(merchantId, previousSku))
+                .delete()
+                .catch(() => {});
+            }
+          } catch (error: any) {
+            warnings.push(
+              `Product approved, but SKU claim refresh failed: ${String(error?.message || error)}`,
+            );
+          }
+        }
 
         const shopifyProductNumericId =
           shopifyResult.productId.split("/").pop() || null;

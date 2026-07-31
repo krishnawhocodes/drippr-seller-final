@@ -466,6 +466,7 @@ function buildChangeSummary(
   const base: Record<string, { old: any; new: any }> = {};
 
   for (const [field, nextValue] of Object.entries(requested)) {
+    if (field === "sellerSku") continue;
     const currentValue = current[field];
     if (!valuesEqual(currentValue, nextValue)) {
       base[field] = { old: currentValue ?? null, new: nextValue ?? null };
@@ -2033,6 +2034,48 @@ export default async function handler(req: any, res: any) {
         const value =
           changes[field] !== undefined ? changes[field] : body[field];
         if (value !== undefined) changedForReview[field] = value;
+      }
+
+      const requestedSkuInput =
+        changes.sku !== undefined ? changes.sku : body.sku;
+      if (requestedSkuInput !== undefined) {
+        const requestedSellerSku = String(requestedSkuInput || "").trim();
+        if (!requestedSellerSku) {
+          return res.status(400).json({
+            ok: false,
+            error: "SKU ID is required.",
+          });
+        }
+        const requestedSku = normSku(requestedSellerSku);
+        const currentSku = normSku(String(doc.sku || ""));
+        const currentSellerSku = firstNonEmptyString(
+          doc.sellerSku,
+          doc.submittedSku,
+          doc.originalSku,
+          doc.sku,
+        );
+        if (requestedSku !== currentSku) {
+          const requestedClaim = await adminDb
+            .collection("skuClaims")
+            .doc(skuClaimId(uid, requestedSku))
+            .get();
+          if (
+            requestedClaim.exists &&
+            requestedClaim.data()?.productDocId !== id
+          ) {
+            return res.status(409).json({
+              ok: false,
+              error: "SKU already used by you.",
+            });
+          }
+        }
+        if (
+          requestedSku !== currentSku ||
+          requestedSellerSku !== currentSellerSku
+        ) {
+          changedForReview.sku = requestedSku;
+          changedForReview.sellerSku = requestedSellerSku;
+        }
       }
 
       const measurementInput =

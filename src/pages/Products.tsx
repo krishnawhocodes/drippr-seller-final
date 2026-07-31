@@ -2090,6 +2090,7 @@ export default function Products() {
   const [eCollections, setECollections] = useState<string[]>([]);
   const [eCustomCollectionName, setECustomCollectionName] = useState("");
   const [eVendor, setEVendor] = useState("");
+  const [eSku, setESku] = useState("");
   const [eTags, setETags] = useState("");
   const [eSeoTitle, setESeoTitle] = useState("");
   const [eSeoDesc, setESeoDesc] = useState("");
@@ -2290,6 +2291,7 @@ export default function Products() {
       );
       setECollections(Array.isArray(prod.collections) ? prod.collections : []);
       setEVendor(prod.vendor || "");
+      setESku(prod.sku || "");
       setETags((Array.isArray(prod.tags) ? prod.tags : []).join(", "));
       setESeoTitle(prod.seo?.title || "");
       setESeoDesc(prod.seo?.description || "");
@@ -2400,6 +2402,7 @@ export default function Products() {
     setECollections(p.collections || []);
     setECustomCollectionName("");
     setEVendor(p.vendor || "");
+    setESku(p.sku || "");
     setETags((p.tags || []).join(", "));
     setESeoTitle(p.seo?.title || "");
     setESeoDesc(p.seo?.description || "");
@@ -2507,6 +2510,9 @@ export default function Products() {
         payload.productType = eProductType.trim();
       if (eVendor.trim() !== (editing.vendor || ""))
         payload.vendor = eVendor.trim();
+      const nextSku = eSku.trim();
+      if (!nextSku) throw new Error("SKU ID is required.");
+      if (nextSku !== (editing.sku || "")) payload.sku = nextSku;
       const newTags = eTags
         .split(",")
         .map((t) => t.trim())
@@ -2540,11 +2546,17 @@ export default function Products() {
         inseam: eInseamSize === "" ? null : Number(eInseamSize),
         unit: "in",
       };
+      const nextMeasurements = hasAnyMeasurement(editedMeasurements)
+        ? editedMeasurements
+        : null;
+      const currentMeasurements = hasAnyMeasurement(editing.measurements)
+        ? editing.measurements
+        : null;
       if (
-        JSON.stringify(editedMeasurements) !==
-        JSON.stringify(editing.measurements || null)
+        JSON.stringify(nextMeasurements) !==
+        JSON.stringify(currentMeasurements)
       ) {
-        payload.measurements = editedMeasurements;
+        payload.measurements = nextMeasurements;
       }
 
       const toRemove = Object.entries(removeVariantIds)
@@ -4076,9 +4088,9 @@ export default function Products() {
                   <div className="space-y-2">
                     <Label>SKU ID</Label>
                     <Input
-                      value={editing.sku || ""}
-                      readOnly
-                      className="bg-muted/40"
+                      value={eSku}
+                      onChange={(event) => setESku(event.target.value)}
+                      required
                     />
                   </div>
                   <div className="space-y-2">
