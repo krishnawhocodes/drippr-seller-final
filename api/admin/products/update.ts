@@ -370,7 +370,14 @@ function mergeRemovedRecoveryVariantDraft(args: {
     (args.removeVariantIds || []).map((id) => String(id || "")),
   );
   for (const quickVariant of args.quickVariants || []) {
-    const index = savedVariantIds.indexOf(String(quickVariant?.id || ""));
+    const quickVariantId = String(quickVariant?.id || "");
+    let index = savedVariantIds.indexOf(quickVariantId);
+    if (index < 0) {
+      index = variants.findIndex(
+        (variant: any) =>
+          String(variant?.variantId || variant?.id || "") === quickVariantId,
+      );
+    }
     if (index < 0 || !variants[index]) continue;
     if (quickVariant.price != null && quickVariant.price !== "") {
       variants[index].price = Number(quickVariant.price);
@@ -643,6 +650,21 @@ const VARIANTS_BULK_UPDATE = /* GraphQL */ `
   }
 `;
 
+const PRODUCT_VARIANT_INVENTORY_QUERY = /* GraphQL */ `
+  query productVariantInventory($id: ID!) {
+    product(id: $id) {
+      variants(first: 100) {
+        nodes {
+          id
+          inventoryItem {
+            id
+          }
+        }
+      }
+    }
+  }
+`;
+
 // absolute stock (optional: needs SHOPIFY_LOCATION_ID + inventoryItemId on doc)
 const INVENTORY_SET_ON_HAND = /* GraphQL */ `
   mutation inventorySetOnHandQuantities(
@@ -827,6 +849,16 @@ function normalizeShopifyProductId(value: unknown) {
   const numericId = raw.split("/").pop() || "";
   return /^\d+$/.test(numericId)
     ? `gid://shopify/Product/${numericId}`
+    : null;
+}
+
+function normalizeShopifyVariantId(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (raw.startsWith("gid://shopify/ProductVariant/")) return raw;
+  const numericId = raw.split("/").pop() || "";
+  return /^\d+$/.test(numericId)
+    ? `gid://shopify/ProductVariant/${numericId}`
     : null;
 }
 
@@ -1859,10 +1891,25 @@ export default async function handler(req: any, res: any) {
           return res.status(403).json({ ok: false, error: "Forbidden" });
         }
 
-        const sku = normSku(String(doc.sku || ""));
-        if (!sku || normSku(typedSku) !== sku) {
+        const skuCandidates = [
+          doc.sellerSku,
+          doc.submittedSku,
+          doc.originalSku,
+          doc.sku,
+          ...(Array.isArray(doc.variantDraft?.variants)
+            ? doc.variantDraft.variants.map((variant: any) => variant?.sku)
+            : []),
+        ]
+          .map((value) => normSku(String(value || "")))
+          .filter(Boolean);
+        const typedSkuNormalized = normSku(typedSku);
+        if (
+          !typedSkuNormalized ||
+          !skuCandidates.some((sku) => sku === typedSkuNormalized)
+        ) {
           return res.status(400).json({ ok: false, error: "SKU mismatch" });
         }
+        const sku = normSku(String(doc.sku || "")) || typedSkuNormalized;
 
         const shopifyProductId: string | undefined = doc.shopifyProductId;
 
@@ -1899,11 +1946,7 @@ export default async function handler(req: any, res: any) {
             .catch(() => {});
         }
 
-        // Soft delete doc (or use ref.delete() if you prefer hard delete)
-        await ref.set(
-          { status: "deleted", deletedAt: Date.now() },
-          { merge: true },
-        );
+        await ref.delete();
 
         return res.status(200).json({ ok: true, deleted: true });
       }
@@ -2013,6 +2056,83 @@ export default async function handler(req: any, res: any) {
         }
       }
 
+      const quantityVariantUpdates = quickVariants
+        .map((variant) => {
+          const variantId = normalizeShopifyVariantId(variant?.id);
+          if (
+            !variantId ||
+            variant?.quantity == null ||
+            variant.quantity === ""
+          ) {
+            return null;
+          }
+          const quantity = Number(variant.quantity);
+          if (!Number.isFinite(quantity) || quantity < 0) return null;
+          return { variantId, quantity: Math.trunc(quantity) };
+        })
+        .filter(Boolean) as Array<{ variantId: string; quantity: number }>;
+
+      if (quantityVariantUpdates.length) {
+        if (!shopifyProductId) {
+          return res.status(400).json({
+            ok: false,
+            error: "Shopify product is unavailable for variant stock updates.",
+          });
+        }
+        const locationId = normalizeLocationId(
+          process.env.SHOPIFY_LOCATION_ID,
+        );
+        if (!locationId) {
+          return res.status(500).json({
+            ok: false,
+            error: "SHOPIFY_LOCATION_ID is required for variant stock updates.",
+          });
+        }
+        const inventoryResult = await shopifyGraphQL(
+          PRODUCT_VARIANT_INVENTORY_QUERY,
+          { id: shopifyProductId },
+        );
+        const inventoryItemByVariantId = new Map<string, string>(
+          (inventoryResult?.data?.product?.variants?.nodes || [])
+            .map((variant: any) => [
+              String(variant?.id || "").trim(),
+              String(variant?.inventoryItem?.id || "").trim(),
+            ])
+            .filter(([variantId, inventoryItemId]: string[]) =>
+              Boolean(variantId && inventoryItemId),
+            ),
+        );
+        const missingVariant = quantityVariantUpdates.find(
+          (variant) => !inventoryItemByVariantId.has(variant.variantId),
+        );
+        if (missingVariant) {
+          return res.status(400).json({
+            ok: false,
+            error: "A Shopify inventory item could not be found for every edited variant.",
+          });
+        }
+        const stockResult = await shopifyGraphQL(INVENTORY_SET_ON_HAND, {
+          input: {
+            reason: "correction",
+            setQuantities: quantityVariantUpdates.map((variant) => ({
+              inventoryItemId: inventoryItemByVariantId.get(variant.variantId),
+              locationId,
+              quantity: variant.quantity,
+            })),
+          },
+        });
+        const stockErrors =
+          stockResult?.data?.inventorySetOnHandQuantities?.userErrors || [];
+        if (stockErrors.length) {
+          return res.status(400).json({
+            ok: false,
+            error:
+              stockErrors.map((error: any) => error.message).join("; ") ||
+              "Failed to update Shopify variant stock.",
+          });
+        }
+      }
+
       if (
         !isRemovedRecovery &&
         quickPrice != null &&
@@ -2047,6 +2167,29 @@ export default async function handler(req: any, res: any) {
               console.warn("inventorySetOnHandQuantities errors:", invErrors);
           } catch (e) {
             console.warn("inventorySetOnHandQuantities failed:", e);
+          }
+        }
+      }
+
+      if (!isRemovedRecovery && quickVariants.length) {
+        const mergedVariantDraft = mergeRemovedRecoveryVariantDraft({
+          currentDraft: doc.variantDraft,
+          requestedDraft: null,
+          quickVariants,
+          shopifyVariantIds: doc.shopifyVariantIds || [],
+          mediaUpdates: [],
+          removeVariantIds: [],
+        });
+        if (mergedVariantDraft) {
+          updates.variantDraft = mergedVariantDraft;
+          const quantities = mergedVariantDraft.variants
+            .map((variant: any) => Number(variant?.quantity))
+            .filter((quantity: number) => Number.isFinite(quantity));
+          if (quantities.length === mergedVariantDraft.variants.length) {
+            updates.stock = quantities.reduce(
+              (total: number, quantity: number) => total + quantity,
+              0,
+            );
           }
         }
       }
