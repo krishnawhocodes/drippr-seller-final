@@ -39,14 +39,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -374,27 +366,6 @@ const PRODUCT_TYPE_OPTIONS = [
   "Tops & Dresses",
 ] as const;
 
-const COLLECTION_OPTIONS = [
-  "ATHLEISURE",
-  "CARGOS & PANTS",
-  "CO-RD SET",
-  "DAARCK",
-  "DAILY DRIP",
-  "FUSION",
-  "HOUSE OF RIVAEM",
-  "JACKETS",
-  "MENS ATHLEISURE",
-  "MENS LIFESTYLE & BOTTOMS",
-  "MENS T-SHIRT & SHIRTS",
-  "MINIMALISM",
-  "SHORTS & SKIRTS",
-  "STREETWEAR",
-  "SWEATSHIRT & HOODS",
-  "TEES",
-  "THRIFT",
-  "TOPS & DRESSES",
-] as const;
-
 type ExistingVariant = {
   id: string; // Shopify GID
   title: string;
@@ -651,8 +622,6 @@ export default function Products() {
   const [draftCost, setDraftCost] = useState("");
   const [draftProductType, setDraftProductType] = useState("");
   const [useCustomProductType, setUseCustomProductType] = useState(false);
-  const [draftCollections, setDraftCollections] = useState<string[]>([]);
-  const [customCollectionName, setCustomCollectionName] = useState("");
   const [draftBustSize, setDraftBustSize] = useState("");
   const [draftWaistSize, setDraftWaistSize] = useState("");
   const [draftHipSize, setDraftHipSize] = useState("");
@@ -793,8 +762,6 @@ export default function Products() {
     setDraftCost("");
     setDraftProductType("");
     setUseCustomProductType(false);
-    setDraftCollections([]);
-    setCustomCollectionName("");
     setDraftBustSize("");
     setDraftWaistSize("");
     setDraftHipSize("");
@@ -2088,8 +2055,6 @@ export default function Products() {
   const [eWeight, setEWeight] = useState<number | "">("");
   const [eProductType, setEProductType] = useState("");
   const [eUseCustomProductType, setEUseCustomProductType] = useState(false);
-  const [eCollections, setECollections] = useState<string[]>([]);
-  const [eCustomCollectionName, setECustomCollectionName] = useState("");
   const [eVendor, setEVendor] = useState("");
   const [eSku, setESku] = useState("");
   const [eTags, setETags] = useState("");
@@ -2293,7 +2258,6 @@ export default function Products() {
             ),
         ),
       );
-      setECollections(Array.isArray(prod.collections) ? prod.collections : []);
       setEVendor(prod.vendor || "");
       setESku(prod.sku || "");
       setETags((Array.isArray(prod.tags) ? prod.tags : []).join(", "));
@@ -2424,8 +2388,6 @@ export default function Products() {
           ),
       ),
     );
-    setECollections(p.collections || []);
-    setECustomCollectionName("");
     setEVendor(p.vendor || "");
     setESku(p.sku || "");
     setETags((p.tags || []).join(", "));
@@ -2545,8 +2507,6 @@ export default function Products() {
         .filter(Boolean);
       if (JSON.stringify(newTags) !== JSON.stringify(editing.tags || []))
         payload.tags = newTags;
-      if (JSON.stringify(eCollections) !== JSON.stringify(editing.collections || []))
-        payload.collections = eCollections;
       const nextSeo = {
         title: eSeoTitle.trim(),
         description: eSeoDesc.trim(),
@@ -4038,84 +3998,6 @@ export default function Products() {
                       onChange={(e) => setETags(e.target.value)}
                     />
                   </div>
-
-                <div className="space-y-2">
-                  <Label>Collections</Label>
-                  <div className="flex flex-wrap gap-2">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button type="button" variant="outline">
-                          Select collections
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent className="max-h-72 w-64 overflow-y-auto">
-                        <DropdownMenuLabel>Collections</DropdownMenuLabel>
-                        <DropdownMenuSeparator />
-                        {COLLECTION_OPTIONS.map((collection) => (
-                          <DropdownMenuCheckboxItem
-                            key={collection}
-                            checked={eCollections.includes(collection)}
-                            onCheckedChange={(checked) =>
-                              setECollections((current) =>
-                                checked
-                                  ? [...new Set([...current, collection])]
-                                  : current.filter((item) => item !== collection),
-                              )
-                            }
-                          >
-                            {collection}
-                          </DropdownMenuCheckboxItem>
-                        ))}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                    <Input
-                      className="max-w-xs"
-                      placeholder="Custom collection"
-                      value={eCustomCollectionName}
-                      onChange={(event) => setECustomCollectionName(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter") return;
-                        event.preventDefault();
-                        const value = eCustomCollectionName.trim();
-                        if (!value) return;
-                        setECollections((current) => [...new Set([...current, value])]);
-                        setECustomCollectionName("");
-                      }}
-                    />
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() => {
-                        const value = eCustomCollectionName.trim();
-                        if (!value) return;
-                        setECollections((current) => [...new Set([...current, value])]);
-                        setECustomCollectionName("");
-                      }}
-                    >
-                      Add
-                    </Button>
-                  </div>
-                  {!!eCollections.length && (
-                    <div className="flex flex-wrap gap-2">
-                      {eCollections.map((collection) => (
-                        <Badge key={collection} variant="outline" className="gap-1">
-                          {collection}
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setECollections((current) =>
-                                current.filter((item) => item !== collection),
-                              )
-                            }
-                            aria-label={`Remove ${collection}`}
-                          >
-                            {"\u00D7"}
-                          </button>
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-                </div>
 
                 <div className="grid grid-cols-2 gap-4 border-t pt-4">
                   <div className="space-y-2">

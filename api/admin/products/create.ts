@@ -681,7 +681,6 @@ export default async function handler(req: any, res: any) {
       resourceUrls = [],
       vendor,
       productType,
-      collections = [],
       garmentCategory,
       fitType,
       variantMode,
@@ -817,9 +816,7 @@ export default async function handler(req: any, res: any) {
       stock: Number.isFinite(totalVariantStock) ? totalVariantStock : null,
       vendor: vendor || "DRIPPR Marketplace",
       productType: productType || null,
-      collections: (Array.isArray(collections) ? collections : [])
-        .map((collectionName: unknown) => String(collectionName).trim())
-        .filter(Boolean),
+      collections: [],
       collectionsSynced: false,
       garmentCategory: garmentCategory || null,
       fitType: fitType || null,
