@@ -52,20 +52,32 @@ type OwnerMapDoc = {
 };
 
 export default async function handler(req: any, res: any) {
+  console.log("[orders-create] Webhook hit:", req.method, new Date().toISOString());
+
   if (req.method !== "POST") return res.status(405).send("Method not allowed");
 
   const secret = process.env.SHOPIFY_WEBHOOK_SECRET || "";
-  if (!secret) return res.status(500).send("Webhook secret not configured");
+  if (!secret) {
+    console.error("[orders-create] SHOPIFY_WEBHOOK_SECRET is not set!");
+    return res.status(500).send("Webhook secret not configured");
+  }
 
   try {
     const rawBody = await readRawBody(req);
+    console.log("[orders-create] Raw body length:", rawBody.length);
 
     const hmacHeader = String(req.headers["x-shopify-hmac-sha256"] || "");
     const topic = String(req.headers["x-shopify-topic"] || "");
     const webhookId = String(req.headers["x-shopify-webhook-id"] || "");
 
+    console.log("[orders-create] topic:", topic, "webhookId:", webhookId, "hmac present:", !!hmacHeader);
+
     const ok = safeVerifyShopifyHmac(rawBody, secret, hmacHeader);
-    if (!ok) return res.status(401).send("HMAC mismatch");
+    if (!ok) {
+      console.error("[orders-create] HMAC verification FAILED");
+      return res.status(401).send("HMAC mismatch");
+    }
+    console.log("[orders-create] HMAC verified OK");
     if (topic !== "orders/create") return res.status(200).send("Ignored topic");
 
     const payload = JSON.parse(rawBody.toString("utf8"));
@@ -85,6 +97,8 @@ export default async function handler(req: any, res: any) {
       payload.contact_email ||
       payload.customer_email ||
       null;
+
+    console.log("[orders-create] Order:", orderNumber, "shopifyId:", shopifyOrderId, "lineItems:", lineItems.length, "customer:", customerEmail);
 
     const { adminDb } = getAdmin();
 
@@ -275,7 +289,15 @@ export default async function handler(req: any, res: any) {
         }
       }
 
-      if (!merchantId) continue;
+      if (!merchantId) {
+        console.warn("[orders-create] UNMATCHED line item:", {
+          title: li?.title,
+          sku,
+          product_id: productNum,
+          variant_id: variantNum,
+        });
+        continue;
+      }
 
       const qty = toNumber(li?.quantity, 0);
       const unitPrice =
@@ -302,6 +324,11 @@ export default async function handler(req: any, res: any) {
       byMerchant.set(merchantId, bucket);
     }
 
+    console.log("[orders-create] Matched merchants:", byMerchant.size, "from", lineItems.length, "line items");
+    for (const [mid, group] of byMerchant.entries()) {
+      console.log("[orders-create]   merchant:", mid, "items:", group.items.length, "subtotal:", group.subtotal);
+    }
+
     // Idempotency
     const eventId = webhookId || `order_${shopifyOrderId}`;
     const eventRef = adminDb.collection("webhookEvents").doc(eventId);
@@ -324,7 +351,16 @@ export default async function handler(req: any, res: any) {
       });
 
       if (byMerchant.size === 0) {
-        tx.set(eventRef, { note: "no matching marketplace items" }, { merge: true });
+        console.warn("[orders-create] NO merchants matched for order", orderNumber, "- all", lineItems.length, "line items unmatched");
+        const unmatchedSummary = lineItems.map((li: any) => ({
+          title: li?.title, sku: li?.sku, product_id: li?.product_id, variant_id: li?.variant_id,
+        }));
+        tx.set(eventRef, {
+          note: "no matching marketplace items",
+          unmatchedItems: unmatchedSummary,
+          orderNumber,
+          customerEmail,
+        }, { merge: true });
         return;
       }
 
@@ -396,10 +432,14 @@ export default async function handler(req: any, res: any) {
       }
     });
 
-    if (alreadyProcessed) return res.status(200).send("Already processed");
+    if (alreadyProcessed) {
+      console.log("[orders-create] Already processed:", eventId);
+      return res.status(200).send("Already processed");
+    }
+    console.log("[orders-create] SUCCESS - created", byMerchant.size, "merchant order(s) for", orderNumber);
     return res.status(200).send("ok");
   } catch (err: any) {
-    console.error("orders-create webhook error:", err?.message || err);
+    console.error("[orders-create] WEBHOOK ERROR:", err?.message || err, err?.stack);
     return res.status(500).send("server error");
   }
 }

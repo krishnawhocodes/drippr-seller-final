@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { Search, Eye, ClipboardList, Clock, Download, Truck } from "lucide-react";
+import { Search, Eye, ClipboardList, Clock, Download, Truck, RefreshCw } from "lucide-react";
 import { assignPickup, ordersList } from "@/lib/adminApi";
 
 import {
@@ -149,23 +149,22 @@ export default function AdminOrdersMonitor() {
     return () => clearInterval(id);
   }, []);
 
-  // 🔥 Admin global watcher: all orders (recent N)
-  useEffect(() => {
-    let cancelled = false;
+  // 🔥 Admin global watcher: all orders (recent N) — polls every 30s
+  const fetchOrders = () => {
     ordersList({ limit: 500 })
       .then((result) => {
-        if (!cancelled) {
-          setOrders(Array.isArray(result.items) ? result.items : []);
-        }
+        setOrders(Array.isArray(result.items) ? result.items : []);
       })
       .catch((err) => {
         console.error(err);
-        if (!cancelled) toast.error("Failed to load orders");
+        toast.error("Failed to load orders");
       });
+  };
 
-    return () => {
-      cancelled = true;
-    };
+  useEffect(() => {
+    fetchOrders();
+    const interval = setInterval(fetchOrders, 30_000);
+    return () => clearInterval(interval);
   }, []);
 
   // keep selected fresh
@@ -411,8 +410,13 @@ export default function AdminOrdersMonitor() {
     <>
       <div className="space-y-6">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Orders Monitor</h2>
-          <p className="text-muted-foreground">Admin view of all orders end-to-end</p>
+          <div className="flex items-center gap-3">
+            <h2 className="text-3xl font-bold tracking-tight">Orders Monitor</h2>
+            <Button variant="outline" size="icon" onClick={fetchOrders} title="Refresh orders">
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+          </div>
+          <p className="text-muted-foreground">Admin view of all orders end-to-end (auto-refreshes every 30s)</p>
         </div>
 
         {/* Office Hours Status Banner */}

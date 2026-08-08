@@ -5,10 +5,14 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Save } from "lucide-react";
+import { Save, RefreshCw, Webhook, CheckCircle2, XCircle } from "lucide-react";
+import { auth } from "@/lib/firebase";
 
 export default function AdminSettings() {
   const [publicationId, setPublicationIdState] = useState("");
+  const [webhookStatus, setWebhookStatus] = useState<any[] | null>(null);
+  const [registering, setRegistering] = useState(false);
+  const [checking, setChecking] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -20,6 +24,57 @@ export default function AdminSettings() {
   const handleSave = async () => {
     await setPublicationId(publicationId);
     toast.success("Settings saved successfully!");
+  };
+
+  const checkWebhooks = async () => {
+    setChecking(true);
+    try {
+      const u = auth.currentUser;
+      if (!u) throw new Error("Not signed in");
+      const idToken = await u.getIdToken(true);
+      const r = await fetch("/api/admin/webhooks/list", {
+        headers: { Authorization: `Bearer ${idToken}` },
+      });
+      const data = await r.json();
+      setWebhookStatus(data.webhooks || []);
+      toast.success(`Found ${(data.webhooks || []).length} registered webhook(s)`);
+    } catch (err: any) {
+      toast.error("Failed to check webhooks: " + (err?.message || err));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const registerWebhooks = async () => {
+    setRegistering(true);
+    try {
+      const u = auth.currentUser;
+      if (!u) throw new Error("Not signed in");
+      const idToken = await u.getIdToken(true);
+      const r = await fetch("/api/admin/webhooks/register", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        toast.success("All webhooks registered successfully!");
+        setWebhookStatus(null);
+        // Refresh the list
+        await checkWebhooks();
+      } else {
+        const failed = (data.results || []).filter((r: any) => !r.ok);
+        toast.error(`${failed.length} webhook(s) failed to register. Check console.`);
+        console.error("Webhook registration results:", data.results);
+      }
+    } catch (err: any) {
+      toast.error("Failed to register webhooks: " + (err?.message || err));
+    } finally {
+      setRegistering(false);
+    }
   };
 
   return (
@@ -49,6 +104,61 @@ export default function AdminSettings() {
             <Save className="h-4 w-4 mr-2" />
             Save Settings
           </Button>
+        </CardContent>
+      </Card>
+
+      {/* Webhook Management */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Webhook className="h-5 w-5" />
+            Shopify Webhooks
+          </CardTitle>
+          <CardDescription>
+            Webhooks receive order notifications from Shopify. If orders are not appearing in the seller panel, re-register them here.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex gap-3">
+            <Button variant="outline" onClick={checkWebhooks} disabled={checking}>
+              {checking ? <RefreshCw className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
+              Check Webhooks
+            </Button>
+            <Button onClick={registerWebhooks} disabled={registering}>
+              {registering ? <RefreshCw className="h-4 w-4 mr-2 animate-spin" /> : <Webhook className="h-4 w-4 mr-2" />}
+              Re-register All Webhooks
+            </Button>
+          </div>
+
+          {webhookStatus && (
+            <div className="space-y-2 mt-4">
+              <p className="text-sm font-medium">
+                {webhookStatus.length} webhook(s) registered:
+              </p>
+              <div className="space-y-1">
+                {webhookStatus.length === 0 && (
+                  <div className="flex items-center gap-2 text-sm text-destructive">
+                    <XCircle className="h-4 w-4" />
+                    No webhooks found — click "Re-register All Webhooks" to fix this.
+                  </div>
+                )}
+                {webhookStatus.map((wh: any, i: number) => (
+                  <div key={i} className="flex items-center gap-2 text-sm">
+                    <CheckCircle2 className="h-4 w-4 text-green-600" />
+                    <span className="font-mono text-xs">{wh.topic}</span>
+                    <span className="text-muted-foreground text-xs truncate max-w-[300px]">→ {wh.address}</span>
+                  </div>
+                ))}
+              </div>
+
+              {webhookStatus.length > 0 && !webhookStatus.some((w: any) => w.topic === "orders/create") && (
+                <div className="flex items-center gap-2 text-sm text-destructive mt-2">
+                  <XCircle className="h-4 w-4" />
+                  Missing <span className="font-mono">orders/create</span> webhook — click "Re-register" to fix.
+                </div>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 

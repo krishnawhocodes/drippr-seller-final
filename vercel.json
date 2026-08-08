@@ -1,4 +1,9 @@
 {
+  "functions": {
+    "api/**/*.ts": {
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
     {
       "source": "/api/orders/accept",
@@ -16,8 +21,10 @@
       "source": "/api/admin/assign-pickup",
       "destination": "https://drippr-seller-serverless.vercel.app/api/admin/assign-pickup"
     },
-
-    { "source": "/(.*)", "destination": "/index.html" }
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
   ]
 }
 
