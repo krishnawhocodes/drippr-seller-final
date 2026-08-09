@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Save, RefreshCw, Webhook, CheckCircle2, XCircle } from "lucide-react";
+import { Save, RefreshCw, Webhook, CheckCircle2, XCircle, Tag } from "lucide-react";
 import { auth } from "@/lib/firebase";
 
 export default function AdminSettings() {
@@ -13,6 +13,8 @@ export default function AdminSettings() {
   const [webhookStatus, setWebhookStatus] = useState<any[] | null>(null);
   const [registering, setRegistering] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [creatingDiscount, setCreatingDiscount] = useState(false);
+  const [discountResult, setDiscountResult] = useState<any>(null);
 
   useEffect(() => {
     (async () => {
@@ -155,6 +157,82 @@ export default function AdminSettings() {
                 <div className="flex items-center gap-2 text-sm text-destructive mt-2">
                   <XCircle className="h-4 w-4" />
                   Missing <span className="font-mono">orders/create</span> webhook — click "Re-register" to fix.
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Test Discount Coupon */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Tag className="h-5 w-5" />
+            Test Discount Coupon
+          </CardTitle>
+          <CardDescription>
+            Create a private 100% discount code for testing orders without paying. The code is NOT publicly visible.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Button
+            onClick={async () => {
+              setCreatingDiscount(true);
+              setDiscountResult(null);
+              try {
+                const u = auth.currentUser;
+                if (!u) throw new Error("Not signed in");
+                const idToken = await u.getIdToken(true);
+                const r = await fetch("/api/admin/discounts/create", {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Bearer ${idToken}`,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    code: "Testing-shopify-orderplacing-10000000",
+                    title: "Internal Testing - 100% Off",
+                  }),
+                });
+                const data = await r.json();
+                setDiscountResult(data);
+                if (data.ok) {
+                  toast.success("Discount code created: " + (data.discount?.code || ""));
+                } else {
+                  toast.error("Failed: " + JSON.stringify(data.userErrors || data.error || "Unknown error"));
+                }
+              } catch (err: any) {
+                toast.error("Error: " + (err?.message || err));
+                setDiscountResult({ ok: false, error: err?.message });
+              } finally {
+                setCreatingDiscount(false);
+              }
+            }}
+            disabled={creatingDiscount}
+            variant="outline"
+          >
+            {creatingDiscount ? (
+              <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Tag className="h-4 w-4 mr-2" />
+            )}
+            Create Test Coupon (100% Off)
+          </Button>
+
+          {discountResult && (
+            <div className="text-sm mt-2">
+              {discountResult.ok ? (
+                <div className="flex items-center gap-2 text-green-600">
+                  <CheckCircle2 className="h-4 w-4" />
+                  <span>
+                    Code <span className="font-mono font-bold">{discountResult.discount?.code}</span> created — use at checkout for 100% off.
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-destructive">
+                  <XCircle className="h-4 w-4" />
+                  <span>{JSON.stringify(discountResult.error || discountResult.userErrors)}</span>
                 </div>
               )}
             </div>

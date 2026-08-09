@@ -7,12 +7,61 @@ export const config = {
   api: { bodyParser: false },
 };
 
+/**
+ * Robust body reader for Vercel serverless functions.
+ * Vercel may pre-populate req.body even when bodyParser is disabled,
+ * or the async-iterable approach may silently yield nothing.
+ * We try multiple strategies in order.
+ */
 async function readRawBody(req: any): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  // Strategy 0: Vercel may expose rawBody even with bodyParser off
+  if (req.rawBody) {
+    if (Buffer.isBuffer(req.rawBody)) {
+      console.log("[readRawBody] Using req.rawBody (Buffer, len=" + req.rawBody.length + ")");
+      return req.rawBody;
+    }
+    if (typeof req.rawBody === "string" && req.rawBody.length > 0) {
+      console.log("[readRawBody] Using req.rawBody (string, len=" + req.rawBody.length + ")");
+      return Buffer.from(req.rawBody, "utf8");
+    }
   }
-  return Buffer.concat(chunks);
+
+  // Strategy 1: req.body already set (Vercel sometimes does this regardless of config)
+  if (req.body != null) {
+    if (Buffer.isBuffer(req.body)) {
+      console.log("[readRawBody] Using req.body (Buffer, len=" + req.body.length + ")");
+      return req.body;
+    }
+    if (typeof req.body === "string" && req.body.length > 0) {
+      console.log("[readRawBody] Using req.body (string, len=" + req.body.length + ")");
+      return Buffer.from(req.body, "utf8");
+    }
+    if (typeof req.body === "object" && Object.keys(req.body).length > 0) {
+      // bodyParser parsed it as JSON despite config — re-serialize for HMAC
+      // WARNING: re-serialized JSON may not match original bytes, HMAC may fail
+      const str = JSON.stringify(req.body);
+      console.log("[readRawBody] WARNING: Using req.body (parsed object, re-serialized len=" + str.length + ") — HMAC may not match");
+      return Buffer.from(str, "utf8");
+    }
+  }
+
+  // Strategy 2: event-based stream reading (more reliable than async iteration)
+  console.log("[readRawBody] Falling back to stream reading");
+  return new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: any) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+    req.on("end", () => {
+      const buf = Buffer.concat(chunks);
+      console.log("[readRawBody] Stream read complete, len=" + buf.length);
+      resolve(buf);
+    });
+    req.on("error", (err: any) => {
+      console.error("[readRawBody] Stream error:", err);
+      reject(err);
+    });
+  });
 }
 
 function chunk<T>(arr: T[], size: number) {
@@ -54,6 +103,17 @@ type OwnerMapDoc = {
 export default async function handler(req: any, res: any) {
   console.log("[orders-create] Webhook hit:", req.method, new Date().toISOString());
 
+  // GET = health check / reachability test
+  if (req.method === "GET") {
+    return res.status(200).json({
+      ok: true,
+      endpoint: "orders-create",
+      timestamp: new Date().toISOString(),
+      hasSecret: !!process.env.SHOPIFY_WEBHOOK_SECRET,
+      bodyParserDisabled: true,
+    });
+  }
+
   if (req.method !== "POST") return res.status(405).send("Method not allowed");
 
   const secret = process.env.SHOPIFY_WEBHOOK_SECRET || "";
@@ -72,9 +132,16 @@ export default async function handler(req: any, res: any) {
 
     console.log("[orders-create] topic:", topic, "webhookId:", webhookId, "hmac present:", !!hmacHeader);
 
-    const ok = safeVerifyShopifyHmac(rawBody, secret, hmacHeader);
-    if (!ok) {
-      console.error("[orders-create] HMAC verification FAILED");
+    const hmacOk = safeVerifyShopifyHmac(rawBody, secret, hmacHeader);
+    if (!hmacOk) {
+      console.error("[orders-create] HMAC verification FAILED. rawBody first 200 chars:", rawBody.toString("utf8").slice(0, 200));
+      console.error("[orders-create] hmacHeader:", hmacHeader);
+      console.error("[orders-create] rawBody length:", rawBody.length, "rawBody starts with:", rawBody.toString("utf8").slice(0, 1));
+      // If body was 0 bytes, the stream was consumed — this is the root cause
+      if (rawBody.length === 0) {
+        console.error("[orders-create] CRITICAL: rawBody is EMPTY — Vercel consumed the stream. Check readRawBody strategies.");
+        return res.status(500).send("Empty body — stream consumed");
+      }
       return res.status(401).send("HMAC mismatch");
     }
     console.log("[orders-create] HMAC verified OK");
