@@ -3509,6 +3509,8 @@ export default function Products() {
               />
               )}
 
+              {/* Selling Price & MRP \u2014 only for single-variant products (multi-variant has per-variant pricing in the table) */}
+              {variantMode !== "multiple" && (
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="price">Selling Price ({"\u20B9"}) *</Label>
@@ -3567,6 +3569,7 @@ export default function Products() {
                   />
                 </div>
               </div>
+              )}
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
@@ -4016,6 +4019,9 @@ export default function Products() {
                       required
                     />
                   </div>
+                  {/* Selling Price & MRP \u2014 hidden for multi-variant products (per-variant pricing is in the variants table) */}
+                  {editing?.variantMode !== "multiple" && (
+                  <>
                   <div className="space-y-2">
                     <Label>Selling Price ({"\u20B9"})</Label>
                     <Input
@@ -4049,6 +4055,8 @@ export default function Products() {
                       }
                     />
                   </div>
+                  </>
+                  )}
                   <div className="space-y-2">
                     <Label>Stock</Label>
                     <Input

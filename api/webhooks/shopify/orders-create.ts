@@ -165,7 +165,12 @@ export default async function handler(req: any, res: any) {
       payload.customer_email ||
       null;
 
-    console.log("[orders-create] Order:", orderNumber, "shopifyId:", shopifyOrderId, "lineItems:", lineItems.length, "customer:", customerEmail);
+    // Capture order-level discount info
+    const totalDiscounts = toNumber(payload.total_discounts, 0);
+    const totalPrice = toNumber(payload.total_price, 0);
+    const subtotalPrice = toNumber(payload.subtotal_price, 0);
+
+    console.log("[orders-create] Order:", orderNumber, "shopifyId:", shopifyOrderId, "lineItems:", lineItems.length, "customer:", customerEmail, "totalDiscounts:", totalDiscounts, "totalPrice:", totalPrice);
 
     const { adminDb } = getAdmin();
 
@@ -261,7 +266,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // Group line items by merchant
-    const byMerchant = new Map<string, { items: any[]; subtotal: number }>();
+    const byMerchant = new Map<string, { items: any[]; subtotal: number; discountedSubtotal: number }>();
 
     // backfill mapping if we discovered owner via fallback
     const ownerUpserts = new Map<string, OwnerMapDoc>();
@@ -371,7 +376,11 @@ export default async function handler(req: any, res: any) {
         li?.price != null ? toNumber(li.price, 0) : toNumber(li?.price_set?.shop_money?.amount, 0);
       const lineTotal = unitPrice * qty;
 
-      const bucket = byMerchant.get(merchantId) || { items: [], subtotal: 0 };
+      // Capture per-line-item discount from Shopify
+      const lineDiscount = toNumber(li?.total_discount, 0);
+      const discountedTotal = Number((lineTotal - lineDiscount).toFixed(2));
+
+      const bucket = byMerchant.get(merchantId) || { items: [], subtotal: 0, discountedSubtotal: 0 };
       bucket.items.push({
         line_item_id: li?.id ?? null,
         title: li?.title || "",
@@ -379,6 +388,8 @@ export default async function handler(req: any, res: any) {
         quantity: qty,
         price: unitPrice,
         total: Number(lineTotal.toFixed(2)),
+        discount: lineDiscount,
+        discountedTotal,
         variant_id: variantNum || null,
         product_id: productNum || null,
 
@@ -388,6 +399,7 @@ export default async function handler(req: any, res: any) {
       });
 
       bucket.subtotal += lineTotal;
+      (bucket as any).discountedSubtotal = ((bucket as any).discountedSubtotal || 0) + discountedTotal;
       byMerchant.set(merchantId, bucket);
     }
 
@@ -463,6 +475,9 @@ export default async function handler(req: any, res: any) {
           financialStatus,
           lineItems: group.items,
           subtotal: Number(group.subtotal.toFixed(2)),
+          discountedSubtotal: Number(group.discountedSubtotal.toFixed(2)),
+          totalDiscounts,
+          totalPrice,
           status: "open",
           customerEmail,
 
@@ -491,7 +506,7 @@ export default async function handler(req: any, res: any) {
           {
             merchantId,
             ordersCount: FieldValue.increment(1),
-            revenue: FieldValue.increment(Number(group.subtotal.toFixed(2))),
+            revenue: FieldValue.increment(Number(group.discountedSubtotal.toFixed(2))),
             updatedAt: Date.now(),
           },
           { merge: true }

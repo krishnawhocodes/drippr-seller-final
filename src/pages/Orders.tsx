@@ -62,6 +62,9 @@ type OrderDoc = {
   status?: string;           // "open" | "closed"
   lineItems?: LineItem[];
   subtotal?: number;
+  discountedSubtotal?: number;
+  totalDiscounts?: number;
+  totalPrice?: number;
 
   raw?: { customer?: { id?: any; email?: string } };
   customerEmail?: string | null;
@@ -489,7 +492,7 @@ export default function Orders() {
                             .join(", ")}
                         </TableCell>
 
-                        <TableCell className="font-semibold">{money(o.subtotal)}</TableCell>
+                        <TableCell className="font-semibold">{money(o.discountedSubtotal ?? o.subtotal)}</TableCell>
 
                         <TableCell>{new Date(o.createdAt).toLocaleString()}</TableCell>
 
@@ -610,8 +613,8 @@ export default function Orders() {
                   </div>
 
                   <div>
-                    <div className="text-muted-foreground">Amount</div>
-                    <div className="font-semibold">{money(selected.subtotal)}</div>
+                    <div className="text-muted-foreground">Amount Paid</div>
+                    <div className="font-semibold">{money(selected.discountedSubtotal ?? selected.subtotal)}</div>
                   </div>
 
                   <div>

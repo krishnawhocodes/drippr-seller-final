@@ -58,6 +58,9 @@ type OrderDoc = {
 
   createdAt: number;
   subtotal?: number;
+  discountedSubtotal?: number;
+  totalDiscounts?: number;
+  totalPrice?: number;
   currency?: string;
   updatedAt?: number;
   status?: string; // open/closed
@@ -189,17 +192,6 @@ export default function AdminOrdersMonitor() {
     return addBusinessHours(o.createdAt, THREE_HOURS);
   };
 
-  const getAdminPlanByDeadline = (o: OrderDoc): number => {
-    if (o.adminPlanBy) return o.adminPlanBy;
-
-    const acceptedAt =
-      Number(o.vendorAcceptedAt || 0) ||
-      Number((o as any).updatedAt || 0) ||
-      o.createdAt;
-
-    return addBusinessHours(acceptedAt, THIRTY_MIN);
-  };
-
   const workflowFor = (o: OrderDoc): WorkflowStatus => {
     const stored = o.workflowStatus;
 
@@ -211,10 +203,8 @@ export default function AdminOrdersMonitor() {
       return now > acceptBy ? "vendor_expired" : "vendor_pending";
     }
 
-    if (base === "vendor_accepted") {
-      const planBy = getAdminPlanByDeadline(o);
-      return now > planBy ? "admin_overdue" : "vendor_accepted";
-    }
+    // Admin is NOT time-bound — always show "vendor_accepted" (no admin_overdue)
+    if (base === "vendor_accepted") return "vendor_accepted";
 
     if (base === "pickup_assigned") return "pickup_assigned";
     if (base === "dispatched") return "dispatched";
@@ -260,12 +250,7 @@ export default function AdminOrdersMonitor() {
       return { label: "Vendor accept in", ms: remaining };
     }
 
-    if (st === "vendor_accepted" || st === "admin_overdue") {
-      const planBy = getAdminPlanByDeadline(o);
-      const remaining = getRemainingBusinessTime(planBy, now);
-      return { label: "Admin plan in", ms: remaining };
-    }
-
+    // Admin has no time limit — no timer shown for vendor_accepted
     return null;
   };
 
@@ -450,9 +435,6 @@ export default function AdminOrdersMonitor() {
                     <span className="flex items-center gap-1">
                       <Clock className="h-4 w-4" /> Accepted: <b>{counts.vendor_accepted}</b>
                     </span>
-                    <span className="flex items-center gap-1 text-destructive">
-                      <Clock className="h-4 w-4" /> Admin Overdue: <b>{counts.admin_overdue}</b>
-                    </span>
                     <span className="flex items-center gap-1">
                       <ClipboardList className="h-4 w-4" /> Pickup Assigned: <b>{counts.pickup_assigned}</b>
                     </span>
@@ -527,7 +509,7 @@ export default function AdminOrdersMonitor() {
 
                         <TableCell>{customerFor(o)}</TableCell>
 
-                        <TableCell className="font-semibold">{money(o.subtotal)}</TableCell>
+                        <TableCell className="font-semibold">{money(o.discountedSubtotal ?? o.subtotal)}</TableCell>
 
                         <TableCell>{new Date(o.createdAt || Date.now()).toLocaleString()}</TableCell>
 
