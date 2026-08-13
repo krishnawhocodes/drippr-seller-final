@@ -377,8 +377,15 @@ export default async function handler(req: any, res: any) {
       const lineTotal = unitPrice * qty;
 
       // Capture per-line-item discount from Shopify
-      const lineDiscount = toNumber(li?.total_discount, 0);
-      const discountedTotal = Number((lineTotal - lineDiscount).toFixed(2));
+      // Try total_discount first, then sum discount_allocations (more reliable for order-level discounts)
+      let lineDiscount = toNumber(li?.total_discount, 0);
+      if (lineDiscount === 0 && Array.isArray(li?.discount_allocations) && li.discount_allocations.length > 0) {
+        lineDiscount = li.discount_allocations.reduce(
+          (sum: number, da: any) => sum + toNumber(da?.amount, 0), 0
+        );
+      }
+      const discountedTotal = Math.max(0, Number((lineTotal - lineDiscount).toFixed(2)));
+      console.log("[orders-create] Line item:", li?.title, "price:", unitPrice, "qty:", qty, "lineTotal:", lineTotal, "total_discount:", li?.total_discount, "discount_allocations:", JSON.stringify(li?.discount_allocations), "lineDiscount:", lineDiscount, "discountedTotal:", discountedTotal);
 
       const bucket = byMerchant.get(merchantId) || { items: [], subtotal: 0, discountedSubtotal: 0 };
       bucket.items.push({
@@ -399,7 +406,7 @@ export default async function handler(req: any, res: any) {
       });
 
       bucket.subtotal += lineTotal;
-      (bucket as any).discountedSubtotal = ((bucket as any).discountedSubtotal || 0) + discountedTotal;
+      bucket.discountedSubtotal += discountedTotal;
       byMerchant.set(merchantId, bucket);
     }
 
