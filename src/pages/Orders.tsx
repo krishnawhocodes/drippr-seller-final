@@ -196,18 +196,8 @@ export default function Orders() {
     return addBusinessHours(o.createdAt, THREE_HOURS);
   };
 
-  const getAdminPlanByDeadline = (o: OrderDoc): number => {
-    // If adminPlanBy exists in DB, use it
-    if (o.adminPlanBy) {
-      return o.adminPlanBy;
-    }
-    
-    // Otherwise calculate from vendor accepted time
-    const acceptedAt = o.vendorAcceptedAt || now;
-    return addBusinessHours(acceptedAt, THIRTY_MIN);
-  };
-
   // ✅ Workflow status (with safe fallback and business hours)
+  // Admin is NOT time-bound — no admin_overdue status
   const workflowFor = (o: OrderDoc): WorkflowStatus => {
     const st = o.workflowStatus;
     if (st) {
@@ -216,10 +206,7 @@ export default function Orders() {
         const acceptBy = getVendorAcceptByDeadline(o);
         if (now > acceptBy) return "vendor_expired";
       }
-      if (st === "vendor_accepted") {
-        const planBy = getAdminPlanByDeadline(o);
-        if (now > planBy) return "admin_overdue";
-      }
+      // Admin has no deadline — vendor_accepted stays as-is
       return st;
     }
 
@@ -274,12 +261,7 @@ export default function Orders() {
       return { label: "Accept in", ms: remaining };
     }
 
-    if (st === "vendor_accepted" || st === "admin_overdue") {
-      const planBy = getAdminPlanByDeadline(o);
-      const remaining = getRemainingBusinessTime(planBy, now);
-      return { label: "Admin plan in", ms: remaining };
-    }
-
+    // Admin has no time limit — no timer for vendor_accepted
     return null;
   };
 
