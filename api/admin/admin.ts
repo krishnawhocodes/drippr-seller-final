@@ -591,6 +591,23 @@ const PRODUCT_VARIANTS_FOR_REPAIR = /* GraphQL */ `
   }
 `;
 
+const INVENTORY_ITEM_UPDATE = /* GraphQL */ `
+  mutation inventoryItemUpdate($id: ID!, $input: InventoryItemInput!) {
+    inventoryItemUpdate(id: $id, input: $input) {
+      inventoryItem {
+        id
+        unitCost {
+          amount
+        }
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
 function throwUserErrors(result: any, path: string) {
   const errors = path
     .split(".")
@@ -3178,15 +3195,12 @@ case "orders.assignPickup": {
             const variants = result?.data?.product?.variants?.nodes || [];
             if (!variants.length) { skipped++; continue; }
 
+            // Step 1: Update variants (price, compareAtPrice, taxable)
             const variantInputs = variants.map((v: any) => ({
               id: v.id,
               taxable: true,
               price: v.price,
               compareAtPrice: v.compareAtPrice ?? v.price,
-              inventoryItem: {
-                tracked: v.inventoryItem?.tracked ?? true,
-                cost: v.inventoryItem?.unitCost?.amount != null ? String(v.inventoryItem.unitCost.amount) : "0",
-              },
             }));
 
             const updateResult = await shopifyGraphQL(VARIANTS_BULK_UPDATE, {
@@ -3196,9 +3210,30 @@ case "orders.assignPickup": {
             const updateErrors = updateResult?.data?.productVariantsBulkUpdate?.userErrors || [];
             if (updateErrors.length) {
               repairErrors.push(`${product.title || product.id}: ${updateErrors.map((e: any) => e.message).join("; ")}`);
-            } else {
-              repaired++;
+              continue;
             }
+
+            // Step 2: Directly update each inventory item's cost via inventoryItemUpdate
+            for (const v of variants) {
+              const invId = v.inventoryItem?.id;
+              if (!invId) continue;
+              const costValue = v.inventoryItem?.unitCost?.amount != null
+                ? String(v.inventoryItem.unitCost.amount)
+                : "0";
+              const invResult = await shopifyGraphQL(INVENTORY_ITEM_UPDATE, {
+                id: invId,
+                input: {
+                  cost: costValue,
+                  tracked: v.inventoryItem?.tracked ?? true,
+                },
+              });
+              const invErrors = invResult?.data?.inventoryItemUpdate?.userErrors || [];
+              if (invErrors.length) {
+                repairErrors.push(`${product.title || product.id} (inventory): ${invErrors.map((e: any) => e.message).join("; ")}`);
+              }
+            }
+
+            repaired++;
           } catch (err: any) {
             repairErrors.push(`${product.title || product.id}: ${err?.message || err}`);
           }

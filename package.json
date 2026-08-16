@@ -46,6 +46,8 @@
     "date-fns": "^3.6.0",
     "embla-carousel-react": "^8.6.0",
     "firebase": "^12.3.0",
+    "jspdf": "^2.5.2",
+    "jspdf-autotable": "^3.8.4",
     "firebase-admin": "^13.5.0",
     "imagekit": "^6.0.0",
     "input-otp": "^1.4.2",

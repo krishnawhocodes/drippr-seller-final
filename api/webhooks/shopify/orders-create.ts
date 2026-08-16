@@ -165,6 +165,28 @@ export default async function handler(req: any, res: any) {
       payload.customer_email ||
       null;
 
+    // Capture customer name and shipping address for invoices
+    const customerName =
+      payload.shipping_address?.name ||
+      (payload.customer?.first_name
+        ? `${payload.customer.first_name} ${payload.customer.last_name || ""}`.trim()
+        : null) ||
+      null;
+
+    const rawShipping = payload.shipping_address || payload.billing_address || null;
+    const shippingAddress = rawShipping
+      ? {
+          name: rawShipping.name || customerName || "",
+          address1: rawShipping.address1 || "",
+          address2: rawShipping.address2 || "",
+          city: rawShipping.city || "",
+          province: rawShipping.province || "",
+          zip: rawShipping.zip || "",
+          country: rawShipping.country || "",
+          phone: rawShipping.phone || payload.customer?.phone || "",
+        }
+      : null;
+
     // Capture order-level discount info
     const totalDiscounts = toNumber(payload.total_discounts, 0);
     const totalPrice = toNumber(payload.total_price, 0);
@@ -487,6 +509,8 @@ export default async function handler(req: any, res: any) {
           totalPrice,
           status: "open",
           customerEmail,
+          customerName: customerName || null,
+          shippingAddress: shippingAddress || null,
 
           raw: payload.customer
             ? { customer: { id: payload.customer.id, email: payload.customer.email } }

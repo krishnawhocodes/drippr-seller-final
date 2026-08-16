@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Search, Eye, ClipboardList, Clock, Download, Truck, RefreshCw } from "lucide-react";
 import { assignPickup, ordersList } from "@/lib/adminApi";
+import { generateInvoicePdf } from "@/lib/generateInvoicePdf";
+import type { InvoiceMerchant } from "@/lib/generateInvoicePdf";
 
 import {
   Table,
@@ -67,7 +69,18 @@ type OrderDoc = {
   financialStatus?: string;
 
   customerEmail?: string | null;
+  customerName?: string | null;
   raw?: { customer?: { email?: string } };
+  shippingAddress?: {
+    name?: string;
+    address1?: string;
+    address2?: string;
+    city?: string;
+    province?: string;
+    zip?: string;
+    country?: string;
+    phone?: string;
+  } | null;
 
   lineItems?: LineItem[];
 
@@ -307,39 +320,74 @@ export default function AdminOrdersMonitor() {
     return data;
   }
 
-  async function downloadInvoice(orderId: string, urlFromDoc?: string) {
+  async function downloadInvoice(order: OrderDoc) {
     const u = auth.currentUser;
     if (!u) return toast.error("Please login again");
 
-    const token = await u.getIdToken();
-    const url = urlFromDoc || `/api/orders/invoice?orderId=${encodeURIComponent(orderId)}`;
+    setBusy(true);
+    try {
+      // Fetch merchant profile for sold-by info
+      let merchantInfo: InvoiceMerchant | null = null;
+      if (order.merchantId) {
+        try {
+          const token = await u.getIdToken();
+          const r = await fetch("/api/admin/admin?action=merchants.list", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ action: "merchants.list" }),
+          });
+          const data = await r.json().catch(() => ({}));
+          const merchant = (data?.merchants || []).find((m: any) => m.uid === order.merchantId);
+          if (merchant) {
+            merchantInfo = {
+              storeName: merchant.storeName || "",
+              businessName: merchant.businessName || "",
+              name: merchant.name || merchant.displayName || "",
+              address: merchant.address || "",
+              gstin: merchant.gstin || "",
+              phone: merchant.phone || "",
+              email: merchant.email || "",
+            };
+          }
+        } catch {
+          // Continue without merchant info
+        }
+      }
 
-    const r = await fetch(url, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
-    });
+      const blob = await generateInvoicePdf({
+        type: "invoice",
+        order: {
+          orderNumber: order.orderNumber,
+          shopifyOrderId: order.shopifyOrderId,
+          createdAt: order.createdAt,
+          lineItems: order.lineItems,
+          subtotal: order.subtotal,
+          discountedSubtotal: order.discountedSubtotal,
+          totalDiscounts: order.totalDiscounts,
+          totalPrice: order.totalPrice,
+          currency: order.currency,
+          customerEmail: order.customerEmail || order.raw?.customer?.email,
+          customerName: order.customerName,
+          shippingAddress: order.shippingAddress,
+        },
+        merchant: merchantInfo,
+      });
 
-    if (!r.ok) {
-      let msg = "Failed to download invoice";
-      try {
-        const j = await r.json();
-        msg = j?.error || msg;
-      } catch {}
-      toast.error(msg);
-      return;
+      const objectUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = `invoice_${order.orderNumber || order.shopifyOrderId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(objectUrl);
+
+      toast.success("Invoice downloaded!");
+    } catch (err: any) {
+      toast.error("Failed to generate invoice: " + (err?.message || err));
+    } finally {
+      setBusy(false);
     }
-
-    const blob = await r.blob();
-    const objectUrl = window.URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
-    a.href = objectUrl;
-    a.download = `billing-slip_${orderId}.pdf`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-
-    window.URL.revokeObjectURL(objectUrl);
   }
 
   function openDetails(o: OrderDoc) {
@@ -496,8 +544,6 @@ export default function AdminOrdersMonitor() {
                     const st = workflowFor(o);
                     const t = timerFor(o);
                     const canPlan = st === "vendor_accepted" || st === "admin_overdue";
-                    const canInvoice =
-                      st === "vendor_accepted" || st === "admin_overdue" || st === "pickup_assigned" || st === "dispatched";
 
                     return (
                       <TableRow key={o.id}>
@@ -548,8 +594,8 @@ export default function AdminOrdersMonitor() {
 
                             <Button
                               variant="outline"
-                              onClick={() => downloadInvoice(o.id, o.invoice?.url)}
-                              disabled={!canInvoice || busy}
+                              onClick={() => downloadInvoice(o)}
+                              disabled={busy}
                             >
                               <Download className="h-4 w-4 mr-2" />
                               Invoice

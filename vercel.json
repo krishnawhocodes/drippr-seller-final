@@ -14,10 +14,6 @@
       "destination": "https://drippr-seller-serverless.vercel.app/api/orders/mark-dispatched"
     },
     {
-      "source": "/api/orders/invoice",
-      "destination": "https://drippr-seller-serverless.vercel.app/api/orders/invoice"
-    },
-    {
       "source": "/api/admin/assign-pickup",
       "destination": "https://drippr-seller-serverless.vercel.app/api/admin/assign-pickup"
     },

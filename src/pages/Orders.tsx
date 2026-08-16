@@ -5,6 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Search, Eye, Download, CheckCircle2, Truck, Clock } from "lucide-react";
+import { generateInvoicePdf } from "@/lib/generateInvoicePdf";
+import type { InvoiceMerchant } from "@/lib/generateInvoicePdf";
 import {
   Table,
   TableBody,
@@ -24,7 +26,7 @@ import { toast } from "sonner";
 
 import { auth, db } from "@/lib/firebase";
 import { onAuthStateChanged } from "firebase/auth";
-import { collection, onSnapshot, orderBy, query, where, limit } from "firebase/firestore";
+import { collection, doc, getDoc, onSnapshot, orderBy, query, where, limit } from "firebase/firestore";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { 
   addBusinessHours, 
@@ -68,6 +70,17 @@ type OrderDoc = {
 
   raw?: { customer?: { id?: any; email?: string } };
   customerEmail?: string | null;
+  customerName?: string | null;
+  shippingAddress?: {
+    name?: string;
+    address1?: string;
+    address2?: string;
+    city?: string;
+    province?: string;
+    zip?: string;
+    country?: string;
+    phone?: string;
+  } | null;
 
   // ✅ NEW WORKFLOW FIELDS (may be missing for older docs)
   workflowStatus?: WorkflowStatus;
@@ -309,39 +322,66 @@ export default function Orders() {
     return data;
   }
 
-  async function downloadInvoice(orderId: string, urlFromDoc?: string) {
+  async function downloadBillingSlip(order: OrderDoc) {
     const u = auth.currentUser;
     if (!u) return toast.error("Please login again");
-    const token = await u.getIdToken();
 
-    const url = urlFromDoc || `/api/orders/invoice?orderId=${encodeURIComponent(orderId)}`;
-
-    const r = await fetch(url, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (!r.ok) {
-      let msg = "Failed to download invoice";
+    setActionBusy(true);
+    try {
+      // Fetch merchant profile for sold-by info
+      let merchantInfo: InvoiceMerchant | null = null;
       try {
-        const j = await r.json();
-        msg = j?.error || msg;
-      } catch {}
-      toast.error(msg);
-      return;
+        const mSnap = await getDoc(doc(db, "merchants", u.uid));
+        if (mSnap.exists()) {
+          const mData = mSnap.data() as any;
+          merchantInfo = {
+            storeName: mData.storeName || "",
+            businessName: mData.businessName || "",
+            name: mData.name || "",
+            address: mData.address || "",
+            gstin: mData.gstin || "",
+            phone: mData.phone || "",
+            email: mData.email || u.email || "",
+          };
+        }
+      } catch {
+        // Continue without merchant info
+      }
+
+      const blob = await generateInvoicePdf({
+        type: "billing_slip",
+        order: {
+          orderNumber: order.orderNumber,
+          shopifyOrderId: order.shopifyOrderId,
+          createdAt: order.createdAt,
+          lineItems: order.lineItems,
+          subtotal: order.subtotal,
+          discountedSubtotal: order.discountedSubtotal,
+          totalDiscounts: order.totalDiscounts,
+          totalPrice: order.totalPrice,
+          currency: order.currency,
+          customerEmail: order.customerEmail || order.raw?.customer?.email,
+          customerName: order.customerName,
+          shippingAddress: order.shippingAddress,
+        },
+        merchant: merchantInfo,
+      });
+
+      const objectUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = `billing-slip_${order.orderNumber || order.shopifyOrderId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(objectUrl);
+
+      toast.success("Billing slip downloaded!");
+    } catch (err: any) {
+      toast.error("Failed to generate billing slip: " + (err?.message || err));
+    } finally {
+      setActionBusy(false);
     }
-
-    const blob = await r.blob();
-    const objectUrl = window.URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
-    a.href = objectUrl;
-    a.download = `billing-slip_${selected?.orderNumber || selected?.shopifyOrderId || orderId}.pdf`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-
-    window.URL.revokeObjectURL(objectUrl);
   }
 
   async function onAcceptSelected() {
@@ -628,8 +668,8 @@ export default function Orders() {
 
                   <Button
                     variant="outline"
-                    onClick={() => downloadInvoice(selected.id, selected.invoice?.url)}
-                    disabled={!selected.invoice?.url || actionBusy}
+                    onClick={() => downloadBillingSlip(selected)}
+                    disabled={actionBusy}
                     className="w-full sm:w-auto"
                   >
                     <Download className="h-4 w-4 mr-2" />
