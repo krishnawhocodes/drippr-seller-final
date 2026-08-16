@@ -173,7 +173,12 @@ export default async function handler(req: any, res: any) {
         : null) ||
       null;
 
-    const rawShipping = payload.shipping_address || payload.billing_address || null;
+    // Try all Shopify address sources: shipping → billing → customer default
+    const rawShipping =
+      payload.shipping_address ||
+      payload.billing_address ||
+      payload.customer?.default_address ||
+      null;
     const shippingAddress = rawShipping
       ? {
           name: rawShipping.name || customerName || "",

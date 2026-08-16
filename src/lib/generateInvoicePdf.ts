@@ -305,11 +305,11 @@ export async function generateInvoicePdf(options: InvoiceOptions): Promise<Blob>
       cellPadding: 2,
     },
     columnStyles: {
-      0: { cellWidth: 62 },   // SKU (product name)
+      0: { cellWidth: 64 },   // SKU (product name)
       1: { cellWidth: 22 },   // Size
       2: { cellWidth: 22 },   // Qty
       3: { cellWidth: 28 },   // Color
-      4: { cellWidth: 52 },   // Order No.
+      4: { cellWidth: 54 },   // Order No.
     },
   });
 
@@ -525,11 +525,11 @@ export async function generateInvoicePdf(options: InvoiceOptions): Promise<Blob>
       lineWidth: 0.3,
     },
     columnStyles: {
-      0: { cellWidth: 52, halign: "left" },   // Description
+      0: { cellWidth: 55, halign: "left" },   // Description
       1: { cellWidth: 14, halign: "center" },  // HSN
       2: { cellWidth: 12, halign: "center" },  // Qty
       3: { cellWidth: 24, halign: "right" },   // Gross Amount
-      4: { cellWidth: 20, halign: "right" },   // Discount
+      4: { cellWidth: 21, halign: "right" },   // Discount
       5: { cellWidth: 24, halign: "right" },   // Taxable Value
       6: { cellWidth: 22, halign: "center" },  // Taxes
       7: { cellWidth: 18, halign: "right" },   // Total
@@ -553,11 +553,11 @@ export async function generateInvoicePdf(options: InvoiceOptions): Promise<Blob>
       lineWidth: 0.3,
     },
     columnStyles: {
-      0: { cellWidth: 52, halign: "left" },
+      0: { cellWidth: 55, halign: "left" },
       1: { cellWidth: 14 },
       2: { cellWidth: 12 },
       3: { cellWidth: 24 },
-      4: { cellWidth: 20 },
+      4: { cellWidth: 21 },
       5: { cellWidth: 24 },
       6: { cellWidth: 22, halign: "center" },
       7: { cellWidth: 18, halign: "right" },
