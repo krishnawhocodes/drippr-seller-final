@@ -37,10 +37,14 @@ import {
 
 type LineItem = {
   title: string;
+  name?: string;
   sku?: string;
+  variantTitle?: string;
   quantity: number;
   price: number;
   total: number;
+  discount?: number;
+  discountedTotal?: number;
 };
 
 type WorkflowStatus =

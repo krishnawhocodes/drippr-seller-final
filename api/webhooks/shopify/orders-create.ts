@@ -413,7 +413,9 @@ export default async function handler(req: any, res: any) {
       bucket.items.push({
         line_item_id: li?.id ?? null,
         title: li?.title || "",
+        name: li?.name || li?.title || "",
         sku: sku || (variantNum ? `v:${variantNum}` : ""),
+        variantTitle: li?.variant_title || null,
         quantity: qty,
         price: unitPrice,
         total: Number(lineTotal.toFixed(2)),
