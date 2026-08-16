@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Save, RefreshCw, Webhook, CheckCircle2, XCircle, Tag } from "lucide-react";
+import { Save, RefreshCw, Webhook, CheckCircle2, XCircle, Tag, Wrench } from "lucide-react";
 import { auth } from "@/lib/firebase";
 
 export default function AdminSettings() {
@@ -15,6 +15,8 @@ export default function AdminSettings() {
   const [checking, setChecking] = useState(false);
   const [creatingDiscount, setCreatingDiscount] = useState(false);
   const [discountResult, setDiscountResult] = useState<any>(null);
+  const [repairingPricing, setRepairingPricing] = useState(false);
+  const [repairResult, setRepairResult] = useState<any>(null);
 
   useEffect(() => {
     (async () => {
@@ -233,6 +235,88 @@ export default function AdminSettings() {
                 <div className="flex items-center gap-2 text-destructive">
                   <XCircle className="h-4 w-4" />
                   <span>{JSON.stringify(discountResult.error || discountResult.userErrors)}</span>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Repair Product Pricing */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Wrench className="h-5 w-5" />
+            Repair Product Pricing
+          </CardTitle>
+          <CardDescription>
+            Fix missing Price section (Compare-at, Charge tax, Cost per item) for products created via the seller panel. This updates all existing product variants on Shopify.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Button
+            onClick={async () => {
+              setRepairingPricing(true);
+              setRepairResult(null);
+              try {
+                const u = auth.currentUser;
+                if (!u) throw new Error("Not signed in");
+                const idToken = await u.getIdToken(true);
+                const r = await fetch("/api/admin/products/repair-pricing", {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Bearer ${idToken}`,
+                    "Content-Type": "application/json",
+                  },
+                });
+                const data = await r.json();
+                setRepairResult(data);
+                if (data.ok) {
+                  toast.success(`Repaired ${data.repaired} product(s). Skipped ${data.skipped}.`);
+                } else {
+                  toast.error("Repair failed: " + (data.error || "Unknown error"));
+                }
+              } catch (err: any) {
+                toast.error("Error: " + (err?.message || err));
+                setRepairResult({ ok: false, error: err?.message });
+              } finally {
+                setRepairingPricing(false);
+              }
+            }}
+            disabled={repairingPricing}
+            variant="outline"
+          >
+            {repairingPricing ? (
+              <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Wrench className="h-4 w-4 mr-2" />
+            )}
+            {repairingPricing ? "Repairing..." : "Repair All Products"}
+          </Button>
+
+          {repairResult && (
+            <div className="text-sm mt-2">
+              {repairResult.ok ? (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-green-600">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <span>
+                      {repairResult.repaired} product(s) repaired, {repairResult.skipped} skipped
+                      {repairResult.total ? ` (${repairResult.total} total)` : ""}
+                    </span>
+                  </div>
+                  {repairResult.errors?.length > 0 && (
+                    <div className="text-destructive text-xs mt-1">
+                      {repairResult.errors.map((e: string, i: number) => (
+                        <div key={i}>{e}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-destructive">
+                  <XCircle className="h-4 w-4" />
+                  <span>{repairResult.error || "Unknown error"}</span>
                 </div>
               )}
             </div>

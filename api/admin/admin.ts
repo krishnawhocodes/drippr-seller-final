@@ -1306,6 +1306,7 @@ async function createShopifyVariantsForApproval(args: {
           }
         : {}),
       ...(variant.barcode ? { barcode: variant.barcode } : {}),
+      taxable: true,
       inventoryItem: {
         sku: variant.sku || `${args.baseSku}-${index + 1}`,
         tracked: args.tracked,
@@ -1653,6 +1654,7 @@ async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
             ? { compareAtPrice: String(approved.compareAtPrice) }
             : {}),
           ...(approved.barcode ? { barcode: approved.barcode } : {}),
+          taxable: true,
           inventoryItem: {
             sku: String(approved.sku || "").trim(),
             tracked: approved.inventory?.tracked !== false,

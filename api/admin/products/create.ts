@@ -546,6 +546,7 @@ async function createShopifyVariants(args: {
         ? { compareAtPrice: String(variant.compareAtPrice ?? args.baseCompareAtPrice) }
         : {}),
       ...(variant.barcode ? { barcode: variant.barcode } : {}),
+      taxable: true,
       inventoryItem: {
         sku: variant.sku || `${args.baseSku}-${index + 1}`,
         tracked: args.tracked,
