@@ -550,7 +550,7 @@ async function createShopifyVariants(args: {
       inventoryItem: {
         sku: variant.sku || `${args.baseSku}-${index + 1}`,
         tracked: args.tracked,
-        ...(args.cost != null ? { cost: String(args.cost) } : {}),
+        cost: args.cost != null ? String(args.cost) : "0",
       },
       metafields: buildMeasurementMetafields(variant.measurements),
     }),

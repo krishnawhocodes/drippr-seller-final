@@ -1333,7 +1333,7 @@ async function createShopifyVariantsForApproval(args: {
       inventoryItem: {
         sku: variant.sku || `${args.baseSku}-${index + 1}`,
         tracked: args.tracked,
-        ...(args.cost != null ? { cost: String(args.cost) } : {}),
+        cost: args.cost != null ? String(args.cost) : "0",
       },
       metafields: buildProductMeasurementMetafields(variant.measurements),
     }),
@@ -1681,10 +1681,9 @@ async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
           inventoryItem: {
             sku: String(approved.sku || "").trim(),
             tracked: approved.inventory?.tracked !== false,
-            ...(approved.inventory?.cost != null &&
-            approved.inventory.cost !== ""
-              ? { cost: String(approved.inventory.cost) }
-              : {}),
+            cost: approved.inventory?.cost != null && approved.inventory.cost !== ""
+              ? String(approved.inventory.cost)
+              : "0",
           },
         },
       ],
@@ -3183,10 +3182,10 @@ case "orders.assignPickup": {
               id: v.id,
               taxable: true,
               price: v.price,
-              ...(v.compareAtPrice != null ? { compareAtPrice: v.compareAtPrice } : {}),
+              compareAtPrice: v.compareAtPrice ?? v.price,
               inventoryItem: {
                 tracked: v.inventoryItem?.tracked ?? true,
-                ...(v.inventoryItem?.unitCost?.amount != null ? { cost: String(v.inventoryItem.unitCost.amount) } : {}),
+                cost: v.inventoryItem?.unitCost?.amount != null ? String(v.inventoryItem.unitCost.amount) : "0",
               },
             }));
 
