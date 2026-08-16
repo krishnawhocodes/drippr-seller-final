@@ -20,7 +20,9 @@ const PRODUCT_VARIANTS_QUERY = /* GraphQL */ `
           taxable
           inventoryItem {
             id
-            cost
+            unitCost {
+              amount
+            }
             tracked
           }
         }
@@ -136,8 +138,8 @@ export default async function handler(req: any, res: any) {
             : {}),
           inventoryItem: {
             tracked: v.inventoryItem?.tracked ?? true,
-            ...(v.inventoryItem?.cost != null
-              ? { cost: String(v.inventoryItem.cost) }
+            ...(v.inventoryItem?.unitCost?.amount != null
+              ? { cost: String(v.inventoryItem.unitCost.amount) }
               : {}),
           },
         }));

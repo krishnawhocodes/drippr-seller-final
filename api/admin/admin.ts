@@ -580,7 +580,9 @@ const PRODUCT_VARIANTS_FOR_REPAIR = /* GraphQL */ `
           taxable
           inventoryItem {
             id
-            cost
+            unitCost {
+              amount
+            }
             tracked
           }
         }
@@ -3178,7 +3180,7 @@ case "orders.assignPickup": {
               ...(v.compareAtPrice != null ? { compareAtPrice: v.compareAtPrice } : {}),
               inventoryItem: {
                 tracked: v.inventoryItem?.tracked ?? true,
-                ...(v.inventoryItem?.cost != null ? { cost: String(v.inventoryItem.cost) } : {}),
+                ...(v.inventoryItem?.unitCost?.amount != null ? { cost: String(v.inventoryItem.unitCost.amount) } : {}),
               },
             }));
 
