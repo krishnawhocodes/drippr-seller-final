@@ -3151,19 +3151,25 @@ case "orders.assignPickup": {
 }
 
       case "products.repairPricing": {
+        const BATCH_SIZE = 10;
+        const batchOffset = Math.max(0, Number(body.offset) || 0);
+
         const snap = await adminDb.collection("merchantProducts").limit(1000).get();
-        const products = snap.docs
+        const allProducts = snap.docs
           .map((d) => ({ id: d.id, ...(d.data() as any) }))
           .filter((p) => {
             const raw = String(p.shopifyProductId || p.shopifyProductNumericId || "").trim();
             return Boolean(raw);
           });
 
+        const total = allProducts.length;
+        const batch = allProducts.slice(batchOffset, batchOffset + BATCH_SIZE);
+
         let repaired = 0;
         let skipped = 0;
         const repairErrors: string[] = [];
 
-        for (const product of products) {
+        for (const product of batch) {
           const rawId = String(product.shopifyProductId || product.shopifyProductNumericId || "").trim();
           const shopifyProductId = rawId.startsWith("gid://shopify/Product/")
             ? rawId
@@ -3199,11 +3205,17 @@ case "orders.assignPickup": {
           }
         }
 
+        const nextOffset = batchOffset + BATCH_SIZE;
+        const hasMore = nextOffset < total;
+
         return res.status(200).json({
           ok: true,
-          total: products.length,
+          total,
           repaired,
           skipped,
+          batchOffset,
+          nextOffset: hasMore ? nextOffset : null,
+          hasMore,
           errors: repairErrors.length ? repairErrors : undefined,
         });
       }

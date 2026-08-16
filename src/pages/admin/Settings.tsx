@@ -17,6 +17,7 @@ export default function AdminSettings() {
   const [discountResult, setDiscountResult] = useState<any>(null);
   const [repairingPricing, setRepairingPricing] = useState(false);
   const [repairResult, setRepairResult] = useState<any>(null);
+  const [repairProgress, setRepairProgress] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -258,30 +259,57 @@ export default function AdminSettings() {
             onClick={async () => {
               setRepairingPricing(true);
               setRepairResult(null);
+              setRepairProgress("");
+              let totalRepaired = 0;
+              let totalSkipped = 0;
+              let totalProducts = 0;
+              const allErrors: string[] = [];
               try {
                 const u = auth.currentUser;
                 if (!u) throw new Error("Not signed in");
                 const idToken = await u.getIdToken(true);
-                const r = await fetch("/api/admin/admin?action=products.repairPricing", {
-                  method: "POST",
-                  headers: {
-                    Authorization: `Bearer ${idToken}`,
-                    "Content-Type": "application/json",
-                  },
-                  body: JSON.stringify({ action: "products.repairPricing" }),
-                });
-                const data = await r.json();
-                setRepairResult(data);
-                if (data.ok) {
-                  toast.success(`Repaired ${data.repaired} product(s). Skipped ${data.skipped}.`);
-                } else {
-                  toast.error("Repair failed: " + (data.error || "Unknown error"));
+                let offset = 0;
+                let hasMore = true;
+
+                while (hasMore) {
+                  const r = await fetch("/api/admin/admin?action=products.repairPricing", {
+                    method: "POST",
+                    headers: {
+                      Authorization: `Bearer ${idToken}`,
+                      "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ action: "products.repairPricing", offset }),
+                  });
+                  const data = await r.json();
+                  if (!data.ok) {
+                    toast.error("Repair failed: " + (data.error || "Unknown error"));
+                    setRepairResult({ ok: false, error: data.error });
+                    return;
+                  }
+                  totalRepaired += data.repaired || 0;
+                  totalSkipped += data.skipped || 0;
+                  totalProducts = data.total || 0;
+                  if (data.errors) allErrors.push(...data.errors);
+                  hasMore = data.hasMore === true;
+                  offset = data.nextOffset ?? offset + 10;
+                  setRepairProgress(`Processing… ${Math.min(offset, totalProducts)} / ${totalProducts} products`);
                 }
+
+                const finalResult = {
+                  ok: true,
+                  total: totalProducts,
+                  repaired: totalRepaired,
+                  skipped: totalSkipped,
+                  errors: allErrors.length ? allErrors : undefined,
+                };
+                setRepairResult(finalResult);
+                toast.success(`Repaired ${totalRepaired} product(s). Skipped ${totalSkipped}.`);
               } catch (err: any) {
                 toast.error("Error: " + (err?.message || err));
                 setRepairResult({ ok: false, error: err?.message });
               } finally {
                 setRepairingPricing(false);
+                setRepairProgress("");
               }
             }}
             disabled={repairingPricing}
@@ -294,6 +322,9 @@ export default function AdminSettings() {
             )}
             {repairingPricing ? "Repairing..." : "Repair All Products"}
           </Button>
+          {repairProgress && (
+            <p className="text-sm text-muted-foreground mt-1">{repairProgress}</p>
+          )}
 
           {repairResult && (
             <div className="text-sm mt-2">
