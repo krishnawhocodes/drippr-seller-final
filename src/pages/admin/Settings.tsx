@@ -262,12 +262,13 @@ export default function AdminSettings() {
                 const u = auth.currentUser;
                 if (!u) throw new Error("Not signed in");
                 const idToken = await u.getIdToken(true);
-                const r = await fetch("/api/admin/products/repair-pricing", {
+                const r = await fetch("/api/admin/admin?action=products.repairPricing", {
                   method: "POST",
                   headers: {
                     Authorization: `Bearer ${idToken}`,
                     "Content-Type": "application/json",
                   },
+                  body: JSON.stringify({ action: "products.repairPricing" }),
                 });
                 const data = await r.json();
                 setRepairResult(data);

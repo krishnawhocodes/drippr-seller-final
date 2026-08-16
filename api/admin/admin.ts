@@ -568,6 +568,27 @@ const INVENTORY_SET_ON_HAND = /* GraphQL */ `
   }
 `;
 
+const PRODUCT_VARIANTS_FOR_REPAIR = /* GraphQL */ `
+  query productVariantsForRepair($id: ID!) {
+    product(id: $id) {
+      id
+      variants(first: 100) {
+        nodes {
+          id
+          price
+          compareAtPrice
+          taxable
+          inventoryItem {
+            id
+            cost
+            tracked
+          }
+        }
+      }
+    }
+  }
+`;
+
 function throwUserErrors(result: any, path: string) {
   const errors = path
     .split(".")
@@ -3126,6 +3147,64 @@ case "orders.assignPickup": {
 
   return res.status(200).json({ ok: true, assignedAt: now });
 }
+
+      case "products.repairPricing": {
+        const snap = await adminDb.collection("merchantProducts").limit(1000).get();
+        const products = snap.docs
+          .map((d) => ({ id: d.id, ...(d.data() as any) }))
+          .filter((p) => {
+            const raw = String(p.shopifyProductId || p.shopifyProductNumericId || "").trim();
+            return Boolean(raw);
+          });
+
+        let repaired = 0;
+        let skipped = 0;
+        const repairErrors: string[] = [];
+
+        for (const product of products) {
+          const rawId = String(product.shopifyProductId || product.shopifyProductNumericId || "").trim();
+          const shopifyProductId = rawId.startsWith("gid://shopify/Product/")
+            ? rawId
+            : `gid://shopify/Product/${rawId}`;
+          try {
+            const result = await shopifyGraphQL(PRODUCT_VARIANTS_FOR_REPAIR, { id: shopifyProductId });
+            const variants = result?.data?.product?.variants?.nodes || [];
+            if (!variants.length) { skipped++; continue; }
+
+            const variantInputs = variants.map((v: any) => ({
+              id: v.id,
+              taxable: true,
+              price: v.price,
+              ...(v.compareAtPrice != null ? { compareAtPrice: v.compareAtPrice } : {}),
+              inventoryItem: {
+                tracked: v.inventoryItem?.tracked ?? true,
+                ...(v.inventoryItem?.cost != null ? { cost: String(v.inventoryItem.cost) } : {}),
+              },
+            }));
+
+            const updateResult = await shopifyGraphQL(VARIANTS_BULK_UPDATE, {
+              productId: shopifyProductId,
+              variants: variantInputs,
+            });
+            const updateErrors = updateResult?.data?.productVariantsBulkUpdate?.userErrors || [];
+            if (updateErrors.length) {
+              repairErrors.push(`${product.title || product.id}: ${updateErrors.map((e: any) => e.message).join("; ")}`);
+            } else {
+              repaired++;
+            }
+          } catch (err: any) {
+            repairErrors.push(`${product.title || product.id}: ${err?.message || err}`);
+          }
+        }
+
+        return res.status(200).json({
+          ok: true,
+          total: products.length,
+          repaired,
+          skipped,
+          errors: repairErrors.length ? repairErrors : undefined,
+        });
+      }
 
       default:
         return res.status(400).json({ ok: false, error: `Unknown action: ${action}` });
