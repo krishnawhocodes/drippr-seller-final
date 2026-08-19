@@ -202,8 +202,10 @@ function validateCreatePayload(args: {
 
   if (!title) return "Product title is required.";
   if (!description) return "Product description is required.";
-  if (!isPositiveNumber(args.price)) return "Please enter a valid selling price.";
-  if (!isPositiveNumber(args.compareAtPrice)) return "MRP is required.";
+  if (args.variantMode !== "multiple" && !isPositiveNumber(args.price))
+    return "Please enter a valid selling price.";
+  if (args.variantMode !== "multiple" && !isPositiveNumber(args.compareAtPrice))
+    return "MRP is required.";
   if (!sku) return "SKU is required.";
   if (!vendor) return "Vendor name is required.";
   if (!productType) return "Product type is required.";

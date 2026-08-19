@@ -1721,9 +1721,9 @@ export default function Products() {
     if (!title) return showSubmitError("Product title is required.");
     if (!description.trim())
       return showSubmitError("Product description is required.");
-    if (rawPrice.trim() === "" || !Number.isFinite(parsedPrice) || parsedPrice <= 0)
+    if (variantMode !== "multiple" && (rawPrice.trim() === "" || !Number.isFinite(parsedPrice) || parsedPrice <= 0))
       return showSubmitError("Please enter a valid selling price.");
-    if (Number.isNaN(compareAtPrice))
+    if (variantMode !== "multiple" && Number.isNaN(compareAtPrice))
       return showSubmitError("MRP is required.");
     if (!sku) return showSubmitError("SKU is required.");
     if (
@@ -1984,9 +1984,9 @@ export default function Products() {
       const body = {
         title,
         description,
-        price,
+        price: variantMode === "multiple" ? undefined : price,
         deliveryChargeAmount: SELLER_DELIVERY_PRICE_BUMP,
-        compareAtPrice,
+        compareAtPrice: variantMode === "multiple" ? undefined : compareAtPrice,
         barcode,
         weightGrams,
         inventory: {
