@@ -4102,6 +4102,25 @@ export default function Products() {
                         )
                       }
                     />
+                    <p className="text-xs text-muted-foreground">
+                      {"\u20B9"}100 delivery is added automatically.
+                    </p>
+                    {finitePrice(ePrice) != null ? (
+                      <div className="text-sm">
+                        <span className="text-muted-foreground">
+                          Final selling price:{" "}
+                        </span>
+                        <span className="font-medium">
+                          {"\u20B9"}
+                          {(
+                            finitePrice(ePrice)! + SELLER_DELIVERY_PRICE_BUMP
+                          ).toLocaleString("en-IN")}
+                        </span>
+                        <span className="ml-2 text-xs text-muted-foreground">
+                          (+{"\u20B9"}100 delivery)
+                        </span>
+                      </div>
+                    ) : null}
                   </div>
                   <div className="space-y-2">
                     <Label>MRP ({"\u20B9"})</Label>
@@ -4434,6 +4453,16 @@ export default function Products() {
                                       )
                                     }
                                   />
+                                  {finitePrice(edits.price ?? v.price) !=
+                                  null ? (
+                                    <p className="mt-1 text-xs text-muted-foreground">
+                                      Final: {"\u20B9"}
+                                      {(
+                                        finitePrice(edits.price ?? v.price)! +
+                                        SELLER_DELIVERY_PRICE_BUMP
+                                      ).toLocaleString("en-IN")}
+                                    </p>
+                                  ) : null}
                                 </td>
                                 <td className="p-2 w-[140px]">
                                   <Input

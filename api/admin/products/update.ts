@@ -157,6 +157,19 @@ function valuesEqual(left: any, right: any) {
 
 const SELLER_DELIVERY_PRICE_BUMP = 100;
 
+/**
+ * Sellers always work in base prices; Shopify (and therefore the customer)
+ * always sees base + delivery. These are the only two places that conversion
+ * should happen, so an edit can never push an un-bumped price to the store.
+ */
+function shopifyPriceFromSellerBase(basePrice: number) {
+  return basePrice + SELLER_DELIVERY_PRICE_BUMP;
+}
+
+function sellerBasePriceFromShopify(shopifyPrice: number) {
+  return shopifyPrice - SELLER_DELIVERY_PRICE_BUMP;
+}
+
 function finiteMoney(value: unknown) {
   if (value === "" || value == null) return null;
   const parsed = Number(value);
@@ -1398,6 +1411,10 @@ export default async function handler(req: any, res: any) {
         let imagesLive: string[] = [];
         let mediaIdsByUrl: Record<string, string[]> = {};
         let liveProduct: any = null;
+        // Raw Shopify price of the first variant (base + delivery). Kept apart
+        // from the base prices we hand the seller, so the mirror doc still
+        // records what the store actually charges.
+        let firstLiveShopifyPrice: number | null = null;
 
         let shopifyProductId = resolveShopifyProductId(doc);
         if (!shopifyProductId) {
@@ -1491,7 +1508,10 @@ export default async function handler(req: any, res: any) {
                   id: v.id,
                   title: v.title,
                   optionValues: opts,
-                  price: v.price != null ? Number(v.price) : undefined,
+                  price:
+                    v.price != null
+                      ? sellerBasePriceFromShopify(Number(v.price))
+                      : undefined,
                   compareAtPrice:
                     v.compareAtPrice != null ? Number(v.compareAtPrice) : undefined,
                   quantity:
@@ -1528,6 +1548,10 @@ export default async function handler(req: any, res: any) {
                   });
                 }
               }
+
+              const rawFirstPrice = p.variants?.nodes?.[0]?.price;
+              firstLiveShopifyPrice =
+                rawFirstPrice != null ? Number(rawFirstPrice) : null;
 
               imagesLive = (p.images?.nodes || [])
                 .map((n: any) => String(n.url))
@@ -1820,10 +1844,10 @@ export default async function handler(req: any, res: any) {
                     imageUrls: imagesLive,
                   }
                 : {}),
-              ...(firstVariant.price != null
+              ...(firstLiveShopifyPrice != null
                 ? {
-                    shopifyPrice: Number(firstVariant.price),
-                    sellerDisplayPrice: Number(firstVariant.price),
+                    shopifyPrice: firstLiveShopifyPrice,
+                    sellerDisplayPrice: firstLiveShopifyPrice,
                   }
                 : {}),
               updatedAt: Date.now(),
@@ -2026,7 +2050,7 @@ export default async function handler(req: any, res: any) {
         ) {
           variantsPayload.push({
             id: defaultVariantId,
-            price: String(quickPrice),
+            price: String(shopifyPriceFromSellerBase(quickPrice)),
           });
         }
         for (const v of quickVariants) {
@@ -2034,7 +2058,10 @@ export default async function handler(req: any, res: any) {
           if (v.price == null || v.price === "") continue;
           const vp = Number(v.price);
           if (Number.isNaN(vp)) continue;
-          variantsPayload.push({ id: v.id, price: String(vp) });
+          variantsPayload.push({
+            id: v.id,
+            price: String(shopifyPriceFromSellerBase(vp)),
+          });
         }
       }
 
@@ -2138,10 +2165,13 @@ export default async function handler(req: any, res: any) {
         quickPrice != null &&
         !Number.isNaN(quickPrice)
       ) {
+        // doc.price is the seller's base price; shopifyPrice /
+        // sellerDisplayPrice are what the store and the product list show.
         updates.price = quickPrice;
-        updates.shopifyPrice = quickPrice;
-        updates.sellerDisplayPrice = quickPrice;
-        updates.priceIncludesDelivery = true;
+        updates.shopifyPrice = shopifyPriceFromSellerBase(quickPrice);
+        updates.sellerDisplayPrice = shopifyPriceFromSellerBase(quickPrice);
+        updates.deliveryChargeAmount = SELLER_DELIVERY_PRICE_BUMP;
+        updates.priceIncludesDelivery = false;
       }
 
       if (!isRemovedRecovery && quickQty != null && !Number.isNaN(quickQty)) {

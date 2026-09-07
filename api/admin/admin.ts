@@ -1703,16 +1703,17 @@ async function createApprovedProductOnShopify(
   let finalVariantNodes: any[] = [firstVariant];
   let variantMediaSync = { colors: 0, variants: 0, media: 0 };
   const warnings: string[] = [];
+  // Delivery is always added on top of the seller's price so the store and the
+  // customer see base + delivery. Only an explicitly stored 0 opts out; older
+  // docs with no deliveryChargeAmount previously fell through to 0 for
+  // single-variant products, which shipped them without the charge.
   const hasExplicitDeliveryCharge =
     approved.deliveryChargeAmount !== undefined &&
     approved.deliveryChargeAmount !== null;
-  const deliveryChargeAmount = hasExplicitDeliveryCharge
-    ? Number(approved.deliveryChargeAmount) === 0
+  const deliveryChargeAmount =
+    hasExplicitDeliveryCharge && Number(approved.deliveryChargeAmount) === 0
       ? 0
-      : SELLER_DELIVERY_PRICE_BUMP
-    : isMultipleVariantProduct
-      ? SELLER_DELIVERY_PRICE_BUMP
-      : 0;
+      : SELLER_DELIVERY_PRICE_BUMP;
 
   if (variantDraft?.variants?.length) {
     finalVariantNodes =
