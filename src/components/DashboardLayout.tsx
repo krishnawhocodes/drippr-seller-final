@@ -13,10 +13,12 @@ import {
   User,
   LogOut,
   Image,
-  MessageSquare
+  MessageSquare,
+  ShieldCheck
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useIsAdmin } from "@/lib/adminApi";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,6 +47,7 @@ const navigation = [
 
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const location = useLocation();
+  const isAdmin = useIsAdmin();
 
   const Sidebar = () => (
     <div className="flex h-full flex-col bg-sidebar">
@@ -77,6 +80,19 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           );
         })}
       </nav>
+
+      {/* Admins can jump straight to the admin panel instead of editing the URL */}
+      {isAdmin && (
+        <div className="border-t border-sidebar-border p-3">
+          <Link
+            to="/admin"
+            className="flex items-center gap-3 rounded-lg border border-sidebar-border px-3 py-2.5 text-sm font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
+          >
+            <ShieldCheck className="h-5 w-5" />
+            Switch to Admin
+          </Link>
+        </div>
+      )}
     </div>
   );
 

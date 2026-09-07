@@ -7,10 +7,26 @@ import { QueueProduct, Merchant, SupportTicket, AdminOverview } from "@/types/ad
 
 
 
+// Cached per uid so navigating between pages does not re-hit admin.me (and,
+// for ordinary sellers, does not spam 403s) on every layout mount.
+const adminCheckCache = new Map<string, Promise<boolean>>();
+
+function checkIsAdmin(uid: string): Promise<boolean> {
+  const cached = adminCheckCache.get(uid);
+  if (cached) return cached;
+  const pending = adminMe()
+    .then(() => true)
+    .catch(() => false);
+  adminCheckCache.set(uid, pending);
+  return pending;
+}
+
 /**
- * Returns true if the current user has an enabled admin record at:
- *   admins/{uid} with { enabled: true }
- * Falls back to false if signed out or document missing/disabled.
+ * Returns true if the signed-in user is an admin.
+ *
+ * Authority is the server: `admin.me` verifies the Firebase ID token and checks
+ * the uid against the ADMIN_UIDS env allowlist. This hook is only for showing
+ * or hiding UI; every admin action is re-checked server-side.
  */
 export function useIsAdmin(): boolean {
   const [isAdmin, setIsAdmin] = useState(false);
@@ -20,16 +36,13 @@ export function useIsAdmin(): boolean {
 
     const unsubAuth = onAuthStateChanged(auth, (u) => {
       if (!u) {
+        adminCheckCache.clear();
         setIsAdmin(false);
         return;
       }
-      adminMe()
-        .then(() => {
-          if (!cancelled) setIsAdmin(true);
-        })
-        .catch(() => {
-          if (!cancelled) setIsAdmin(false);
-        });
+      checkIsAdmin(u.uid).then((result) => {
+        if (!cancelled) setIsAdmin(result);
+      });
     });
 
     return () => {
@@ -132,6 +145,16 @@ export const ordersList = (params: { limit?: number } = {}) =>
 
 export const queueList = (params: { status?: string; limit?: number } = {}) =>
   call("queue.list", params);
+
+/**
+ * Live Shopify collection titles, so the approval dropdown always matches the
+ * store. Returns an empty list (never throws) if Shopify is unreachable, and
+ * callers fall back to their local defaults.
+ */
+export const listStoreCollections = (): Promise<{
+  ok: true;
+  collections: string[];
+}> => call("settings.collections.list") as Promise<{ ok: true; collections: string[] }>;
 
 export const queueApprove = (
   id: string,

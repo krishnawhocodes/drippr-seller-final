@@ -28,7 +28,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { Search, Eye, CheckCircle, XCircle, RefreshCcw, Info } from "lucide-react";
 
-import { queueList, queueApprove, queueReject } from "@/lib/adminApi";
+import {
+  queueList,
+  queueApprove,
+  queueReject,
+  listStoreCollections,
+} from "@/lib/adminApi";
 
 // ---------- Types (mirrors backend; tolerant to missing fields) ----------
 type ChangeVal = { old?: any; new?: any };
@@ -88,7 +93,10 @@ type QueueProduct = {
 };
 
 const PLACEHOLDER = "https://placehold.co/96x96?text=IMG";
-const COLLECTION_OPTIONS = [
+// Fallback only. The live list is loaded from Shopify on mount so this can
+// never drift out of sync with the store again. Titles must match Shopify
+// exactly — approval creates any collection whose title is not found.
+const COLLECTION_OPTIONS: string[] = [
   "ATHLEISURE",
   "CARGOS & PANTS",
   "CO-RD SET",
@@ -99,7 +107,7 @@ const COLLECTION_OPTIONS = [
   "JACKETS",
   "MENS ATHLEISURE",
   "MENS LIFESTYLE & BOTTOMS",
-  "MENS T-SHIRT & SHIRTS",
+  "MENS T-SHIRT & UPPER",
   "MINIMALISM",
   "SHORTS & SKIRTS",
   "STREETWEAR",
@@ -107,7 +115,8 @@ const COLLECTION_OPTIONS = [
   "TEES",
   "THRIFT",
   "TOPS & DRESSES",
-] as const;
+  "WOMENS ATHLEISURE",
+];
 
 // ---------- helpers ----------
 const formatMoneyINR = (n?: number | string) =>
@@ -385,6 +394,26 @@ export default function ProductQueue() {
   const [rejectReason, setRejectReason] = useState("");
   const [approvalCollections, setApprovalCollections] = useState<string[]>([]);
   const [customCollectionName, setCustomCollectionName] = useState("");
+  const [collectionOptions, setCollectionOptions] =
+    useState<string[]>(COLLECTION_OPTIONS);
+
+  // Pull the real collection titles from Shopify so admins can only pick names
+  // that already exist in the store.
+  useEffect(() => {
+    let cancelled = false;
+    listStoreCollections()
+      .then((result) => {
+        if (cancelled) return;
+        const live = Array.isArray(result?.collections) ? result.collections : [];
+        if (live.length) setCollectionOptions(live);
+      })
+      .catch(() => {
+        /* keep the built-in fallback list */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setApprovalCollections(selected?.collections || []);
@@ -728,7 +757,7 @@ export default function ProductQueue() {
                     >
                       <DropdownMenuLabel>Store collections</DropdownMenuLabel>
                       <DropdownMenuSeparator />
-                      {COLLECTION_OPTIONS.map((collectionName) => (
+                      {collectionOptions.map((collectionName) => (
                         <DropdownMenuCheckboxItem
                           key={collectionName}
                           checked={approvalCollections.includes(collectionName)}

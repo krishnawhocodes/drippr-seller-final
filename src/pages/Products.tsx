@@ -647,6 +647,9 @@ export default function Products() {
     Record<string, string[]>
   >({});
   const skipNextDraftAutosave = useRef(false);
+  // Keeps a draft's original createdAt across edits so it never jumps position
+  // in the product list when it syncs to Firestore.
+  const activeDraftCreatedAt = useRef<number | null>(null);
   const shopifySyncInFlight = useRef(false);
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
 
@@ -690,7 +693,7 @@ export default function Products() {
     const now = Date.now();
     return {
       id: activeDraftId ?? createDraftId(),
-      createdAt: now,
+      createdAt: activeDraftCreatedAt.current ?? now,
       updatedAt: now,
       title: draftTitle || undefined,
       description: draftDescription || undefined,
@@ -771,18 +774,64 @@ export default function Products() {
     form?.reset();
   }
 
-  function clearSingleVariantDetails() {
-    setSelectedImages([]);
-    setImagePreviews([]);
-    setSingleColor("");
-    setDraftQuantity("");
-    setFallbackSize("M");
-    setDraftBustSize("");
-    setDraftWaistSize("");
-    setDraftHipSize("");
-    setDraftLengthSize("");
-    setDraftShoulderSize("");
-    setDraftInseamSize("");
+  /**
+   * Single -> multiple: carry the filled single variant over as the first
+   * combination (Size x Color), including its photos and measurements, so the
+   * seller can add more sizes/colours on top of it instead of re-entering it.
+   */
+  function carrySingleVariantIntoPlanner() {
+    const size = fallbackSize.trim();
+    const color = singleColor.trim();
+    // Nothing safe to seed without both option values — leave the single
+    // variant fields untouched so switching back restores them.
+    if (!size || !color) return;
+
+    const chest = toNullableNumber(draftBustSize);
+    const measurements: ProductMeasurements = {
+      ...emptyMeasurements(),
+      chest,
+      bust: chest,
+      waist: toNullableNumber(draftWaistSize),
+      hip: toNullableNumber(draftHipSize),
+      length: toNullableNumber(draftLengthSize),
+      shoulder: toNullableNumber(draftShoulderSize),
+      inseam: toNullableNumber(draftInseamSize),
+      unit: "in",
+    };
+
+    const key = [size, color].join("|");
+    setOptions([
+      { name: "Size", values: [size] },
+      { name: "Color", values: [color] },
+    ]);
+    setValueInputs(["", "", ""]);
+    setVariantRows((previous) => ({
+      ...previous,
+      [key]: {
+        id: key,
+        options: [size, color],
+        title: `${size} / ${color}`,
+        price: toNullableNumber(basePriceInput) ?? undefined,
+        compareAtPrice: toNullableNumber(draftComparePrice) ?? undefined,
+        sku: draftSku.trim(),
+        quantity: toNullableNumber(draftQuantity) ?? undefined,
+        barcode: draftBarcode.trim(),
+        weightGrams: toNullableNumber(draftWeight) ?? undefined,
+        measurements: hasAnyMeasurement(measurements) ? measurements : null,
+      },
+    }));
+
+    // Move the single-variant photos into that colour's photo group.
+    if (selectedImages.length || imagePreviews.length) {
+      setVariantColorImages((current) => ({
+        ...current,
+        [color]: [...(current[color] || []), ...selectedImages].slice(0, 5),
+      }));
+      setVariantColorImagePreviews((current) => ({
+        ...current,
+        [color]: [...(current[color] || []), ...imagePreviews].slice(0, 5),
+      }));
+    }
   }
 
   function clearMultipleVariantDetails() {
@@ -798,8 +847,11 @@ export default function Products() {
 
   function switchVariantMode(mode: "single" | "multiple") {
     if (mode === variantMode) return;
+    // multiple -> single drops the variant grid but keeps the shared product
+    // fields (type, vendor, tags, price, cost, MRP, SKU) and the original
+    // single-variant details, so the round trip loses nothing.
     if (mode === "single") clearMultipleVariantDetails();
-    else clearSingleVariantDetails();
+    else carrySingleVariantIntoPlanner();
     setVariantMode(mode);
   }
 
@@ -812,6 +864,7 @@ export default function Products() {
       );
     }
     setActiveDraftId(null);
+    activeDraftCreatedAt.current = null;
     clearAddProductFormState(
       document.getElementById("add-product-form") as HTMLFormElement | null,
     );
@@ -849,6 +902,7 @@ export default function Products() {
       ]);
     }
     setActiveDraftId(null);
+    activeDraftCreatedAt.current = null;
     clearAddProductFormState();
     setIsAddProductOpen(false);
     toast.success("Draft saved. You can reopen it from Products.");
@@ -998,6 +1052,7 @@ export default function Products() {
             vendor: draft.vendor,
             measurements: draft.measurements,
             isLocalDraft: true,
+            createdAt: draft.createdAt,
             imagePreview:
               draft.imagePreviews?.[0] ??
               Object.values(draft.variantColorImagePreviews || {}).find(
@@ -1041,7 +1096,12 @@ export default function Products() {
           null,
       };
     });
-    const allProducts = [...localDraftProducts, ...remoteProducts];
+    // Sort by createdAt so a local draft keeps its place when it syncs to
+    // Firestore and moves from localDraftProducts into remoteProducts.
+    const allProducts = [...localDraftProducts, ...remoteProducts].sort(
+      (a, b) =>
+        (b.createdAt ?? 0) - (a.createdAt ?? 0) || a.id.localeCompare(b.id),
+    );
     const statusFilteredProducts =
       statusFilter === "all"
         ? allProducts
@@ -1388,12 +1448,14 @@ export default function Products() {
     if (saved.imagePreviews) setImagePreviews(saved.imagePreviews);
     if (saved.variantColorImagePreviews)
       setVariantColorImagePreviews(saved.variantColorImagePreviews);
+    activeDraftCreatedAt.current = saved.createdAt ?? Date.now();
     setActiveDraftId(saved.id);
   };
 
   const handleAddProduct = () => {
     skipNextDraftAutosave.current = true;
     clearAddProductFormState();
+    activeDraftCreatedAt.current = Date.now();
     setActiveDraftId(createDraftId());
     setSubmitFeedback(null);
     setIsAddProductOpen(true);
@@ -1439,6 +1501,7 @@ export default function Products() {
       }
       skipNextDraftAutosave.current = true;
       setActiveDraftId(null);
+      activeDraftCreatedAt.current = null;
       clearAddProductFormState();
       if (shouldSaveDraft) toast.success("Progress saved as a local draft.");
     }
@@ -2031,6 +2094,7 @@ export default function Products() {
         drafts.filter((draft) => draft.id !== activeDraftId),
       );
       setActiveDraftId(null);
+      activeDraftCreatedAt.current = null;
       setIsAddProductOpen(false);
       clearAddProductFormState(formElement);
     } catch (err: any) {
@@ -3871,6 +3935,7 @@ export default function Products() {
                                   size="icon"
                                   onClick={() => {
                                     if (p.draft) {
+                                      skipNextDraftAutosave.current = true;
                                       restoreAddDraft(p.draft);
                                       setIsAddProductOpen(true);
                                       toast.success("Draft restored");

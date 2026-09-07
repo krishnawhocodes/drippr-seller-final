@@ -4,6 +4,13 @@ import { shopifyGraphQL } from "../_lib/shopify.js";
 
 const MEASUREMENT_METAFIELD_NAMESPACE = "garment_sizing";
 
+type FirestoreMergeRef = {
+  set: (
+    data: Record<string, unknown>,
+    options: { merge: boolean },
+  ) => Promise<unknown>;
+};
+
 function normSku(raw: unknown) {
   return String(raw || "")
     .trim()
@@ -770,14 +777,41 @@ function resolveShopifyProductId(qdoc: any) {
 async function recoverShopifyProductIdBySku(qdoc: any) {
   const sku = String(qdoc.sku || "").trim();
   if (!sku) return null;
-  const escapedSku = sku.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const result = await shopifyGraphQL(PRODUCT_BY_SKU_QUERY, {
-    query: `sku:"${escapedSku}"`,
-  });
-  return normalizeShopifyGid(
-    result?.data?.productVariants?.nodes?.[0]?.product?.id,
-    "Product",
-  );
+
+  // Multi-variant products get generated variant SKUs (`SKU-1`, `SKU-2`, ...),
+  // so the product-level SKU on its own matches nothing. Checking the draft's
+  // own variant SKUs and the generated first one lets a retried approval find
+  // an orphaned Shopify product instead of creating a duplicate.
+  const candidates = [
+    ...new Set(
+      [
+        sku,
+        ...(Array.isArray(qdoc.variantDraft?.variants)
+          ? qdoc.variantDraft.variants.map((variant: { sku?: unknown }) =>
+              String(variant?.sku || "").trim(),
+            )
+          : []),
+        `${sku}-1`,
+      ].filter(Boolean),
+    ),
+  ];
+
+  for (const candidate of candidates) {
+    const escapedSku = candidate.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    try {
+      const result = await shopifyGraphQL(PRODUCT_BY_SKU_QUERY, {
+        query: `sku:"${escapedSku}"`,
+      });
+      const productId = normalizeShopifyGid(
+        result?.data?.productVariants?.nodes?.[0]?.product?.id,
+        "Product",
+      );
+      if (productId) return productId;
+    } catch (error) {
+      console.warn("SKU recovery lookup failed for", candidate, error);
+    }
+  }
+  return null;
 }
 
 function normalizeCollectionTitles(input: unknown) {
@@ -907,6 +941,15 @@ async function updateShopifyProduct(productInput: Record<string, any>) {
   }
 }
 
+/**
+ * Status to send with an approval update, or null to omit `status` entirely and
+ * leave whatever Shopify currently has.
+ *
+ * The panel must never promote a product to ACTIVE on its own - going live is
+ * the Shopify admin's decision. This previously defaulted to "ACTIVE" whenever
+ * the queue doc had no recorded shopifyStatus, which could publish a product
+ * during an ordinary edit approval.
+ */
 function resolveApprovedShopifyStatus(qdoc: any) {
   if (qdoc.status === "pending") return "DRAFT";
   const currentStatus = String(qdoc.shopifyStatus || "").trim().toUpperCase();
@@ -914,7 +957,7 @@ function resolveApprovedShopifyStatus(qdoc: any) {
     return currentStatus;
   }
   if (qdoc.published === false) return "DRAFT";
-  return "ACTIVE";
+  return null;
 }
 
 async function fetchShopifyProductStatus(productId: string) {
@@ -1553,7 +1596,11 @@ async function applyVariantDraftMediaToShopify(args: {
   };
 }
 
-async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
+async function createApprovedProductOnShopify(
+  qdoc: any,
+  pendingUpdates: any,
+  docRef?: FirestoreMergeRef,
+) {
   const approved = { ...qdoc, ...pendingUpdates };
   const variantDraft = normalizeVariantDraft(approved.variantDraft);
   const measurements = normalizeProductMeasurements(approved.measurements);
@@ -1614,6 +1661,27 @@ async function createApprovedProductOnShopify(qdoc: any, pendingUpdates: any) {
   const firstVariant = product?.variants?.nodes?.[0];
   if (!product?.id || !firstVariant?.id) {
     throw new Error("Product approved but Shopify did not return a product.");
+  }
+
+  // Record the new Shopify id before any follow-up work (variants, media,
+  // collections, metafields). If one of those steps fails, the admin's retry
+  // finds this product and updates it instead of creating a duplicate.
+  if (docRef) {
+    try {
+      await docRef.set(
+        {
+          shopifyProductId: product.id,
+          shopifyProductNumericId: product.id.split("/").pop() || null,
+          shopifyStatus: "DRAFT",
+          published: false,
+          shopifyDeletedAt: null,
+          updatedAt: Date.now(),
+        },
+        { merge: true },
+      );
+    } catch (error) {
+      console.warn("Could not persist new Shopify product id early", error);
+    }
   }
 
   const createdMediaEdges = Array.isArray(product?.media?.edges)
@@ -2132,11 +2200,15 @@ function meaningfulVariantMediaUpdates(input: unknown) {
     : [];
 }
 
-async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
+async function applyApprovedChangesToShopify(
+  qdoc: any,
+  pendingUpdates: any,
+  docRef?: FirestoreMergeRef,
+) {
   const savedProductId = resolveShopifyProductId(qdoc);
   const productId = savedProductId || (await recoverShopifyProductIdBySku(qdoc));
   if (!productId) {
-    return createApprovedProductOnShopify(qdoc, pendingUpdates);
+    return createApprovedProductOnShopify(qdoc, pendingUpdates, docRef);
   }
 
   let liveShopifyStatus: string | null = null;
@@ -2158,6 +2230,7 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
         shopifyVariantNumericIds: [],
       },
       pendingUpdates,
+      docRef,
     );
   }
 
@@ -2175,10 +2248,10 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
       ? "DRAFT"
       : liveShopifyStatus || resolveApprovedShopifyStatus(qdoc);
 
-  const productInput: Record<string, any> = {
-    id: productId,
-    status: preservedShopifyStatus,
-  };
+  const productInput: Record<string, any> = { id: productId };
+  // Only send a status we are certain about, so an approval can never flip a
+  // product live by itself.
+  if (preservedShopifyStatus) productInput.status = preservedShopifyStatus;
   const warnings: string[] = [];
   if (pendingUpdates.title !== undefined) productInput.title = pendingUpdates.title;
   if (pendingUpdates.description !== undefined)
@@ -2203,10 +2276,10 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
   const hasProductFieldChanges = Object.keys(productInput).some(
     (field) => field !== "id" && field !== "status",
   );
-  if (
-    hasProductFieldChanges ||
-    currentShopifyStatus !== preservedShopifyStatus
-  ) {
+  const statusNeedsUpdate = Boolean(
+    preservedShopifyStatus && currentShopifyStatus !== preservedShopifyStatus,
+  );
+  if (hasProductFieldChanges || statusNeedsUpdate) {
     await updateShopifyProduct(productInput);
   }
 
@@ -2372,7 +2445,12 @@ async function applyApprovedChangesToShopify(qdoc: any, pendingUpdates: any) {
     inventoryItemId,
     warnings,
     collections: desiredCollections,
-    shopifyStatus: productInput.status,
+    // Report the status Shopify actually holds; never invent ACTIVE.
+    shopifyStatus:
+      productInput.status ||
+      liveShopifyStatus ||
+      currentShopifyStatus ||
+      "DRAFT",
     variantMediaSync,
     ...(refreshedImageUrls ? { imageUrls: refreshedImageUrls } : {}),
   };
@@ -2588,6 +2666,28 @@ export default async function handler(req: any, res: any) {
           ok: true,
           publicationId: snap.exists ? snap.data()?.publicationId || null : null,
         });
+      }
+
+      case "settings.collections.list": {
+        try {
+          const result = await shopifyGraphQL(COLLECTIONS_QUERY, {});
+          const titles = (result?.data?.collections?.nodes || [])
+            .map((collection: { title?: unknown }) =>
+              String(collection?.title || "").trim(),
+            )
+            .filter(Boolean)
+            .sort((a: string, b: string) => a.localeCompare(b));
+          return res.status(200).json({
+            ok: true,
+            collections: [...new Set(titles)],
+          });
+        } catch (error) {
+          return res.status(200).json({
+            ok: true,
+            collections: [],
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
 
       case "settings.publication.set": {
@@ -2871,6 +2971,7 @@ export default async function handler(req: any, res: any) {
           shopifyResult = await applyApprovedChangesToShopify(
             qdoc,
             approvalUpdates,
+            ref,
           );
         } catch (error: any) {
           const approvalError = String(
@@ -2915,7 +3016,9 @@ export default async function handler(req: any, res: any) {
           {
             ...approvalUpdates,
             status: "approved",
-            published: shopifyResult.shopifyStatus !== "DRAFT",
+            published:
+              String(shopifyResult.shopifyStatus || "").toUpperCase() ===
+              "ACTIVE",
             shopifyStatus: shopifyResult.shopifyStatus || "DRAFT",
             shopifyDeletedAt: null,
             shopifyProductId: shopifyResult.productId,
@@ -3024,7 +3127,9 @@ export default async function handler(req: any, res: any) {
           await adminDb.collection("merchantProducts").doc(qdoc.merchantProductDocId).set(
             {
               status: "approved",
-              published: shopifyResult.shopifyStatus !== "DRAFT",
+              published:
+                String(shopifyResult.shopifyStatus || "").toUpperCase() ===
+                "ACTIVE",
               shopifyStatus: shopifyResult.shopifyStatus || "DRAFT",
               updatedAt: Date.now(),
             },

@@ -1,5 +1,5 @@
 import { Outlet, Link, useLocation } from "react-router-dom";
-import { LayoutDashboard, Package, Users, MessageSquare, Settings, Menu } from "lucide-react";
+import { LayoutDashboard, Package, Users, MessageSquare, Settings, Menu, Store } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
@@ -66,6 +66,22 @@ export function AdminLayout() {
             );
           })}
         </nav>
+
+        {/* Back to the seller-facing dashboard */}
+        <div className="border-t p-4">
+          <Link to="/dashboard">
+            <Button
+              variant="outline"
+              className={cn(
+                "w-full justify-start",
+                !sidebarOpen && "justify-center px-0"
+              )}
+            >
+              <Store className={cn("h-5 w-5", sidebarOpen && "mr-2")} />
+              {sidebarOpen && <span>Switch to Seller</span>}
+            </Button>
+          </Link>
+        </div>
       </aside>
 
       {/* Main Content */}
