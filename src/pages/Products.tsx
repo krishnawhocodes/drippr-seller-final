@@ -238,6 +238,9 @@ type ProductStatusFilter = "all" | ProductDisplayStatus;
 
 const SELLER_DELIVERY_PRICE_BUMP = 100;
 
+// New products only; existing listings keep their longer titles.
+const PRODUCT_TITLE_MAX_LENGTH = 70;
+
 function finitePrice(value: unknown) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -1782,6 +1785,10 @@ export default function Products() {
     )
       return showSubmitError("Please add at least one photo for the single variant.");
     if (!title) return showSubmitError("Product title is required.");
+    if (title.length > PRODUCT_TITLE_MAX_LENGTH)
+      return showSubmitError(
+        `Product title must be ${PRODUCT_TITLE_MAX_LENGTH} characters or less (currently ${title.length}).`,
+      );
     if (!description.trim())
       return showSubmitError("Product description is required.");
     if (variantMode !== "multiple" && (rawPrice.trim() === "" || !Number.isFinite(parsedPrice) || parsedPrice <= 0))
@@ -3207,14 +3214,30 @@ export default function Products() {
             >
               {/* Basic Info */}
               <div className="space-y-2">
-                <Label htmlFor="title">Product Title *</Label>
+                <div className="flex items-center justify-between gap-2">
+                  <Label htmlFor="title">Product Title *</Label>
+                  <span
+                    className={`text-xs ${
+                      draftTitle.length >= PRODUCT_TITLE_MAX_LENGTH
+                        ? "text-destructive"
+                        : "text-muted-foreground"
+                    }`}
+                  >
+                    {draftTitle.length}/{PRODUCT_TITLE_MAX_LENGTH}
+                  </span>
+                </div>
                 <Input
                   id="title"
                   name="title"
                   placeholder="E.g., Premium Cotton T-Shirt"
                   required
+                  maxLength={PRODUCT_TITLE_MAX_LENGTH}
                   value={draftTitle}
-                  onChange={(e) => setDraftTitle(e.target.value)}
+                  onChange={(e) =>
+                    setDraftTitle(
+                      e.target.value.slice(0, PRODUCT_TITLE_MAX_LENGTH),
+                    )
+                  }
                 />
               </div>
 

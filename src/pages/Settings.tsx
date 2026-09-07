@@ -137,6 +137,10 @@ export default function Settings() {
           uid,
           email: authEmail ?? merchant?.email ?? null,
           name: name.trim(),
+          // Registration writes displayName while this form writes name. Keep
+          // both in sync so the admin merchant list, invoices and the order
+          // panels all show the updated value.
+          displayName: name.trim(),
           phone: phone.trim(),
           updatedAt: Date.now(),
           ...(merchant ? {} : { createdAt: Date.now() }),
@@ -174,6 +178,9 @@ export default function Settings() {
         {
   uid,
   storeName: storeName.trim() || null,
+  // Mirror of storeName. Registration writes businessName, and the invoice
+  // generator reads it first, so both must move together.
+  businessName: storeName.trim() || null,
   businessCategory: businessCategory.trim() || null,
   gstin: gstin.trim() || null,
   address: address.trim() || null,

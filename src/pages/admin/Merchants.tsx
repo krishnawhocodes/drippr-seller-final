@@ -30,15 +30,38 @@ type Merchant = {
   gstin?: string;
   address?: string;
   // Optional bank fields (adjust if your schema differs)
+  // Legacy flat shape (kept so older docs still render)
   bankAccountName?: string;
   bankName?: string;
   bankAccountNumber?: string; // we will mask on render
   ifsc?: string;
+  // Current shape written by the seller Settings > Bank / Payouts tab
+  bank?: {
+    accountHolder?: string;
+    bankName?: string;
+    accountNumber?: string;
+    ifsc?: string;
+    upi?: string;
+    accountType?: "SAVINGS" | "CURRENT";
+    payoutMethod?: "BANK" | "UPI";
+  };
   shopStatus?: "open" | "closed";
   shopClosed?: boolean;
   shopClosedAt?: number | null;
   shopCloseReason?: string | null;
 };
+
+// Registration writes displayName/businessName, the seller Settings form writes
+// name/storeName. Both are now kept in sync on write, but merchants who renamed
+// themselves before that fix still have only the newer keys populated, so read
+// through both.
+function merchantOwnerName(m: Merchant) {
+  return m.name || m.displayName || "";
+}
+
+function merchantStoreName(m: Merchant) {
+  return m.storeName || m.businessName || "";
+}
 
 export default function Merchants() {
   const [merchants, setMerchants] = useState<Merchant[]>([]);
@@ -72,7 +95,7 @@ export default function Merchants() {
     const q = search.trim().toLowerCase();
     if (!q) return merchants;
     return merchants.filter((m) =>
-      `${m.name || ""} ${m.email || ""} ${m.storeName || ""} ${m.phone || ""}`
+      `${merchantOwnerName(m)} ${m.email || ""} ${merchantStoreName(m)} ${m.phone || ""}`
         .toLowerCase()
         .includes(q)
     );
@@ -91,7 +114,7 @@ export default function Merchants() {
           item.uid === merchant.uid ? { ...item, enabled: newEnabled } : item,
         ),
       );
-      toast.success(`${merchant.storeName || merchant.name || merchant.email} ${newEnabled ? "enabled" : "disabled"} successfully.`);
+      toast.success(`${merchantStoreName(merchant) || merchantOwnerName(merchant) || merchant.email} ${newEnabled ? "enabled" : "disabled"} successfully.`);
     } catch (err: any) {
       console.error(err);
       toast.error(err?.message || "Failed to update merchant");
@@ -105,17 +128,27 @@ export default function Merchants() {
   }
 
   function renderBank(m: Merchant) {
-    const hasAny =
-      m.bankAccountName || m.bankName || m.bankAccountNumber || m.ifsc;
-    if (!hasAny) {
+    // Sellers save these under a nested `bank` object; older docs may still
+    // carry the flat fields.
+    const holder = m.bank?.accountHolder || m.bankAccountName;
+    const bankName = m.bank?.bankName || m.bankName;
+    const accountNumber = m.bank?.accountNumber || m.bankAccountNumber;
+    const ifsc = m.bank?.ifsc || m.ifsc;
+    const upi = m.bank?.upi;
+    const payoutMethod = m.bank?.payoutMethod;
+
+    if (!holder && !bankName && !accountNumber && !ifsc && !upi) {
       return <p className="text-xs text-muted-foreground italic">No bank details provided</p>;
     }
     return (
       <div className="space-y-1 text-sm text-muted-foreground">
-        {m.bankAccountName && <p><span className="font-medium text-foreground">Holder:</span> {m.bankAccountName}</p>}
-        {m.bankName && <p><span className="font-medium text-foreground">Bank:</span> {m.bankName}</p>}
-        {m.bankAccountNumber && <p><span className="font-medium text-foreground">Account:</span> {maskAccount(m.bankAccountNumber)}</p>}
-        {m.ifsc && <p><span className="font-medium text-foreground">IFSC:</span> {m.ifsc}</p>}
+        {payoutMethod && <p><span className="font-medium text-foreground">Payout method:</span> {payoutMethod === "UPI" ? "UPI" : "Bank Transfer"}</p>}
+        {upi && <p><span className="font-medium text-foreground">UPI:</span> {upi}</p>}
+        {holder && <p><span className="font-medium text-foreground">Holder:</span> {holder}</p>}
+        {bankName && <p><span className="font-medium text-foreground">Bank:</span> {bankName}</p>}
+        {accountNumber && <p><span className="font-medium text-foreground">Account:</span> {maskAccount(accountNumber)}</p>}
+        {ifsc && <p><span className="font-medium text-foreground">IFSC:</span> {ifsc}</p>}
+        {m.bank?.accountType && <p><span className="font-medium text-foreground">Type:</span> {m.bank.accountType}</p>}
       </div>
     );
   }
@@ -171,11 +204,11 @@ export default function Merchants() {
                     onClick={() => setSelectedMerchant(merchant)}
                   >
                     <TableCell className="font-medium">
-                      {merchant.displayName || "-"}
+                      {merchantOwnerName(merchant) || "-"}
                     </TableCell>
                     <TableCell>{merchant.email || "-"}</TableCell>
                     <TableCell>{merchant.phone || "-"}</TableCell>
-                    <TableCell>{merchant.businessName || "-"}</TableCell>
+                    <TableCell>{merchantStoreName(merchant) || "-"}</TableCell>
                     <TableCell>
                       {isMerchantShopClosed(merchant) ? (
                         <Badge className="bg-red-500/10 text-red-700 border-red-500/20">
@@ -231,8 +264,8 @@ export default function Merchants() {
             <>
               <SheetHeader>
                 <SheetTitle>
-                  {selectedMerchant.storeName ||
-                    selectedMerchant.name ||
+                  {merchantStoreName(selectedMerchant) ||
+                    merchantOwnerName(selectedMerchant) ||
                     "Merchant"}
                 </SheetTitle>
                 <SheetDescription>Merchant Profile Details</SheetDescription>
@@ -275,7 +308,7 @@ export default function Merchants() {
                 <div>
                   <span className="font-semibold block mb-1">Owner Name:</span>
                   <p className="text-sm text-muted-foreground">
-                    {selectedMerchant.name || "-"}
+                    {merchantOwnerName(selectedMerchant) || "-"}
                   </p>
                 </div>
 

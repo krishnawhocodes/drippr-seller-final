@@ -148,6 +148,10 @@ function isNonNegativeNumber(value: any) {
 
 const SELLER_DELIVERY_PRICE_BUMP = 100;
 
+// Applies to newly submitted products only. Existing listings keep their longer
+// titles and stay editable.
+const PRODUCT_TITLE_MAX_LENGTH = 70;
+
 function sellerVariantPriceForShopify(price: unknown, fallback: unknown) {
   const raw = Number(price == null || price === "" ? fallback : price);
   return Number.isFinite(raw) ? raw + SELLER_DELIVERY_PRICE_BUMP : raw;
@@ -201,6 +205,9 @@ function validateCreatePayload(args: {
   const seoDescription = String(args.seo?.description || "").trim();
 
   if (!title) return "Product title is required.";
+  if (title.length > PRODUCT_TITLE_MAX_LENGTH) {
+    return `Product title must be ${PRODUCT_TITLE_MAX_LENGTH} characters or less (currently ${title.length}).`;
+  }
   if (!description) return "Product description is required.";
   if (args.variantMode !== "multiple" && !isPositiveNumber(args.price))
     return "Please enter a valid selling price.";

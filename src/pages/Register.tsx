@@ -46,6 +46,10 @@ export default function Register() {
 
       await setDoc(doc(db, "merchants", cred.user.uid), {
         ...merchant,
+        // Settings edits `name` / `storeName`; seed both key sets now so the
+        // profile form is pre-filled and every reader agrees from day one.
+        name,
+        storeName: business_name,
         createdAt: Date.now(),
       });
 
