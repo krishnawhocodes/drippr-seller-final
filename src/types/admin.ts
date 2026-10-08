@@ -70,6 +70,7 @@ export type SupportTicket = {
 
 export type AdminOverview = {
   productsInReview: number;
+  productsInUpdate: number;
   activeSellers: number;
   openTickets: number;
   mtdOrders: number;

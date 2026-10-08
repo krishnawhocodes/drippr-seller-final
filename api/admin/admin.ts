@@ -2713,13 +2713,16 @@ export default async function handler(req: any, res: any) {
             adminDb.collection("orders").limit(1000).get(),
           ]);
 
-        const reviewStatuses = new Set([
-          "pending",
-          "in_review",
-          "update_in_review",
-        ]);
-        const productsInReview = productsSnap.docs.filter((doc) =>
-          reviewStatuses.has(String(doc.data()?.status || "")),
+        // These mirror the Review Queue's own tabs exactly: "In Review"
+        // queries status == "pending", "Updates" queries "update_in_review".
+        // Counting both under one card made the dashboard disagree with the
+        // queue. ("in_review" is deliberately excluded - nothing writes it;
+        // it only survives in the mock fixtures.)
+        const productsInReview = productsSnap.docs.filter(
+          (doc) => String(doc.data()?.status || "") === "pending",
+        ).length;
+        const productsInUpdate = productsSnap.docs.filter(
+          (doc) => String(doc.data()?.status || "") === "update_in_review",
         ).length;
         const activeSellers = merchantsSnap.docs.filter(
           (doc) => doc.data()?.enabled !== false,
@@ -2771,6 +2774,7 @@ export default async function handler(req: any, res: any) {
           ok: true,
           overview: {
             productsInReview,
+            productsInUpdate,
             activeSellers,
             openTickets,
             mtdOrders,

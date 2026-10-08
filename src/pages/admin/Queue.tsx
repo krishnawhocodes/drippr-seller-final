@@ -672,7 +672,7 @@ export default function ProductQueue() {
                           key={idx}
                           src={img}
                           alt={`${selected.title} ${idx + 1}`}
-                          className="w-full h-28 object-cover rounded border bg-muted"
+                          className="aspect-[3/4] w-full rounded border bg-muted object-contain"
                           onError={(e) =>
                             ((e.currentTarget as HTMLImageElement).src = PLACEHOLDER)
                           }

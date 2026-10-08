@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Package, Users, MessageSquare, IndianRupee } from "lucide-react";
+import { Package, Users, MessageSquare, IndianRupee, PencilRuler } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -21,6 +21,7 @@ type RevPoint = { day: string; revenue: number };
 export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [productsInReview, setProductsInReview] = useState(0);
+  const [productsInUpdate, setProductsInUpdate] = useState(0);
   const [activeSellers, setActiveSellers] = useState(0);
   const [openTickets, setOpenTickets] = useState(0);
   const [mtdRevenue, setMtdRevenue] = useState(0);
@@ -36,6 +37,7 @@ export default function AdminDashboard() {
         if (cancelled) return;
         const overview = result.overview || {};
         setProductsInReview(Number(overview.productsInReview || 0));
+        setProductsInUpdate(Number(overview.productsInUpdate || 0));
         setActiveSellers(Number(overview.activeSellers || 0));
         setOpenTickets(Number(overview.openTickets || 0));
         setMtdRevenue(Number(overview.mtdRevenue || 0));
@@ -46,6 +48,7 @@ export default function AdminDashboard() {
         console.error(error);
         if (cancelled) return;
         setProductsInReview(0);
+        setProductsInUpdate(0);
         setActiveSellers(0);
         setOpenTickets(0);
         setMtdRevenue(0);
@@ -64,8 +67,8 @@ export default function AdminDashboard() {
   if (loading) {
     return (
       <div className="space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map((i) => (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+          {[1, 2, 3, 4, 5].map((i) => (
             <Card key={i}>
               <CardHeader>
                 <Skeleton className="h-4 w-32" />
@@ -106,6 +109,12 @@ export default function AdminDashboard() {
       color: "text-accent",
     },
     {
+      title: "Products in Update",
+      value: productsInUpdate,
+      icon: PencilRuler,
+      color: "text-primary",
+    },
+    {
       title: "Active Sellers",
       value: activeSellers,
       icon: Users,
@@ -127,7 +136,7 @@ export default function AdminDashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
         {stats.map((stat) => {
           const Icon = stat.icon;
           return (

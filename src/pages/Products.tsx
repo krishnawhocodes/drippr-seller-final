@@ -774,6 +774,9 @@ export default function Products() {
     setDraftLengthSize("");
     setDraftShoulderSize("");
     setDraftInseamSize("");
+    // Clear any submit result so reopening a saved draft never shows the
+    // previous product's "submitted successfully" banner.
+    setSubmitFeedback(null);
     form?.reset();
   }
 
@@ -3323,7 +3326,7 @@ export default function Products() {
                         <img
                           src={preview}
                           alt="Single variant preview"
-                          className="h-full w-full rounded-md border object-cover"
+                          className="h-full w-full rounded-md border bg-muted object-contain"
                         />
                         <Button
                           type="button"
@@ -4283,7 +4286,7 @@ export default function Products() {
                                   <img
                                     src={url}
                                     alt={`${group.label} variant`}
-                                    className="h-32 w-full object-cover"
+                                    className="aspect-[3/4] w-full bg-muted object-contain"
                                   />
                                   <div className="absolute left-2 top-2 rounded bg-white/85 px-1.5 py-0.5 text-xs">
                                     <input
@@ -4317,7 +4320,7 @@ export default function Products() {
                                     <img
                                       src={preview}
                                       alt={`${group.label} new variant`}
-                                      className="h-32 w-full object-cover"
+                                      className="aspect-[3/4] w-full bg-muted object-contain"
                                     />
                                     <Button
                                       type="button"
@@ -4391,7 +4394,7 @@ export default function Products() {
                               <img
                                 src={u}
                                 alt="img"
-                                className="w-full h-40 object-cover"
+                                className="aspect-[3/4] w-full bg-muted object-contain"
                               />
                               <div className="absolute top-2 left-2 bg-white/80 px-1.5 py-0.5 rounded text-xs">
                                 <input
@@ -5047,7 +5050,7 @@ function VariantPlanner(props: {
                         <img
                           src={preview}
                           alt={`${color} variant ${index + 1}`}
-                          className="h-16 w-16 rounded-md border object-cover"
+                          className="h-16 w-16 rounded-md border bg-muted object-contain"
                         />
                         <button
                           type="button"
