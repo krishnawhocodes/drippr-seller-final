@@ -59,6 +59,7 @@ export function assignPickup(payload: {
   orderId: string;
   pickupWindow?: string | null;
   pickupAddress?: string | null;
+  customerAddress?: string | null;
   notes?: string | null;
   deliveryPartner?: {
     name?: string | null;
@@ -66,8 +67,37 @@ export function assignPickup(payload: {
     etaText?: string | null;
     trackingUrl?: string | null;
   };
+  shippingLabel?: { url: string; name?: string } | null;
 }) {
   return call("orders.assignPickup", payload);
+}
+
+/**
+ * Signed ImageKit credentials for admin-side uploads (shipping labels).
+ * The file goes straight from the browser to ImageKit; only the resulting URL
+ * comes back through our API.
+ */
+export async function uploadAdminFile(file: File, folder = "/shipping-labels") {
+  const signed = await call("uploads.sign", { folder });
+
+  const form = new FormData();
+  form.append("file", file);
+  form.append("fileName", file.name);
+  form.append("publicKey", signed.publicKey);
+  form.append("signature", signed.auth.signature);
+  form.append("token", signed.auth.token);
+  form.append("expire", String(signed.auth.expire));
+  if (signed.folder) form.append("folder", signed.folder);
+
+  const response = await fetch(
+    "https://upload.imagekit.io/api/v1/files/upload",
+    { method: "POST", body: form },
+  );
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result?.url) {
+    throw new Error(result?.message || "File upload failed");
+  }
+  return { url: String(result.url), name: String(result.name || file.name) };
 }
 
 let _publicationIdCache: string | null | undefined; // undefined => not fetched yet

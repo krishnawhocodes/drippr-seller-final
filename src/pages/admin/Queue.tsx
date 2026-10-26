@@ -27,6 +27,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { Search, Eye, CheckCircle, XCircle, RefreshCcw, Info } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 
 import {
   queueList,
@@ -93,30 +94,6 @@ type QueueProduct = {
 };
 
 const PLACEHOLDER = "https://placehold.co/96x96?text=IMG";
-// Fallback only. The live list is loaded from Shopify on mount so this can
-// never drift out of sync with the store again. Titles must match Shopify
-// exactly — approval creates any collection whose title is not found.
-const COLLECTION_OPTIONS: string[] = [
-  "ATHLEISURE",
-  "CARGOS & PANTS",
-  "CO-RD SET",
-  "DAARCK",
-  "DAILY DRIP",
-  "FUSION",
-  "HOUSE OF RIVAEM",
-  "JACKETS",
-  "MENS ATHLEISURE",
-  "MENS LIFESTYLE & BOTTOMS",
-  "MENS T-SHIRT & UPPER",
-  "MINIMALISM",
-  "SHORTS & SKIRTS",
-  "STREETWEAR",
-  "SWEATSHIRT & HOODS",
-  "TEES",
-  "THRIFT",
-  "TOPS & DRESSES",
-  "WOMENS ATHLEISURE",
-];
 
 // ---------- helpers ----------
 const formatMoneyINR = (n?: number | string) =>
@@ -379,12 +356,40 @@ function VariantChanges({ variants }: { variants?: Array<{ key?: string; title?:
 // ---------- Page ----------
 type StatusFilter = QueueStatus | "all";
 
+const STATUS_FILTERS: StatusFilter[] = [
+  "pending",
+  "update_in_review",
+  "approved",
+  "rejected",
+  "all",
+];
+
+const DEFAULT_STATUS: StatusFilter = "pending";
+
 export default function ProductQueue() {
   const [items, setItems] = useState<QueueProduct[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionBusy, setActionBusy] = useState(false);
 
-  const [status, setStatus] = useState<StatusFilter>("pending");
+  // The URL is the source of truth so the dashboard cards can deep-link
+  // straight to a tab (/admin/queue?status=approved) and the admin can
+  // bookmark or share a filtered view.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const status = useMemo<StatusFilter>(() => {
+    const requested = searchParams.get("status") as StatusFilter | null;
+    return requested && STATUS_FILTERS.includes(requested)
+      ? requested
+      : DEFAULT_STATUS;
+  }, [searchParams]);
+  const setStatus = useCallback(
+    (next: StatusFilter) => {
+      setSearchParams(
+        next === DEFAULT_STATUS ? {} : { status: next },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
   const [search, setSearch] = useState("");
   const [q, setQ] = useState("");
   const debounce = useRef<number | null>(null);
@@ -394,31 +399,48 @@ export default function ProductQueue() {
   const [rejectReason, setRejectReason] = useState("");
   const [approvalCollections, setApprovalCollections] = useState<string[]>([]);
   const [customCollectionName, setCustomCollectionName] = useState("");
-  const [collectionOptions, setCollectionOptions] =
-    useState<string[]>(COLLECTION_OPTIONS);
+  const [collectionOptions, setCollectionOptions] = useState<string[]>([]);
+  const [collectionsLoading, setCollectionsLoading] = useState(true);
+  const [collectionsError, setCollectionsError] = useState<string | null>(null);
 
-  // Pull the real collection titles from Shopify so admins can only pick names
-  // that already exist in the store.
-  useEffect(() => {
-    let cancelled = false;
-    listStoreCollections()
-      .then((result) => {
-        if (cancelled) return;
-        const live = Array.isArray(result?.collections) ? result.collections : [];
-        if (live.length) setCollectionOptions(live);
-      })
-      .catch(() => {
-        /* keep the built-in fallback list */
-      });
-    return () => {
-      cancelled = true;
-    };
+  /**
+   * The list always comes live from Shopify, so renaming, adding or deleting a
+   * collection in Shopify shows up here with no code change. There is no local
+   * fallback on purpose: approval creates any collection title it cannot find,
+   * so offering a stale name would silently create a duplicate in the store.
+   */
+  const loadCollections = useCallback(async () => {
+    setCollectionsLoading(true);
+    try {
+      const result = await listStoreCollections();
+      const live = Array.isArray(result?.collections) ? result.collections : [];
+      setCollectionOptions(live);
+      setCollectionsError(
+        live.length ? null : "Shopify returned no collections.",
+      );
+    } catch (error) {
+      setCollectionOptions([]);
+      setCollectionsError(
+        error instanceof Error
+          ? error.message
+          : "Could not load collections from Shopify.",
+      );
+    } finally {
+      setCollectionsLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadCollections();
+  }, [loadCollections]);
 
   useEffect(() => {
     setApprovalCollections(selected?.collections || []);
     setCustomCollectionName("");
-  }, [selected?.id]);
+    // Re-pull on open so the admin is always picking from Shopify's current
+    // collections at the moment they approve.
+    if (selected?.id) void loadCollections();
+  }, [selected?.id, loadCollections]);
 
   // debounce search
   useEffect(() => {
@@ -535,13 +557,20 @@ export default function ProductQueue() {
           />
         </div>
 
-        <Button variant="outline" onClick={fetchQueue} disabled={loading}>
+        <Button
+          variant="outline"
+          onClick={() => {
+            fetchQueue();
+            void loadCollections();
+          }}
+          disabled={loading}
+        >
           <RefreshCcw className="h-4 w-4 mr-2" />
           Refresh
         </Button>
       </div>
     ),
-    [status, search, loading, fetchQueue]
+    [status, search, loading, fetchQueue, setStatus, loadCollections]
   );
 
   return (
@@ -735,6 +764,21 @@ export default function ProductQueue() {
                     <p className="text-xs text-muted-foreground">
                       Select where this product should appear before approving.
                     </p>
+                    {collectionsError ? (
+                      <div className="flex flex-wrap items-center gap-2 rounded border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-xs text-destructive">
+                        <span>{collectionsError}</span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-2"
+                          onClick={() => void loadCollections()}
+                          disabled={collectionsLoading}
+                        >
+                          Retry
+                        </Button>
+                      </div>
+                    ) : null}
                   </div>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -755,8 +799,20 @@ export default function ProductQueue() {
                       align="start"
                       className="max-h-80 w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto"
                     >
-                      <DropdownMenuLabel>Store collections</DropdownMenuLabel>
+                      <DropdownMenuLabel>
+                        Store collections (live from Shopify)
+                      </DropdownMenuLabel>
                       <DropdownMenuSeparator />
+                      {collectionsLoading ? (
+                        <div className="px-2 py-3 text-sm text-muted-foreground">
+                          Loading collections…
+                        </div>
+                      ) : null}
+                      {!collectionsLoading && !collectionOptions.length ? (
+                        <div className="px-2 py-3 text-sm text-muted-foreground">
+                          No collections available.
+                        </div>
+                      ) : null}
                       {collectionOptions.map((collectionName) => (
                         <DropdownMenuCheckboxItem
                           key={collectionName}

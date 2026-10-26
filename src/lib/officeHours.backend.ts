@@ -1,10 +1,10 @@
 /**
  * Office Hours Utilities (Backend/TypeScript for Vercel)
- * Office hours: 10 AM - 5 PM daily
+ * Office hours: 9 AM - 9 PM daily
  */
 
-const OFFICE_START_HOUR = 10; // 10 AM
-const OFFICE_END_HOUR = 20; // 8 PM (20:00)
+const OFFICE_START_HOUR = 9; // 9 AM
+const OFFICE_END_HOUR = 21; // 9 PM (21:00)
 
 /**
  * Check if a given timestamp is within office hours
@@ -18,7 +18,7 @@ export function isWithinOfficeHours(timestamp: number): boolean {
 /**
  * Get the next office opening time from a given timestamp
  * If already in office hours, returns the timestamp itself
- * If outside office hours, returns next 10 AM
+ * If outside office hours, returns next 9 AM
  */
 export function getNextOfficeOpen(timestamp: number): number {
   const date = new Date(timestamp);
@@ -29,14 +29,14 @@ export function getNextOfficeOpen(timestamp: number): number {
     return timestamp;
   }
 
-  // If before office hours today (before 10 AM), return today at 10 AM
+  // If before office hours today (before 9 AM), return today at 9 AM
   if (hours < OFFICE_START_HOUR) {
     const nextOpen = new Date(date);
     nextOpen.setHours(OFFICE_START_HOUR, 0, 0, 0);
     return nextOpen.getTime();
   }
 
-  // If after office hours (>= 5 PM), return tomorrow at 10 AM
+  // If after office hours (>= 9 PM), return tomorrow at 9 AM
   const nextOpen = new Date(date);
   nextOpen.setDate(nextOpen.getDate() + 1);
   nextOpen.setHours(OFFICE_START_HOUR, 0, 0, 0);

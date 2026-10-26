@@ -1,7 +1,16 @@
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Package, Users, MessageSquare, IndianRupee, PencilRuler } from "lucide-react";
+import {
+  Package,
+  Users,
+  MessageSquare,
+  IndianRupee,
+  PencilRuler,
+  CheckCircle2,
+  XCircle,
+} from "lucide-react";
+import { Link } from "react-router-dom";
 import {
   LineChart,
   Line,
@@ -22,6 +31,8 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [productsInReview, setProductsInReview] = useState(0);
   const [productsInUpdate, setProductsInUpdate] = useState(0);
+  const [productsApproved, setProductsApproved] = useState(0);
+  const [productsRejected, setProductsRejected] = useState(0);
   const [activeSellers, setActiveSellers] = useState(0);
   const [openTickets, setOpenTickets] = useState(0);
   const [mtdRevenue, setMtdRevenue] = useState(0);
@@ -38,6 +49,8 @@ export default function AdminDashboard() {
         const overview = result.overview || {};
         setProductsInReview(Number(overview.productsInReview || 0));
         setProductsInUpdate(Number(overview.productsInUpdate || 0));
+        setProductsApproved(Number(overview.productsApproved || 0));
+        setProductsRejected(Number(overview.productsRejected || 0));
         setActiveSellers(Number(overview.activeSellers || 0));
         setOpenTickets(Number(overview.openTickets || 0));
         setMtdRevenue(Number(overview.mtdRevenue || 0));
@@ -49,6 +62,8 @@ export default function AdminDashboard() {
         if (cancelled) return;
         setProductsInReview(0);
         setProductsInUpdate(0);
+        setProductsApproved(0);
+        setProductsRejected(0);
         setActiveSellers(0);
         setOpenTickets(0);
         setMtdRevenue(0);
@@ -67,8 +82,8 @@ export default function AdminDashboard() {
   if (loading) {
     return (
       <div className="space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-          {[1, 2, 3, 4, 5].map((i) => (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          {[1, 2, 3, 4, 5, 6, 7].map((i) => (
             <Card key={i}>
               <CardHeader>
                 <Skeleton className="h-4 w-32" />
@@ -107,50 +122,76 @@ export default function AdminDashboard() {
       value: productsInReview,
       icon: Package,
       color: "text-accent",
+      href: "/admin/queue?status=pending",
     },
     {
       title: "Products in Update",
       value: productsInUpdate,
       icon: PencilRuler,
       color: "text-primary",
+      href: "/admin/queue?status=update_in_review",
+    },
+    {
+      title: "Products Approved",
+      value: productsApproved,
+      icon: CheckCircle2,
+      color: "text-green-600",
+      href: "/admin/queue?status=approved",
+    },
+    {
+      title: "Products Rejected",
+      value: productsRejected,
+      icon: XCircle,
+      color: "text-destructive",
+      href: "/admin/queue?status=rejected",
     },
     {
       title: "Active Sellers",
       value: activeSellers,
       icon: Users,
       color: "text-primary",
+      href: "/admin/merchants",
     },
     {
       title: "Open Tickets",
       value: openTickets,
       icon: MessageSquare,
       color: "text-destructive",
+      href: "/admin/support",
     },
     {
       title: "MTD Revenue",
       value: `₹${mtdRevenue.toLocaleString()}`,
       icon: IndianRupee,
       color: "text-green-600",
+      href: "/admin/orders",
     },
   ];
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         {stats.map((stat) => {
           const Icon = stat.icon;
           return (
-            <Card key={stat.title}>
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  {stat.title}
-                </CardTitle>
-                <Icon className={`h-5 w-5 ${stat.color}`} />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">{stat.value}</div>
-              </CardContent>
-            </Card>
+            <Link
+              key={stat.title}
+              to={stat.href}
+              className="rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label={`${stat.title}: ${stat.value}`}
+            >
+              <Card className="h-full transition-colors hover:border-primary/40 hover:bg-accent/5">
+                <CardHeader className="flex flex-row items-center justify-between pb-2">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">
+                    {stat.title}
+                  </CardTitle>
+                  <Icon className={`h-5 w-5 ${stat.color}`} />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">{stat.value}</div>
+                </CardContent>
+              </Card>
+            </Link>
           );
         })}
       </div>

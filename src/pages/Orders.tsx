@@ -96,7 +96,15 @@ type OrderDoc = {
   pickupPlan?: {
     pickupWindow?: string | null;
     pickupAddress?: string | null;
+    customerAddress?: string | null;
     notes?: string | null;
+  } | null;
+
+  // Uploaded by admin when planning the pickup; the seller prints it.
+  shippingLabel?: {
+    url?: string;
+    name?: string;
+    uploadedAt?: number;
   } | null;
 
   deliveryPartner?: {
@@ -434,7 +442,7 @@ export default function Orders() {
                 {officeStatus}
               </span>
               <span className="text-xs text-muted-foreground ml-2">
-                (Office hours: 10 AM - 8 PM)
+                (Office hours: 9 AM - 9 PM)
               </span>
             </div>
           </CardContent>
@@ -594,7 +602,7 @@ export default function Orders() {
                       <span className="font-medium">{officeStatus}</span>
                     </div>
                     <div className="text-orange-700 text-xs mt-1">
-                      Timer is paused outside office hours and will resume at 10 AM
+                      Timer is paused outside office hours and will resume at 9 AM
                     </div>
                   </div>
                 )}
@@ -738,6 +746,30 @@ export default function Orders() {
                     ) : (
                       <div className="text-muted-foreground mt-2">Delivery partner not assigned yet.</div>
                     )}
+
+                    {selected.shippingLabel?.url ? (
+                      <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md border bg-muted/30 p-3">
+                        <div className="flex-1 min-w-[12rem]">
+                          <div className="font-medium">Shipping Label</div>
+                          <div className="text-xs text-muted-foreground">
+                            {selected.shippingLabel.name || "Label"}
+                            {selected.shippingLabel.uploadedAt
+                              ? ` · ${new Date(selected.shippingLabel.uploadedAt).toLocaleString()}`
+                              : ""}
+                          </div>
+                        </div>
+                        <Button asChild variant="outline" size="sm">
+                          <a
+                            href={selected.shippingLabel.url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <Download className="h-4 w-4 mr-2" />
+                            Open label
+                          </a>
+                        </Button>
+                      </div>
+                    ) : null}
 
                     {selected.dispatchedAt ? (
                       <div className="text-xs text-muted-foreground mt-2">

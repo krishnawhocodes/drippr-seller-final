@@ -1,8 +1,19 @@
 // api/admin.ts
 import { getAdmin } from "../_lib/firebaseAdmin.js";
 import { shopifyGraphQL } from "../_lib/shopify.js";
+import ImageKit from "imagekit";
 
 const MEASUREMENT_METAFIELD_NAMESPACE = "garment_sizing";
+
+type MerchantProfile = {
+  name?: string;
+  displayName?: string;
+  storeName?: string;
+  businessName?: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+};
 
 type FirestoreMergeRef = {
   set: (
@@ -2669,6 +2680,30 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      case "uploads.sign": {
+        if (
+          !process.env.IMAGEKIT_PUBLIC_KEY ||
+          !process.env.IMAGEKIT_PRIVATE_KEY ||
+          !process.env.IMAGEKIT_URL_ENDPOINT
+        ) {
+          return res
+            .status(500)
+            .json({ ok: false, error: "ImageKit is not configured on the server." });
+        }
+        const imagekit = new ImageKit({
+          publicKey: process.env.IMAGEKIT_PUBLIC_KEY,
+          privateKey: process.env.IMAGEKIT_PRIVATE_KEY,
+          urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT,
+        });
+        return res.status(200).json({
+          ok: true,
+          auth: imagekit.getAuthenticationParameters(),
+          publicKey: process.env.IMAGEKIT_PUBLIC_KEY,
+          urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT,
+          folder: String(body.folder || "/admin-uploads"),
+        });
+      }
+
       case "settings.collections.list": {
         try {
           const result = await shopifyGraphQL(COLLECTIONS_QUERY, {});
@@ -2724,6 +2759,12 @@ export default async function handler(req: any, res: any) {
         const productsInUpdate = productsSnap.docs.filter(
           (doc) => String(doc.data()?.status || "") === "update_in_review",
         ).length;
+        const productsApproved = productsSnap.docs.filter(
+          (doc) => String(doc.data()?.status || "") === "approved",
+        ).length;
+        const productsRejected = productsSnap.docs.filter(
+          (doc) => String(doc.data()?.status || "") === "rejected",
+        ).length;
         const activeSellers = merchantsSnap.docs.filter(
           (doc) => doc.data()?.enabled !== false,
         ).length;
@@ -2775,6 +2816,8 @@ export default async function handler(req: any, res: any) {
           overview: {
             productsInReview,
             productsInUpdate,
+            productsApproved,
+            productsRejected,
             activeSellers,
             openTickets,
             mtdOrders,
@@ -2834,7 +2877,49 @@ export default async function handler(req: any, res: any) {
           id: doc.id,
           ...(doc.data() as any),
         }));
-        return res.status(200).json({ ok: true, items });
+
+        // Attach each seller's profile so Plan Pickup can prefill the pickup
+        // address from the merchant the product actually belongs to.
+        const orderMerchantIds = [
+          ...new Set(
+            items
+              .map((item: { merchantId?: unknown }) =>
+                String(item.merchantId || ""),
+              )
+              .filter(Boolean),
+          ),
+        ];
+        const merchantById = new Map<string, MerchantProfile>();
+        await Promise.all(
+          orderMerchantIds.map(async (merchantId) => {
+            const merchantSnap = await adminDb
+              .collection("merchants")
+              .doc(merchantId)
+              .get();
+            if (merchantSnap.exists) {
+              merchantById.set(
+                merchantId,
+                (merchantSnap.data() || {}) as MerchantProfile,
+              );
+            }
+          }),
+        );
+        const enrichedOrders = items.map((item: { merchantId?: unknown }) => {
+          const merchant = merchantById.get(String(item.merchantId || "")) || null;
+          return {
+            ...item,
+            merchant: merchant
+              ? {
+                  name: merchant.name || merchant.displayName || "",
+                  storeName: merchant.storeName || merchant.businessName || "",
+                  email: merchant.email || "",
+                  phone: merchant.phone || "",
+                  address: merchant.address || "",
+                }
+              : null,
+          };
+        });
+        return res.status(200).json({ ok: true, items: enrichedOrders });
       }
 
       // -------------------- PRODUCT QUEUE --------------------
@@ -3218,13 +3303,17 @@ export default async function handler(req: any, res: any) {
       // inside switch(action) { ... }
 
 case "orders.assignPickup": {
-  // body: { orderId, pickupWindow, pickupAddress, notes, deliveryPartner }
+  // body: { orderId, pickupWindow, pickupAddress, customerAddress, notes,
+  //         deliveryPartner, shippingLabel }
   const body = req.body || {};
   const orderId = String(body.orderId || "").trim();
   if (!orderId) return res.status(400).json({ ok: false, error: "orderId is required" });
 
   const pickupWindow = body.pickupWindow ?? null;
   const pickupAddress = body.pickupAddress ?? null;
+  // Snapshot of the Shopify delivery address at planning time, so the pickup
+  // record stays correct even if the order is edited later.
+  const customerAddress = body.customerAddress ?? null;
   const notes = body.notes ?? null;
 
   const dp = body.deliveryPartner || {};
@@ -3237,6 +3326,17 @@ case "orders.assignPickup": {
 
   const orderRef = adminDb.collection("orders").doc(orderId);
   const now = Date.now();
+
+  const labelInput = body.shippingLabel || null;
+  const shippingLabel =
+    labelInput && String(labelInput.url || "").trim()
+      ? {
+          url: String(labelInput.url).trim(),
+          name: String(labelInput.name || "shipping-label").trim(),
+          uploadedAt: now,
+          uploadedBy: me.uid,
+        }
+      : null;
 
   await adminDb.runTransaction(async (tx) => {
     const snap = await tx.get(orderRef);
@@ -3265,8 +3365,9 @@ case "orders.assignPickup": {
       {
         workflowStatus: "pickup_assigned",
         adminPlannedAt: now,
-        pickupPlan: { pickupWindow, pickupAddress, notes },
+        pickupPlan: { pickupWindow, pickupAddress, customerAddress, notes },
         deliveryPartner,
+        ...(shippingLabel ? { shippingLabel } : {}),
         updatedAt: now,
       },
       { merge: true }

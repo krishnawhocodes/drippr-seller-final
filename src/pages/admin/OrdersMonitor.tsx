@@ -6,7 +6,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Search, Eye, ClipboardList, Clock, Download, Truck, RefreshCw } from "lucide-react";
-import { assignPickup, ordersList } from "@/lib/adminApi";
+import { assignPickup, ordersList, uploadAdminFile } from "@/lib/adminApi";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { generateInvoicePdf } from "@/lib/generateInvoicePdf";
 import type { InvoiceMerchant } from "@/lib/generateInvoicePdf";
 
@@ -110,6 +112,21 @@ type OrderDoc = {
 
   dispatchedAt?: number | null;
 
+  // Seller profile attached by orders.list, used to prefill the pickup address
+  merchant?: {
+    name?: string;
+    storeName?: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+  } | null;
+
+  shippingLabel?: {
+    url?: string;
+    name?: string;
+    uploadedAt?: number;
+  } | null;
+
   invoice?: {
     status?: "none" | "generating" | "ready";
     url?: string;
@@ -129,6 +146,26 @@ type Filter =
 
 const THREE_HOURS = 3 * 60 * 60 * 1000;
 const THIRTY_MIN = 30 * 60 * 1000;
+
+/** Flatten the Shopify delivery address into the form's textarea. */
+function formatShopifyAddress(address: OrderDoc["shippingAddress"]) {
+  if (!address) return "";
+  const cityLine = [address.city, address.province, address.zip]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(", ");
+  return [
+    address.name,
+    address.address1,
+    address.address2,
+    cityLine,
+    address.country,
+    address.phone ? `Phone: ${address.phone}` : "",
+  ]
+    .map((line) => String(line || "").trim())
+    .filter(Boolean)
+    .join("\n");
+}
 
 function fmtCountdown(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -163,6 +200,8 @@ export default function AdminOrdersMonitor() {
   const [partnerPhone, setPartnerPhone] = useState("");
   const [etaText, setEtaText] = useState("");
   const [trackingUrl, setTrackingUrl] = useState("");
+  const [customerAddress, setCustomerAddress] = useState("");
+  const [labelFile, setLabelFile] = useState<File | null>(null);
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -404,12 +443,16 @@ export default function AdminOrdersMonitor() {
     setPlanOpen(true);
 
     setPickupWindow("");
-    setPickupAddress("");
+    // Prefill from the seller who owns the product and from the Shopify
+    // delivery address on the order; both stay editable.
+    setPickupAddress(o.merchant?.address || "");
+    setCustomerAddress(formatShopifyAddress(o.shippingAddress));
     setNotes("");
     setPartnerName("");
     setPartnerPhone("");
     setEtaText("");
     setTrackingUrl("");
+    setLabelFile(null);
   }
 
   async function submitPlan() {
@@ -417,11 +460,29 @@ export default function AdminOrdersMonitor() {
 
     setBusy(true);
     try {
+      // Upload the label first so a failed upload does not leave the order
+      // marked as planned without its label.
+      let shippingLabel: { url: string; name?: string } | null = null;
+      if (labelFile) {
+        try {
+          shippingLabel = await uploadAdminFile(labelFile, "/shipping-labels");
+        } catch (error) {
+          toast.error(
+            `Shipping label upload failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          return;
+        }
+      }
+
       await assignPickup({
-        orderId: planFor.id, // ✅ FIX: use the selected order's Firestore doc id
+        orderId: planFor.id, // use the selected order's Firestore doc id
         pickupWindow,
         pickupAddress,
+        customerAddress,
         notes,
+        shippingLabel,
         deliveryPartner: {
           name: partnerName,
           phone: partnerPhone,
@@ -465,7 +526,7 @@ export default function AdminOrdersMonitor() {
                 {officeStatus}
               </span>
               <span className="text-xs text-muted-foreground ml-2">
-                (Office hours: 10 AM - 8 PM)
+                (Office hours: 9 AM - 9 PM)
               </span>
             </div>
           </CardContent>
@@ -643,7 +704,7 @@ export default function AdminOrdersMonitor() {
                     <span className="font-medium">{officeStatus}</span>
                   </div>
                   <div className="text-orange-700 text-xs mt-1">
-                    Timer is paused outside office hours and will resume at 10 AM
+                    Timer is paused outside office hours and will resume at 9 AM
                   </div>
                 </div>
               )}
@@ -774,7 +835,7 @@ export default function AdminOrdersMonitor() {
                     <span className="font-medium">{officeStatus}</span>
                   </div>
                   <div className="text-orange-700 text-xs mt-1">
-                    Timer is paused and will resume at 10 AM
+                    Timer is paused and will resume at 9 AM
                   </div>
                 </div>
               )}
@@ -801,22 +862,82 @@ export default function AdminOrdersMonitor() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Input
-                  placeholder='Pickup Window (e.g. "Today 4-6 PM")'
-                  value={pickupWindow}
-                  onChange={(e) => setPickupWindow(e.target.value)}
-                />
-                <Input
-                  placeholder="Pickup Address"
-                  value={pickupAddress}
-                  onChange={(e) => setPickupAddress(e.target.value)}
-                />
-                <Input
-                  placeholder="Notes (optional)"
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                />
-                <div />
+                <div className="space-y-1.5">
+                  <Label htmlFor="plan-pickup-window">Pickup Window</Label>
+                  <Input
+                    id="plan-pickup-window"
+                    placeholder='e.g. "Today 4-6 PM"'
+                    value={pickupWindow}
+                    onChange={(e) => setPickupWindow(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="plan-notes">Notes (optional)</Label>
+                  <Input
+                    id="plan-notes"
+                    placeholder="Anything the pickup agent should know"
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="plan-pickup-address">Pickup Address</Label>
+                  <Textarea
+                    id="plan-pickup-address"
+                    rows={5}
+                    placeholder="Seller pickup address"
+                    value={pickupAddress}
+                    onChange={(e) => setPickupAddress(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {planFor?.merchant?.address
+                      ? `From ${planFor.merchant.storeName || planFor.merchant.name || "the seller"}'s profile.`
+                      : "This seller has not saved a business address yet — enter it manually."}
+                  </p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="plan-customer-address">Customer Address</Label>
+                  <Textarea
+                    id="plan-customer-address"
+                    rows={5}
+                    placeholder="Customer delivery address"
+                    value={customerAddress}
+                    onChange={(e) => setCustomerAddress(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {planFor?.shippingAddress
+                      ? "From the Shopify order."
+                      : "Shopify did not send a delivery address for this order."}
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="plan-shipping-label">
+                  Shipping Label (optional)
+                </Label>
+                <div className="flex flex-wrap items-center gap-3">
+                  <Input
+                    id="plan-shipping-label"
+                    type="file"
+                    accept="application/pdf,image/png,image/jpeg,image/jpg"
+                    className="max-w-sm"
+                    onChange={(e) => setLabelFile(e.target.files?.[0] || null)}
+                    disabled={busy}
+                  />
+                  {labelFile ? (
+                    <span className="text-xs text-muted-foreground">
+                      {labelFile.name}
+                    </span>
+                  ) : null}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  PDF or image. Uploaded on assign and shared with the seller so
+                  they can print it for the parcel.
+                </p>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
