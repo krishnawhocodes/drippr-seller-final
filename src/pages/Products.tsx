@@ -55,6 +55,19 @@ import {
 } from "firebase/firestore";
 import type { FitType, GarmentCategory, Variant } from "@/lib/types";
 import { GARMENT_SIZES, measurementsForVariant, sizesForCategory } from "@/lib/sizing";
+import {
+  COMMON_ORIGIN_CODES,
+  COUNTRIES,
+  type MaterialComponent,
+  type ProductSpecifications,
+  emptyMaterialRow,
+  emptySpecifications,
+  findCountry,
+  normalizeSpecifications,
+  currentMonthValue,
+  hasSpecifications,
+  validateSpecifications,
+} from "@/lib/productSpecs";
 
 /** ---------------- Types ---------------- */
 type StagedTarget = {
@@ -121,6 +134,7 @@ type MerchantProduct = {
   tags?: string[];
   vendor?: string | null;
   measurements?: ProductMeasurements | null;
+  specifications?: ProductSpecifications | null;
   compareAtPrice?: number | null;
   barcode?: string | null;
   weightGrams?: number | null;
@@ -160,6 +174,7 @@ type AddProductDraft = {
   variantMode?: "single" | "multiple";
   singleColor?: string;
   measurements?: ProductMeasurements | null;
+  specifications?: ProductSpecifications | null;
   variantRows?: Omit<VariantRow, "id">[]; // store variant data (no id)
 };
 
@@ -632,6 +647,25 @@ export default function Products() {
   const [draftShoulderSize, setDraftShoulderSize] = useState("");
   const [draftInseamSize, setDraftInseamSize] = useState("");
 
+  // ----- Product Specifications (mandatory for new submissions) -----
+  const [specMaterials, setSpecMaterials] = useState<MaterialComponent[]>([
+    emptyMaterialRow(),
+  ]);
+  const [specMonth, setSpecMonth] = useState("");
+  const [specCountry, setSpecCountry] = useState("");
+  const specCompositionTotal = useMemo(
+    () =>
+      specMaterials.reduce(
+        (sum, row) =>
+          sum +
+          (typeof row.percentage === "number" && Number.isFinite(row.percentage)
+            ? row.percentage
+            : 0),
+        0,
+      ),
+    [specMaterials],
+  );
+
   // shadcn <Select> values (controlled)
   const [trackInventory, setTrackInventory] = useState<"yes" | "no">("yes");
   const [statusSel, setStatusSel] = useState<"active" | "draft">("active");
@@ -678,6 +712,26 @@ export default function Products() {
     if (value === "") return null;
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function buildSpecificationsDraft(): ProductSpecifications {
+    return normalizeSpecifications({
+      ...emptySpecifications(),
+      materialComposition: specMaterials,
+      manufactureMonth: specMonth,
+      countryOfOrigin: specCountry,
+    });
+  }
+
+  function setMaterialRow(
+    index: number,
+    patch: Partial<MaterialComponent>,
+  ) {
+    setSpecMaterials((rows) =>
+      rows.map((row, rowIndex) =>
+        rowIndex === index ? { ...row, ...patch } : row,
+      ),
+    );
   }
 
   function buildMeasurementDraft(): ProductMeasurements {
@@ -729,6 +783,7 @@ export default function Products() {
       variantMode,
       singleColor: singleColor.trim() || undefined,
       measurements: buildMeasurementDraft(),
+      specifications: buildSpecificationsDraft(),
       variantRows: Object.keys(variantRows).length
         ? Object.values(variantRows).map(({ id, ...r }) => r)
         : undefined,
@@ -774,6 +829,9 @@ export default function Products() {
     setDraftLengthSize("");
     setDraftShoulderSize("");
     setDraftInseamSize("");
+    setSpecMaterials([emptyMaterialRow()]);
+    setSpecMonth("");
+    setSpecCountry("");
     // Clear any submit result so reopening a saved draft never shows the
     // previous product's "submitted successfully" banner.
     setSubmitFeedback(null);
@@ -1371,6 +1429,9 @@ export default function Products() {
     draftLengthSize,
     draftShoulderSize,
     draftInseamSize,
+    specMaterials,
+    specMonth,
+    specCountry,
     garmentCategory,
     fitType,
     fallbackSize,
@@ -1440,6 +1501,12 @@ export default function Products() {
       setDraftShoulderSize(String(saved.measurements.shoulder));
     if (saved.measurements?.inseam != null)
       setDraftInseamSize(String(saved.measurements.inseam));
+    if (saved.specifications?.materialComposition?.length)
+      setSpecMaterials(saved.specifications.materialComposition);
+    if (saved.specifications?.manufactureMonth)
+      setSpecMonth(saved.specifications.manufactureMonth);
+    if (saved.specifications?.countryOfOrigin)
+      setSpecCountry(saved.specifications.countryOfOrigin);
     if (saved.trackInventory) setTrackInventory(saved.trackInventory);
     if (saved.statusSel) setStatusSel(saved.statusSel);
     if (saved.options) setOptions(saved.options);
@@ -1816,6 +1883,10 @@ export default function Products() {
     if (!productType) return showSubmitError("Product type is required.");
     if (!seoTitle || !seoDescription)
       return showSubmitError("SEO Title and SEO Description are required.");
+
+    const specifications = buildSpecificationsDraft();
+    const specificationError = validateSpecifications(specifications);
+    if (specificationError) return showSubmitError(specificationError);
     if (variantMode === "single" && !singleColor.trim())
       return showSubmitError("Color is required for the single variant.");
     if (variantMode === "single") {
@@ -2080,6 +2151,7 @@ export default function Products() {
         sku, // <-- send to server
         seo: { title: seoTitle, description: seoDescription },
         measurements: variantMode === "single" ? measurements : null,
+        specifications,
         variantDraft,
       };
 
@@ -2140,6 +2212,44 @@ export default function Products() {
   const [eLengthSize, setELengthSize] = useState<number | "">("");
   const [eShoulderSize, setEShoulderSize] = useState<number | "">("");
   const [eInseamSize, setEInseamSize] = useState<number | "">("");
+  const [eSpecMaterials, setESpecMaterials] = useState<MaterialComponent[]>([
+    emptyMaterialRow(),
+  ]);
+  const [eSpecMonth, setESpecMonth] = useState("");
+  const [eSpecCountry, setESpecCountry] = useState("");
+  const eSpecCompositionTotal = useMemo(
+    () =>
+      eSpecMaterials.reduce(
+        (sum, row) =>
+          sum +
+          (typeof row.percentage === "number" && Number.isFinite(row.percentage)
+            ? row.percentage
+            : 0),
+        0,
+      ),
+    [eSpecMaterials],
+  );
+
+  function setEditMaterialRow(index: number, patch: Partial<MaterialComponent>) {
+    setESpecMaterials((rows) =>
+      rows.map((row, rowIndex) =>
+        rowIndex === index ? { ...row, ...patch } : row,
+      ),
+    );
+  }
+
+  /** Load a product's stored specifications into the edit drawer. */
+  function hydrateEditSpecifications(
+    specifications?: ProductSpecifications | null,
+  ) {
+    setESpecMaterials(
+      specifications?.materialComposition?.length
+        ? specifications.materialComposition
+        : [emptyMaterialRow()],
+    );
+    setESpecMonth(specifications?.manufactureMonth || "");
+    setESpecCountry(specifications?.countryOfOrigin || "");
+  }
 
   function autofillEditFallbackMeasurements(
     size: string = fallbackSize,
@@ -2363,6 +2473,7 @@ export default function Products() {
       setEInseamSize(
         typeof prod.measurements?.inseam === "number" ? prod.measurements.inseam : "",
       );
+      hydrateEditSpecifications(prod.specifications);
       const variants: ExistingVariant[] = Array.isArray(prod.variants)
         ? prod.variants.map((v: any) => ({
             id: v.id,
@@ -2485,6 +2596,7 @@ export default function Products() {
     setEInseamSize(
       typeof p.measurements?.inseam === "number" ? p.measurements.inseam : "",
     );
+    hydrateEditSpecifications(p.specifications);
     setImageAddFiles([]);
     setEditColorImageFiles({});
     setEditColorImagePreviews({});
@@ -2617,6 +2729,25 @@ export default function Products() {
         JSON.stringify(currentMeasurements)
       ) {
         payload.measurements = nextMeasurements;
+      }
+
+      // Specifications are optional here so legacy products stay editable, but
+      // anything the seller does fill in must be complete and consistent.
+      const editedSpecifications = normalizeSpecifications({
+        ...emptySpecifications(),
+        materialComposition: eSpecMaterials,
+        manufactureMonth: eSpecMonth,
+        countryOfOrigin: eSpecCountry,
+      });
+      if (hasSpecifications(editedSpecifications)) {
+        const specificationError = validateSpecifications(editedSpecifications);
+        if (specificationError) throw new Error(specificationError);
+        if (
+          JSON.stringify(editedSpecifications) !==
+          JSON.stringify(editing.specifications || null)
+        ) {
+          payload.specifications = editedSpecifications;
+        }
       }
 
       const toRemove = Object.entries(removeVariantIds)
@@ -3620,26 +3751,28 @@ export default function Products() {
                     {"\u20B9"}100 delivery is included automatically.
                   </p>
 
-                  {/* FINAL BASE PRICE DISPLAY */}
-                  <div className="mt-2 text-sm">
-                    <span className="text-muted-foreground">
-                      Final selling price:{" "}
-                    </span>
-                    <span className="font-medium">
-                      {/* compute final price for display (treat empty as 0) */}
-                      {"\u20B9"}
-                      {(
-                        Number(basePriceInput || 0) +
-                        SELLER_DELIVERY_PRICE_BUMP
-                      ).toLocaleString("en-IN", {
-                        minimumFractionDigits: 0,
-                        maximumFractionDigits: 2,
-                      })}
-                    </span>
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      (+{"\u20B9"}100 delivery)
-                    </span>
-                  </div>
+                  {/* Only meaningful once a price is entered - otherwise this
+                      showed a bare delivery charge as the selling price. */}
+                  {finitePrice(basePriceInput) != null ? (
+                    <div className="mt-2 text-sm">
+                      <span className="text-muted-foreground">
+                        Final selling price:{" "}
+                      </span>
+                      <span className="font-medium">
+                        {"\u20B9"}
+                        {(
+                          finitePrice(basePriceInput)! +
+                          SELLER_DELIVERY_PRICE_BUMP
+                        ).toLocaleString("en-IN", {
+                          minimumFractionDigits: 0,
+                          maximumFractionDigits: 2,
+                        })}
+                      </span>
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        (+{"\u20B9"}100 delivery)
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="compare-price">
@@ -3733,6 +3866,149 @@ export default function Products() {
                   </SelectContent>
                 </Select>
               </div>
+              {/* Product Specifications (required) */}
+              <div className="space-y-4 border-t pt-4">
+                <div>
+                  <h3 className="font-semibold">
+                    Product Specifications{" "}
+                    <span className="text-destructive">*</span>
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Required on every listing. These are published on the
+                    product page and used for origin filtering.
+                  </p>
+                </div>
+
+                {/* Material and composition */}
+                <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <Label>
+                        Material &amp; Composition{" "}
+                        <span className="text-destructive">*</span>
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        Exact fabric percentages, e.g. 80% Cotton + 20%
+                        Polyester. Must total 100%.
+                      </p>
+                    </div>
+                    <span
+                      className={`text-sm font-medium ${
+                        Math.abs(specCompositionTotal - 100) < 0.01
+                          ? "text-green-700"
+                          : "text-muted-foreground"
+                      }`}
+                    >
+                      Total: {Number(specCompositionTotal.toFixed(2))}%
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    {specMaterials.map((row, index) => (
+                      <div
+                        key={index}
+                        className="grid grid-cols-[1fr_120px_auto] items-center gap-2"
+                      >
+                        <Input
+                          placeholder="Material (e.g. Cotton)"
+                          value={row.material}
+                          onChange={(event) =>
+                            setMaterialRow(index, {
+                              material: event.target.value,
+                            })
+                          }
+                        />
+                        <div className="relative">
+                          <Input
+                            type="number"
+                            min={1}
+                            max={100}
+                            step="0.01"
+                            placeholder="80"
+                            className="pr-7"
+                            value={row.percentage ?? ""}
+                            onChange={(event) =>
+                              setMaterialRow(index, {
+                                percentage:
+                                  event.target.value === ""
+                                    ? null
+                                    : Number(event.target.value),
+                              })
+                            }
+                          />
+                          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                            %
+                          </span>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          aria-label="Remove material"
+                          disabled={specMaterials.length <= 1}
+                          onClick={() =>
+                            setSpecMaterials((rows) =>
+                              rows.filter(
+                                (_row, rowIndex) => rowIndex !== index,
+                              ),
+                            )
+                          }
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setSpecMaterials((rows) => [...rows, emptyMaterialRow()])
+                    }
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Add material
+                  </Button>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="manufacture-month">
+                      Month &amp; Year of Manufacture{" "}
+                      <span className="text-destructive">*</span>
+                    </Label>
+                    <Input
+                      id="manufacture-month"
+                      type="month"
+                      max={currentMonthValue()}
+                      value={specMonth}
+                      onChange={(event) => setSpecMonth(event.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      The manufacturing batch for this inventory.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="country-of-origin">
+                      Country of Origin{" "}
+                      <span className="text-destructive">*</span>
+                    </Label>
+                    <CountryCombobox
+                      id="country-of-origin"
+                      value={specCountry}
+                      onValueChange={setSpecCountry}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Picked from a fixed list so the store can search and sort
+                      by origin.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
               {/* SEO (required) */}
               <div className="space-y-4 border-t pt-4">
                 <h3 className="font-semibold">
@@ -4205,6 +4481,123 @@ export default function Products() {
                         )
                       }
                     />
+                  </div>
+                </div>
+
+                <div className="space-y-4 border-t pt-4">
+                  <div>
+                    <h3 className="font-semibold">Product Specifications</h3>
+                    <p className="text-xs text-muted-foreground">
+                      Changes here are sent to admin review before they reach
+                      the store.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <Label>Material &amp; Composition</Label>
+                      <span
+                        className={`text-sm font-medium ${
+                          Math.abs(eSpecCompositionTotal - 100) < 0.01
+                            ? "text-green-700"
+                            : "text-muted-foreground"
+                        }`}
+                      >
+                        Total: {Number(eSpecCompositionTotal.toFixed(2))}%
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {eSpecMaterials.map((row, index) => (
+                        <div
+                          key={index}
+                          className="grid grid-cols-[1fr_120px_auto] items-center gap-2"
+                        >
+                          <Input
+                            placeholder="Material (e.g. Cotton)"
+                            value={row.material}
+                            onChange={(event) =>
+                              setEditMaterialRow(index, {
+                                material: event.target.value,
+                              })
+                            }
+                          />
+                          <div className="relative">
+                            <Input
+                              type="number"
+                              min={1}
+                              max={100}
+                              step="0.01"
+                              placeholder="80"
+                              className="pr-7"
+                              value={row.percentage ?? ""}
+                              onChange={(event) =>
+                                setEditMaterialRow(index, {
+                                  percentage:
+                                    event.target.value === ""
+                                      ? null
+                                      : Number(event.target.value),
+                                })
+                              }
+                            />
+                            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                              %
+                            </span>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Remove material"
+                            disabled={eSpecMaterials.length <= 1}
+                            onClick={() =>
+                              setESpecMaterials((rows) =>
+                                rows.filter(
+                                  (_row, rowIndex) => rowIndex !== index,
+                                ),
+                              )
+                            }
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        setESpecMaterials((rows) => [...rows, emptyMaterialRow()])
+                      }
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add material
+                    </Button>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-manufacture-month">
+                        Month &amp; Year of Manufacture
+                      </Label>
+                      <Input
+                        id="edit-manufacture-month"
+                        type="month"
+                        max={currentMonthValue()}
+                        value={eSpecMonth}
+                        onChange={(event) => setESpecMonth(event.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-country-of-origin">
+                        Country of Origin
+                      </Label>
+                      <CountryCombobox
+                        id="edit-country-of-origin"
+                        value={eSpecCountry}
+                        onValueChange={setESpecCountry}
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -4862,6 +5255,110 @@ function ProductTypeCombobox(props: {
         <input type="hidden" name={name} value={value} />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Country picker backed by the fixed ISO list. Common apparel origins are
+ * surfaced first; everything else is reachable through search.
+ */
+function CountryCombobox(props: {
+  id?: string;
+  value: string;
+  onValueChange: (value: string) => void;
+}) {
+  const { id, value, onValueChange } = props;
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+
+  const { common, rest } = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    const matches = needle
+      ? COUNTRIES.filter(
+          (country) =>
+            country.name.toLowerCase().includes(needle) ||
+            country.code.toLowerCase() === needle,
+        )
+      : COUNTRIES;
+    const commonSet = new Set<string>(COMMON_ORIGIN_CODES);
+    return {
+      common: matches.filter((country) => commonSet.has(country.code)),
+      rest: matches.filter((country) => !commonSet.has(country.code)),
+    };
+  }, [query]);
+
+  const selected = findCountry(value);
+
+  const renderOption = (country: { code: string; name: string }) => (
+    <button
+      key={country.code}
+      type="button"
+      className="flex w-full items-center justify-between rounded-sm px-2 py-2 text-left text-sm hover:bg-accent"
+      onClick={() => {
+        onValueChange(country.name);
+        setQuery("");
+        setOpen(false);
+      }}
+    >
+      <span>{country.name}</span>
+      <span className="ml-3 text-xs text-muted-foreground">{country.code}</span>
+    </button>
+  );
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          id={id}
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between font-normal"
+        >
+          <span className={selected ? "" : "text-muted-foreground"}>
+            {selected?.name || "Select country of origin"}
+          </span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-[--radix-popover-trigger-width] p-0"
+        align="start"
+      >
+        <div className="border-b p-2">
+          <div className="flex items-center rounded-md border px-2">
+            <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search country..."
+              className="h-9 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+            />
+          </div>
+        </div>
+        <div
+          className="max-h-72 overflow-y-auto overscroll-contain p-1"
+          onWheel={(event) => event.stopPropagation()}
+        >
+          {common.length ? (
+            <>
+              <div className="px-2 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Common origins
+              </div>
+              {common.map(renderOption)}
+              {rest.length ? <div className="my-1 border-t" /> : null}
+            </>
+          ) : null}
+          {rest.map(renderOption)}
+          {!common.length && !rest.length ? (
+            <div className="px-2 py-3 text-sm text-muted-foreground">
+              No matching country.
+            </div>
+          ) : null}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

@@ -2,6 +2,11 @@
 import { getAdmin } from "../../_lib/firebaseAdmin.js";
 import ImageKit from "imagekit";
 import { shopifyGraphQL } from "../../_lib/shopify.js";
+import {
+  hasSpecifications,
+  normalizeSpecifications,
+  validateSpecifications,
+} from "../../_lib/productSpecs.js";
 
 const imagekit = new ImageKit({
   publicKey: process.env.IMAGEKIT_PUBLIC_KEY || "",
@@ -2290,6 +2295,29 @@ export default async function handler(req: any, res: any) {
         ) {
           changedForReview.sku = requestedSku;
           changedForReview.sellerSku = requestedSellerSku;
+        }
+      }
+
+      // Specification edits always go to admin review. Only validated when the
+      // seller actually supplies them, so legacy products without a
+      // specifications block stay editable.
+      const specificationInput =
+        changes.specifications !== undefined
+          ? changes.specifications
+          : body.specifications;
+      if (specificationInput !== undefined) {
+        const normalizedSpecifications =
+          normalizeSpecifications(specificationInput);
+        if (hasSpecifications(normalizedSpecifications)) {
+          const specificationError = validateSpecifications(
+            normalizedSpecifications,
+          );
+          if (specificationError) {
+            return res
+              .status(400)
+              .json({ ok: false, error: specificationError });
+          }
+          changedForReview.specifications = normalizedSpecifications;
         }
       }
 

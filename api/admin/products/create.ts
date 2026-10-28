@@ -1,6 +1,11 @@
 // pages/api/admin/products/create.ts
 import { getAdmin } from "../../_lib/firebaseAdmin.js";
 import { shopifyGraphQL } from "../../_lib/shopify.js";
+import {
+  normalizeSpecifications,
+  validateSpecifications,
+  type ProductSpecifications,
+} from "../../_lib/productSpecs.js";
 
 type FirestoreDeleteRef = {
   delete: () => Promise<unknown>;
@@ -195,6 +200,7 @@ function validateCreatePayload(args: {
   variantDraft: any;
   measurements: any;
   garmentCategory: any;
+  specifications: ProductSpecifications | null;
 }) {
   const title = String(args.title || "").trim();
   const description = String(args.description || "").trim();
@@ -219,6 +225,11 @@ function validateCreatePayload(args: {
   if (!seoTitle || !seoDescription) {
     return "SEO Title and SEO Description are required.";
   }
+
+  // Mandatory on every new listing. Existing products are untouched; the edit
+  // path only validates specifications the seller actually supplies.
+  const specificationError = validateSpecifications(args.specifications);
+  if (specificationError) return specificationError;
 
   const variants = Array.isArray(args.variantDraft?.variants)
     ? args.variantDraft.variants
@@ -698,12 +709,14 @@ export default async function handler(req: any, res: any) {
       sku: rawSku,
       variantDraft,
       measurements,
+      specifications,
     } = body;
 
     const sku = normSku(rawSku);
     const normalizedMeasurements = normalizeMeasurements(measurements);
     const normalizedDeliveryChargeAmount = SELLER_DELIVERY_PRICE_BUMP;
     const normalizedVariantDraft = normalizeVariantDraft(variantDraft);
+    const normalizedSpecifications = normalizeSpecifications(specifications);
     const normalizedVariantMode = inferVariantMode(
       variantMode,
       normalizedVariantDraft,
@@ -723,6 +736,7 @@ export default async function handler(req: any, res: any) {
       variantDraft: normalizedVariantDraft,
       measurements: normalizedMeasurements,
       garmentCategory,
+      specifications: normalizedSpecifications,
     });
     if (validationError) {
       return res.status(400).json({ ok: false, error: validationError });
@@ -835,6 +849,7 @@ export default async function handler(req: any, res: any) {
       variantDraft: normalizedVariantDraft,
       variantMeasurements,
       measurements: normalizedMeasurements,
+      specifications: normalizedSpecifications,
       adminNotes: null,
       createdAt: now,
       updatedAt: now,

@@ -91,7 +91,75 @@ type QueueProduct = {
   variantDraft?: VariantDraft | null;
   changeSummary?: ChangeSummary | null; // present for updates
   adminNotes?: string;
+  specifications?: {
+    materialComposition?: { material?: string; percentage?: number | null }[];
+    materialCompositionText?: string;
+    manufactureMonth?: string;
+    manufactureMonthLabel?: string;
+    countryOfOrigin?: string;
+    countryOfOriginCode?: string;
+  } | null;
 };
+
+function SpecificationsPanel({
+  specifications,
+}: {
+  specifications: QueueProduct["specifications"];
+}) {
+  const rows: Array<[string, string]> = [
+    ["Material & Composition", specifications?.materialCompositionText || ""],
+    [
+      "Manufactured",
+      specifications?.manufactureMonthLabel ||
+        specifications?.manufactureMonth ||
+        "",
+    ],
+    [
+      "Country of Origin",
+      specifications?.countryOfOrigin
+        ? `${specifications.countryOfOrigin}${
+            specifications.countryOfOriginCode
+              ? ` (${specifications.countryOfOriginCode})`
+              : ""
+          }`
+        : "",
+    ],
+  ];
+
+  const anyValue = rows.some(([, value]) => value);
+
+  return (
+    <div className="space-y-2">
+      <h4 className="font-semibold">Product Specifications</h4>
+      {anyValue ? (
+        <div className="overflow-hidden rounded-md border">
+          <table className="w-full text-sm">
+            <tbody>
+              {rows.map(([label, value]) => (
+                <tr key={label} className="border-t first:border-t-0">
+                  <td className="w-52 bg-muted/40 p-2 font-medium align-top">
+                    {label}
+                  </td>
+                  <td className="p-2">
+                    {value || (
+                      <span className="text-muted-foreground">Not provided</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          This product was submitted before specifications became mandatory, so
+          it has none recorded. Nothing will be written to the Shopify
+          specification metafields on approval.
+        </p>
+      )}
+    </div>
+  );
+}
 
 const PLACEHOLDER = "https://placehold.co/96x96?text=IMG";
 
@@ -743,6 +811,8 @@ export default function ProductQueue() {
                     </p>
                   </div>
                 </div>
+
+                <SpecificationsPanel specifications={selected.specifications} />
 
                 {/* Variant Draft (from seller) */}
                 <VariantDraftPreview variantDraft={selected.variantDraft} />

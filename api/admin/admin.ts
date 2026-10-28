@@ -2,6 +2,10 @@
 import { getAdmin } from "../_lib/firebaseAdmin.js";
 import { shopifyGraphQL } from "../_lib/shopify.js";
 import ImageKit from "imagekit";
+import {
+  buildSpecificationMetafields,
+  normalizeSpecifications,
+} from "../_lib/productSpecs.js";
 
 const MEASUREMENT_METAFIELD_NAMESPACE = "garment_sizing";
 
@@ -2528,6 +2532,56 @@ async function syncMeasurementsToShopify(
   await setMetafieldsInBatches(metafields);
 }
 
+/**
+ * Publishes the Product Specifications block to Shopify.
+ *
+ * The metafields are the contract with the theme. Shopify's native
+ * `countryCodeOfOrigin` on the inventory item is also set where possible,
+ * because that is the field Shopify itself uses for customs and for sorting by
+ * origin - but only best effort: an ISO code Shopify will not accept must not
+ * fail an otherwise good approval.
+ */
+async function syncSpecificationsToShopify(
+  productId: string | undefined,
+  rawSpecifications: unknown,
+) {
+  const specifications = normalizeSpecifications(rawSpecifications);
+  const fields = buildSpecificationMetafields(specifications);
+  if (!productId || !fields?.length) return { metafields: 0, originSet: 0 };
+
+  await setMetafieldsInBatches(
+    fields.map((field) => ({ ...field, ownerId: productId })),
+  );
+
+  let originSet = 0;
+  const code = specifications?.countryOfOriginCode || "";
+  if (code) {
+    try {
+      const result = await shopifyGraphQL(PRODUCT_VARIANTS_FOR_REPAIR, {
+        id: productId,
+      });
+      const inventoryItemIds = (result?.data?.product?.variants?.nodes || [])
+        .map(
+          (variant: { inventoryItem?: { id?: string } }) =>
+            variant?.inventoryItem?.id,
+        )
+        .filter(Boolean);
+      for (const inventoryItemId of inventoryItemIds) {
+        const update = await shopifyGraphQL(INVENTORY_ITEM_UPDATE, {
+          id: inventoryItemId,
+          input: { countryCodeOfOrigin: code },
+        });
+        const errors = update?.data?.inventoryItemUpdate?.userErrors || [];
+        if (!errors.length) originSet += 1;
+      }
+    } catch (error) {
+      console.warn("Country of origin sync skipped:", error);
+    }
+  }
+
+  return { metafields: fields.length, originSet };
+}
+
 async function syncVariantMeasurementsToShopify(variantMeasurements: any[]) {
   const normalized = normalizeVariantMeasurements(variantMeasurements);
   const variantsWithSizing = normalized.filter((variant) =>
@@ -3091,6 +3145,23 @@ export default async function handler(req: any, res: any) {
             `Product approved, but product measurement sync failed: ${String(error?.message || error)}`,
           );
         }
+        const approvedSpecifications =
+          approvalUpdates.specifications !== undefined
+            ? approvalUpdates.specifications
+            : qdoc.specifications;
+        try {
+          await syncSpecificationsToShopify(
+            shopifyResult.productId,
+            approvedSpecifications,
+          );
+        } catch (error) {
+          warnings.push(
+            `Product approved, but product specification sync failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+
         let variantSizingSync = { variants: 0, metafields: 0 };
         try {
           variantSizingSync = await syncVariantMeasurementsToShopify(
