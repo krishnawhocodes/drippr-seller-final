@@ -1,5 +1,11 @@
 import { useState, useEffect } from "react";
-import { getPublicationId, setPublicationId } from "@/lib/adminApi";
+import {
+  getPublicationId,
+  setPublicationId,
+  listShopifyWebhooks,
+  registerShopifyWebhooks,
+  createTestDiscount,
+} from "@/lib/adminApi";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -34,13 +40,7 @@ export default function AdminSettings() {
   const checkWebhooks = async () => {
     setChecking(true);
     try {
-      const u = auth.currentUser;
-      if (!u) throw new Error("Not signed in");
-      const idToken = await u.getIdToken(true);
-      const r = await fetch("/api/admin/webhooks/list", {
-        headers: { Authorization: `Bearer ${idToken}` },
-      });
-      const data = await r.json();
+      const data = await listShopifyWebhooks();
       setWebhookStatus(data.webhooks || []);
       toast.success(`Found ${(data.webhooks || []).length} registered webhook(s)`);
     } catch (err: any) {
@@ -53,18 +53,7 @@ export default function AdminSettings() {
   const registerWebhooks = async () => {
     setRegistering(true);
     try {
-      const u = auth.currentUser;
-      if (!u) throw new Error("Not signed in");
-      const idToken = await u.getIdToken(true);
-      const r = await fetch("/api/admin/webhooks/register", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${idToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({}),
-      });
-      const data = await r.json();
+      const data = await registerShopifyWebhooks();
       if (data.ok) {
         toast.success("All webhooks registered successfully!");
         setWebhookStatus(null);
@@ -184,21 +173,10 @@ export default function AdminSettings() {
               setCreatingDiscount(true);
               setDiscountResult(null);
               try {
-                const u = auth.currentUser;
-                if (!u) throw new Error("Not signed in");
-                const idToken = await u.getIdToken(true);
-                const r = await fetch("/api/admin/discounts/create", {
-                  method: "POST",
-                  headers: {
-                    Authorization: `Bearer ${idToken}`,
-                    "Content-Type": "application/json",
-                  },
-                  body: JSON.stringify({
-                    code: "Testing-shopify-orderplacing-10000000",
-                    title: "Internal Testing - 100% Off",
-                  }),
-                });
-                const data = await r.json();
+                const data = await createTestDiscount(
+                  "Testing-shopify-orderplacing-10000000",
+                  "Internal Testing - 100% Off",
+                );
                 setDiscountResult(data);
                 if (data.ok) {
                   toast.success("Discount code created: " + (data.discount?.code || ""));

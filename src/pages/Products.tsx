@@ -1657,13 +1657,13 @@ export default function Products() {
         fileSize: f.size,
       })),
     };
-    const r = await fetch("/api/admin/uploads/start", {
+    const r = await fetch("/api/admin/products/update", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${idToken}`,
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ op: "imagesStage", ...payload }),
     });
     const j = await r.json();
     if (!r.ok || !j.ok)

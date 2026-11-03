@@ -2,90 +2,137 @@ rules_version = '2';
 
 // DRIPPR seller panel - Firestore security rules.
 //
-// Scope: these rules govern the BROWSER only. Every serverless function in
+// This file mirrors the rules deployed on the project so the repo is the
+// source of truth. Scope: these govern the BROWSER only. Every function in
 // api/ uses the Firebase Admin SDK, which bypasses rules entirely, so the
 // panel's privileged work (approvals, Shopify sync, order transitions, admin
-// reads) is unaffected by anything here and is gated by ADMIN_UIDS instead.
+// reads) is gated by the ADMIN_UIDS allowlist instead.
 //
-// The browser only ever needs to:
-//   - read and write its own merchants/{uid} profile
-//   - read its own products, orders, stats, payouts and media
-//   - read its own support tickets, and create new ones
-// Everything else is denied, so one seller can never see another's data.
-//
-// NOTE: adding this file does not deploy it. Deploy with:
-//   firebase deploy --only firestore:rules
+// Deploy with:  firebase deploy --only firestore:rules
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    /* ---------- helpers ---------- */
     function signedIn() {
       return request.auth != null;
     }
 
-    function isSelf(uid) {
-      return signedIn() && request.auth.uid == uid;
+    // Admin if /admins/{uid}.enabled == true
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.enabled == true;
     }
 
-    // True when the document being read belongs to the caller.
-    function ownsExisting() {
+    // Per-document owner check.
+    //
+    // This is also the correct form for `list`: rules are evaluated against
+    // every document a query would return, so a query that is not already
+    // filtered to the caller simply fails. An earlier version used a
+    // `request.query.where(...)` helper, but `request.query` only exposes
+    // limit / offset / orderBy - there is no `where` - so that call raised an
+    // error and silently denied sellers access to their own support tickets.
+    function isOwnerByMerchantId() {
       return signedIn() && resource.data.merchantId == request.auth.uid;
     }
 
-    // True when the document being written is stamped with the caller's uid.
-    function ownsIncoming() {
-      return signedIn() && request.resource.data.merchantId == request.auth.uid;
+    function sellerUpdateDoesNotTouchAdminSupportFields() {
+      let disallowed = ['adminReply','adminUid','assigneeUid','internalNotes','resolvedAt','status'];
+      return request.resource.data.diff(resource.data).changedKeys().hasAny(disallowed) == false;
     }
 
-    // Seller profile: the only collection the browser writes directly.
+    function sellerUpdateDoesNotTouchAdminProfileFields() {
+      let disallowed = ['enabled','role','isAdmin','createdAt'];
+      return request.resource.data.diff(resource.data).changedKeys().hasAny(disallowed) == false;
+    }
+
+    /* ---------- admins ---------- */
+    match /admins/{uid} {
+      allow get:  if signedIn() && request.auth.uid == uid;
+      allow list: if isAdmin();
+      allow create, update, delete: if false; // server only
+    }
+
+    /* ---------- merchants (seller profiles) ---------- */
     match /merchants/{uid} {
-      allow read: if isSelf(uid);
-      allow create, update: if isSelf(uid);
+      allow get:  if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create: if signedIn() && request.auth.uid == uid;
+      allow update: if signedIn() && (
+        (request.auth.uid == uid && sellerUpdateDoesNotTouchAdminProfileFields()) || isAdmin()
+      );
       allow delete: if false;
     }
 
-    // Written by the API on approval and by Shopify sync. Read-only here.
-    match /merchantProducts/{productId} {
-      allow read: if ownsExisting();
-      allow write: if false;
+    /* ---------- merchantProducts (Shopify mirror) ---------- */
+    match /merchantProducts/{docId} {
+      allow get:  if signedIn() && (isOwnerByMerchantId() || isAdmin());
+      allow list: if signedIn() && (isAdmin() || isOwnerByMerchantId());
+      allow create, update, delete: if false; // server only
     }
 
-    // Written by the Shopify webhooks and the order workflow endpoints.
+    /* ---------- orders (per-merchant order mirror) ---------- */
     match /orders/{orderId} {
-      allow read: if ownsExisting();
-      allow write: if false;
+      allow get:  if signedIn() && (isOwnerByMerchantId() || isAdmin());
+      allow list: if signedIn() && (isAdmin() || isOwnerByMerchantId());
+      // Written by the Shopify webhooks and the order workflow endpoints.
+      allow create, update, delete: if false;
     }
 
-    // Aggregates maintained by the orders/create webhook.
+    /* ---------- merchantStats (dashboard counters) ---------- */
     match /merchantStats/{uid} {
-      allow read: if isSelf(uid);
-      allow write: if false;
+      allow get:  if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
     }
 
+    /* ---------- payouts ---------- */
     match /payouts/{payoutId} {
-      allow read: if ownsExisting();
-      allow write: if false;
+      allow get:  if signedIn() && (isOwnerByMerchantId() || isAdmin());
+      allow list: if signedIn() && (isAdmin() || isOwnerByMerchantId());
+      allow create, update, delete: if false;
     }
 
-    // Saved by the API after an ImageKit upload.
-    match /merchantMedia/{mediaId} {
-      allow read: if ownsExisting();
-      allow write: if false;
-    }
-
-    // Sellers raise tickets from the browser; only the admin API may reply,
-    // change status or delete, so a seller cannot rewrite their own history.
+    /* ---------- supportRequests ---------- */
     match /supportRequests/{ticketId} {
-      allow read: if ownsExisting();
-      allow create: if ownsIncoming()
-                    && request.resource.data.status == 'pending';
+      allow get:  if signedIn() && (isOwnerByMerchantId() || isAdmin());
+      allow list: if signedIn() && (isAdmin() || isOwnerByMerchantId());
+
+      allow create: if signedIn() && request.resource.data.merchantId == request.auth.uid;
+
+      allow update: if signedIn() && (
+        isAdmin() || (isOwnerByMerchantId() && sellerUpdateDoesNotTouchAdminSupportFields())
+      );
+
+      allow delete: if false;
+    }
+
+    /* ---------- merchantMedia (seller image library) ---------- */
+    match /merchantMedia/{docId} {
+      allow get:  if signedIn() && (isOwnerByMerchantId() || isAdmin());
+      allow list: if signedIn() && (isAdmin() || isOwnerByMerchantId());
+      allow create, update, delete: if false; // server only
+    }
+
+    /* ---------- productUpdates (legacy seller edit queue) ---------- */
+    // Nothing in the current panel reads or writes this collection; seller
+    // edits now go through merchantProducts.pendingUpdates. Kept so any
+    // historical documents stay protected.
+    match /productUpdates/{docId} {
+      allow get:  if signedIn() && (isOwnerByMerchantId() || isAdmin());
+      allow list: if signedIn() && (isAdmin() || isOwnerByMerchantId());
+      allow create: if signedIn() && request.resource.data.merchantId == request.auth.uid;
       allow update, delete: if false;
     }
 
-    // Internal collections the browser must never touch: skuClaims,
-    // shopifyProductOwners, adminSettings, webhookEvents, admins.
-    match /{document=**} {
-      allow read, write: if false;
-    }
+    /* ---------- server-only collections ---------- */
+    // skuClaims, shopifyProductOwners and adminSettings are also covered by
+    // the default deny below.
+    match /webhookEvents/{id} { allow read, write: if false; }
+    match /debugWrites/{id}   { allow read, write: if false; }
+
+    /* ---------- default deny ---------- */
+    match /{document=**} { allow read, write: if false; }
   }
 }

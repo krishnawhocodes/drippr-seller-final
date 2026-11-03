@@ -169,6 +169,20 @@ export const updateMerchant = (uid: string, patch: Record<string, any>) =>
 
 export const adminMe = () => call("admin.me");
 
+/**
+ * Shopify webhook management and the internal test coupon.
+ *
+ * These were standalone serverless functions. They are admin-only and the
+ * gateway already enforces that, so they were folded in to stay within the
+ * hosting plan's function budget.
+ */
+export const listShopifyWebhooks = () => call("webhooks.list");
+
+export const registerShopifyWebhooks = () => call("webhooks.register");
+
+export const createTestDiscount = (code: string, title?: string) =>
+  call("discounts.create", { code, title });
+
 export const dashboardOverview = () => call("dashboard.overview");
 
 export const ordersList = (params: { limit?: number } = {}) =>

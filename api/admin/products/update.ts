@@ -700,7 +700,9 @@ const INVENTORY_SET_ON_HAND = /* GraphQL */ `
   }
 `;
 
-// stage uploads (same as /uploads/start)
+// Staged Shopify uploads. This is the single entry point for seller image
+// uploads (op: "imagesStage"); the old /api/admin/uploads/start duplicate was
+// removed to stay within the hosting plan's serverless function budget.
 const STAGED_UPLOADS_CREATE = /* GraphQL */ `
   mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
     stagedUploadsCreate(input: $input) {

@@ -708,6 +708,95 @@ function normalizeSupportTicket(id: string, data: RawSupportTicket) {
   };
 }
 
+/** Public base URL of this deployment, for Shopify webhook callbacks. */
+function baseUrlFromReq(req: {
+  headers: Record<string, unknown>;
+}): string {
+  const envBase = (process.env.APP_BASE_URL || "").trim();
+  if (envBase) return envBase.replace(/\/$/, "");
+  const proto = String(req.headers["x-forwarded-proto"] || "https");
+  const host = String(req.headers.host || "");
+  return `${proto}://${host}`;
+}
+
+const SHOPIFY_WEBHOOK_TARGETS = [
+  { topic: "orders/create", path: "/api/webhooks/shopify/orders-create" },
+  { topic: "orders/updated", path: "/api/webhooks/shopify/orders-updated" },
+  { topic: "fulfillments/create", path: "/api/webhooks/shopify/fulfillments-create" },
+  { topic: "fulfillments/update", path: "/api/webhooks/shopify/fulfillments-update" },
+];
+
+type WebhookUpsertResult = {
+  ok: boolean;
+  topic: string;
+  address: string;
+  id?: number;
+  already?: boolean;
+  error?: unknown;
+};
+
+/** Registers one webhook, deduplicating on the callback address. */
+async function upsertShopifyWebhook(
+  shop: string,
+  api: string,
+  adminToken: string,
+  topic: string,
+  address: string,
+): Promise<WebhookUpsertResult> {
+  const headers = {
+    "X-Shopify-Access-Token": adminToken,
+    "Content-Type": "application/json",
+  };
+
+  const lookup = await fetch(
+    `https://${shop}/admin/api/${api}/webhooks.json?topic=${encodeURIComponent(topic)}`,
+    { headers },
+  );
+  const existing = await lookup.json().catch(() => ({}) as any);
+  if (lookup.ok) {
+    const found = (existing.webhooks || []).find(
+      (hook: { address?: string }) => hook.address === address,
+    );
+    if (found) return { ok: true, topic, address, id: found.id, already: true };
+  }
+
+  const created = await fetch(`https://${shop}/admin/api/${api}/webhooks.json`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ webhook: { topic, address, format: "json" } }),
+  });
+  const data = await created.json().catch(() => ({}) as any);
+  if (!created.ok) {
+    return { ok: false, topic, address, error: data?.errors || data };
+  }
+  return { ok: true, topic, address, id: data?.webhook?.id };
+}
+
+const DISCOUNT_CODE_BASIC_CREATE = /* GraphQL */ `
+  mutation discountCodeBasicCreate($basicCodeDiscount: DiscountCodeBasicInput!) {
+    discountCodeBasicCreate(basicCodeDiscount: $basicCodeDiscount) {
+      codeDiscountNode {
+        id
+        codeDiscount {
+          ... on DiscountCodeBasic {
+            title
+            status
+            codes(first: 1) {
+              nodes {
+                code
+              }
+            }
+          }
+        }
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
 function throwUserErrors(result: any, path: string) {
   const errors = path
     .split(".")
@@ -2809,6 +2898,98 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({
           ok: true,
           publicationId: snap.exists ? snap.data()?.publicationId || null : null,
+        });
+      }
+
+      case "webhooks.list": {
+        const shop = process.env.SHOPIFY_STORE_DOMAIN || "";
+        const api = process.env.SHOPIFY_API_VERSION || "2025-01";
+        const adminToken = process.env.SHOPIFY_ADMIN_TOKEN || "";
+        if (!shop || !adminToken) {
+          return res
+            .status(400)
+            .json({ ok: false, error: "Shopify env vars missing" });
+        }
+        const resp = await fetch(
+          `https://${shop}/admin/api/${api}/webhooks.json`,
+          {
+            headers: {
+              "X-Shopify-Access-Token": adminToken,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+        const data = await resp.json().catch(() => ({}) as any);
+        return res.status(resp.ok ? 200 : 400).json({ ok: resp.ok, ...data });
+      }
+
+      case "webhooks.register": {
+        const shop = process.env.SHOPIFY_STORE_DOMAIN || "";
+        const api = process.env.SHOPIFY_API_VERSION || "2025-01";
+        const adminToken = process.env.SHOPIFY_ADMIN_TOKEN || "";
+        if (!shop || !adminToken) {
+          return res
+            .status(400)
+            .json({ ok: false, error: "Shopify env vars missing" });
+        }
+        const base = baseUrlFromReq(req);
+        const results: WebhookUpsertResult[] = [];
+        for (const target of SHOPIFY_WEBHOOK_TARGETS) {
+          results.push(
+            await upsertShopifyWebhook(
+              shop,
+              api,
+              adminToken,
+              target.topic,
+              `${base}${target.path}`,
+            ),
+          );
+        }
+        const failed = results.filter((result) => !result.ok);
+        // 207 keeps the successful rows visible when only some fail.
+        return res.status(failed.length ? 207 : 200).json({
+          ok: failed.length === 0,
+          results,
+        });
+      }
+
+      case "discounts.create": {
+        const code = String(body.code || "").trim();
+        if (!code) {
+          return res
+            .status(400)
+            .json({ ok: false, error: "Missing 'code' in request body" });
+        }
+        const result = await shopifyGraphQL(DISCOUNT_CODE_BASIC_CREATE, {
+          basicCodeDiscount: {
+            title: String(body.title || code || "Admin Test Discount"),
+            code,
+            startsAt: new Date().toISOString(),
+            customerGets: {
+              value: { percentage: 1.0 },
+              items: { all: true },
+            },
+            customerSelection: { all: true },
+            usageLimit: null,
+            appliesOncePerCustomer: false,
+          },
+        });
+        const userErrors =
+          result?.data?.discountCodeBasicCreate?.userErrors || [];
+        if (userErrors.length) {
+          return res
+            .status(400)
+            .json({ ok: false, error: "Shopify userErrors", userErrors });
+        }
+        const created = result?.data?.discountCodeBasicCreate?.codeDiscountNode;
+        return res.status(200).json({
+          ok: true,
+          discount: {
+            id: created?.id,
+            title: created?.codeDiscount?.title,
+            status: created?.codeDiscount?.status,
+            code: created?.codeDiscount?.codes?.nodes?.[0]?.code || code,
+          },
         });
       }
 
