@@ -1,50 +1,55 @@
 // src/lib/generateInvoicePdf.ts
-// Professional Tax Invoice / Billing Slip PDF — matches Delhivery invoice format exactly
-// Used by both seller panel (billing slip) and admin (invoice)
+// Professional GST tax invoice for a DRIPPR marketplace order.
+//
+// This is the invoice ONLY. The shipping label is a separate artefact uploaded
+// by the admin when an order ships out of city, and is never mixed in here.
+//
+// All money comes from src/lib/invoiceTax.ts, which derives every figure
+// backwards from the tax-inclusive amount the customer actually paid, so the
+// grand total on this document always equals the amount charged.
 
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import {
+  amountInWords,
+  buildInvoiceTotals,
+  invoiceNumberFor,
+  type InvoiceTotals,
+  type SourceLineItem,
+} from "./invoiceTax";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
-export type InvoiceLineItem = {
-  title: string;
-  name?: string;            // full name from Shopify (title - variant)
-  sku?: string;
-  quantity: number;
-  price: number;            // unit price
-  total: number;            // price × quantity (before discount)
-  discount?: number;        // per-line discount amount
-  discountedTotal?: number; // total after discount
-  variantTitle?: string;    // e.g. "32 / Black"
+export type InvoiceLineItem = SourceLineItem & {
   variant_id?: string;
   product_id?: string;
+};
+
+export type InvoiceAddress = {
+  name?: string;
+  address1?: string;
+  address2?: string;
+  city?: string;
+  province?: string;
+  zip?: string;
+  country?: string;
+  phone?: string;
 };
 
 export type InvoiceOrder = {
   orderNumber?: string;
   shopifyOrderId: string;
-  createdAt: number;           // epoch ms
+  createdAt: number;
   lineItems?: InvoiceLineItem[];
   subtotal?: number;
   discountedSubtotal?: number;
   totalDiscounts?: number;
   totalPrice?: number;
   currency?: string;
-
-  // Customer info
+  financialStatus?: string | null;
   customerEmail?: string | null;
   customerName?: string | null;
-  shippingAddress?: {
-    name?: string;
-    address1?: string;
-    address2?: string;
-    city?: string;
-    province?: string;
-    zip?: string;
-    country?: string;
-    phone?: string;
-  } | null;
+  shippingAddress?: InvoiceAddress | null;
 };
 
 export type InvoiceMerchant = {
@@ -52,536 +57,480 @@ export type InvoiceMerchant = {
   businessName?: string;
   name?: string;
   address?: string;
+  city?: string;
+  state?: string;
+  pincode?: string;
   gstin?: string;
   phone?: string;
   email?: string;
 };
 
 export type InvoiceOptions = {
+  /** "invoice" marks the recipient copy, "billing_slip" the supplier copy. */
   type: "billing_slip" | "invoice";
   order: InvoiceOrder;
   merchant?: InvoiceMerchant | null;
 };
 
+// ─── Layout constants ────────────────────────────────────────────────
+
+const PAGE_W = 210;
+const MARGIN = 12;
+const CONTENT_W = PAGE_W - MARGIN * 2;
+const INK: [number, number, number] = [17, 17, 17];
+const MUTED: [number, number, number] = [110, 110, 110];
+const RULE: [number, number, number] = [205, 205, 205];
+const WASH: [number, number, number] = [246, 246, 246];
+
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 function fmtDate(ms: number): string {
-  const d = new Date(ms);
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const yyyy = d.getFullYear();
-  return `${dd}.${mm}.${yyyy}`;
+  const d = new Date(ms || Date.now());
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}`;
 }
 
-function fmtMoney(v: number): string {
-  return `Rs.${v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/** jsPDF's core fonts have no rupee glyph, so money is prefixed "Rs." */
+function money(value: number): string {
+  return `Rs.${(Number(value) || 0).toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
-function generateInvoiceNumber(orderId: string): string {
-  // Generate a short alphanumeric hash from the order ID (like reference: m5tna272278)
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  let hash = "";
-  for (let i = 0; i < 10; i++) {
-    const code = orderId.charCodeAt(i % orderId.length) + i * 7;
-    hash += chars[code % chars.length];
-  }
-  return hash;
+function cleanLines(values: Array<string | undefined | null>) {
+  return values.map((v) => String(v || "").trim()).filter(Boolean);
 }
 
-// Load the Drippr logo from the public folder and return as base64 data URL
+function formatAddress(address?: InvoiceAddress | null) {
+  if (!address) return [] as string[];
+  const cityLine = cleanLines([
+    address.city,
+    address.province,
+    address.zip,
+  ]).join(", ");
+  return cleanLines([
+    address.address1,
+    address.address2,
+    cityLine,
+    address.country,
+    address.phone ? `Phone: ${address.phone}` : "",
+  ]);
+}
+
+function sellerAddressLines(merchant?: InvoiceMerchant | null) {
+  if (!merchant) return [] as string[];
+  const cityLine = cleanLines([
+    merchant.city,
+    merchant.state,
+    merchant.pincode,
+  ]).join(", ");
+  return cleanLines([merchant.address, cityLine]);
+}
+
+function paymentMode(order: InvoiceOrder) {
+  const status = String(order.financialStatus || "").toLowerCase();
+  if (status === "paid" || status === "partially_paid") return "Prepaid";
+  if (status === "pending" || status === "authorized") return "Pay on Delivery";
+  return status ? status.replace(/_/g, " ") : "Prepaid";
+}
+
+/** Loads the DRIPPR mark as a data URL. Returns null if it cannot be read. */
 async function loadLogo(): Promise<string | null> {
-  try {
-    const response = await fetch("/logo_rounded.png");
-    if (!response.ok) return null;
-    const blob = await response.blob();
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(blob);
-    });
-  } catch {
-    return null;
+  for (const path of ["/logo_small.png", "/logo_rounded.png"]) {
+    try {
+      const response = await fetch(path);
+      if (!response.ok) continue;
+      const blob = await response.blob();
+      const dataUrl = await new Promise<string | null>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(blob);
+      });
+      if (dataUrl) return dataUrl;
+    } catch {
+      /* try the next candidate */
+    }
   }
+  return null;
 }
 
-// Rotate an image using an offscreen canvas
-async function createRotatedImage(dataUrl: string, angleDeg: number): Promise<string | null> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      const rad = (angleDeg * Math.PI) / 180;
-      const sin = Math.abs(Math.sin(rad));
-      const cos = Math.abs(Math.cos(rad));
-      const newW = Math.ceil(img.width * cos + img.height * sin);
-      const newH = Math.ceil(img.width * sin + img.height * cos);
+// ─── Section renderers ───────────────────────────────────────────────
 
-      const canvas = document.createElement("canvas");
-      canvas.width = newW;
-      canvas.height = newH;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) { resolve(null); return; }
+function drawHeader(
+  doc: jsPDF,
+  y: number,
+  logo: string | null,
+  copyLabel: string,
+) {
+  const boxH = 26;
+  doc.setDrawColor(...RULE);
+  doc.setLineWidth(0.3);
+  doc.rect(MARGIN, y, CONTENT_W, boxH);
 
-      ctx.translate(newW / 2, newH / 2);
-      ctx.rotate(rad);
-      ctx.drawImage(img, -img.width / 2, -img.height / 2);
-      resolve(canvas.toDataURL("image/png"));
-    };
-    img.onerror = () => resolve(null);
-    img.src = dataUrl;
-  });
+  doc.setTextColor(...INK);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(17);
+  doc.text("TAX INVOICE", MARGIN + 5, y + 11);
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8.5);
+  doc.setTextColor(...MUTED);
+  doc.text(copyLabel, MARGIN + 5, y + 18);
+
+  // DRIPPR mark, top right, square aspect preserved.
+  const logoSize = 17;
+  const logoX = MARGIN + CONTENT_W - logoSize - 5;
+  const logoY = y + (boxH - logoSize) / 2;
+  if (logo) {
+    try {
+      doc.addImage(logo, "PNG", logoX, logoY, logoSize, logoSize);
+    } catch {
+      /* fall through to the wordmark */
+    }
+  }
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.setTextColor(...INK);
+  doc.text("DRIPPR", logoX - 3, y + boxH / 2 + 1.5, { align: "right" });
+
+  return y + boxH;
 }
 
-// Parse variant title into size + color (Shopify convention: "Size / Color")
-function parseVariant(variantTitle?: string | null): { size: string; color: string } {
-  if (!variantTitle) return { size: "-", color: "-" };
-  const parts = variantTitle.split("/").map((s) => s.trim());
-  return {
-    size: parts[0] || "-",
-    color: parts[1] || "-",
+function drawParties(
+  doc: jsPDF,
+  y: number,
+  order: InvoiceOrder,
+  merchant: InvoiceMerchant | null | undefined,
+  totals: InvoiceTotals,
+) {
+  const halfW = CONTENT_W / 2;
+  const padX = 5;
+  const headerH = 7;
+
+  const buyerName =
+    order.shippingAddress?.name ||
+    order.customerName ||
+    order.customerEmail ||
+    "Customer";
+  const buyerLines = formatAddress(order.shippingAddress);
+  if (!buyerLines.length && order.customerEmail) {
+    buyerLines.push(String(order.customerEmail));
+  }
+
+  const sellerName =
+    merchant?.businessName ||
+    merchant?.storeName ||
+    merchant?.name ||
+    "DRIPPR Marketplace Seller";
+  const sellerLines = sellerAddressLines(merchant);
+
+  // Measure both columns first so the two halves share one height.
+  const wrap = (lines: string[]) =>
+    lines.flatMap((line) => doc.splitTextToSize(line, halfW - padX * 2));
+  doc.setFontSize(8.5);
+  const buyerWrapped = wrap(buyerLines);
+  const sellerWrapped = wrap(sellerLines);
+  const rows = Math.max(buyerWrapped.length, sellerWrapped.length);
+  const boxH = headerH + 6 + rows * 4 + 7;
+
+  doc.setDrawColor(...RULE);
+  doc.rect(MARGIN, y, CONTENT_W, boxH);
+  doc.line(MARGIN + halfW, y, MARGIN + halfW, y + boxH);
+
+  doc.setFillColor(...WASH);
+  doc.rect(MARGIN + 0.15, y + 0.15, CONTENT_W - 0.3, headerH - 0.3, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.setTextColor(...INK);
+  doc.text("BILL TO / SHIP TO", MARGIN + padX, y + 4.8);
+  doc.text("SOLD BY", MARGIN + halfW + padX, y + 4.8);
+
+  const writeColumn = (
+    x: number,
+    name: string,
+    lines: string[],
+    footer: string,
+  ) => {
+    let cursor = y + headerH + 5;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.5);
+    doc.setTextColor(...INK);
+    doc.text(name, x, cursor);
+    cursor += 4.5;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.setTextColor(60, 60, 60);
+    for (const line of lines) {
+      doc.text(line, x, cursor);
+      cursor += 4;
+    }
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(...INK);
+    doc.text(footer, x, y + boxH - 2.5);
   };
+
+  writeColumn(
+    MARGIN + padX,
+    buyerName,
+    buyerWrapped,
+    `Place of Supply: ${totals.placeOfSupply || "-"}`,
+  );
+  writeColumn(
+    MARGIN + halfW + padX,
+    sellerName,
+    sellerWrapped,
+    `GSTIN: ${merchant?.gstin || "Not provided"}`,
+  );
+
+  return y + boxH;
 }
 
-// ─── Main Generator ──────────────────────────────────────────────────
-
-export async function generateInvoicePdf(options: InvoiceOptions): Promise<Blob> {
-  const { type, order, merchant } = options;
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-  const pageW = doc.internal.pageSize.getWidth();   // 210
-  const margin = 10;
-  const contentW = pageW - margin * 2;
-
-  // Load logo and pre-rotate for top-right placement
-  const logoData = await loadLogo();
-  let rotatedLogoData: string | null = null;
-  if (logoData) {
-    try {
-      rotatedLogoData = await createRotatedImage(logoData, 45);
-    } catch { /* skip */ }
-  }
-
-  let y = margin;
-
-  // Common data
-  const addr = order.shippingAddress;
-  const customerName = addr?.name || order.customerName || order.customerEmail || "—";
-  const sellerName = merchant?.businessName || merchant?.storeName || merchant?.name || "Drippr Marketplace Seller";
-  const items = order.lineItems || [];
-
-  // ═══════════════════════════════════════════════════════════════════
-  //  SECTION 1: TOP BOX — Customer Address (left) + Drippr Logo (right)
-  //  Matches: bordered rectangle, vertical divider, exactly like reference
-  // ═══════════════════════════════════════════════════════════════════
-
-  const topBoxH = 82;
-  const halfW = contentW / 2;
-
-  // Outer border
-  doc.setDrawColor(0, 0, 0);
-  doc.setLineWidth(0.4);
-  doc.rect(margin, y, contentW, topBoxH);
-
-  // Vertical divider
-  doc.line(margin + halfW, y, margin + halfW, y + topBoxH);
-
-  // --- LEFT HALF: Customer Address ---
-  let leftY = y + 6;
-  const leftX = margin + 4;
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(9);
-  doc.setTextColor(0, 0, 0);
-  doc.text("Customer Address", leftX, leftY);
-  leftY += 6;
-
-  // Customer name (bold, larger)
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(13);
-  doc.text(customerName, leftX, leftY);
-  leftY += 6;
-
-  // Address lines
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(10);
-  if (addr) {
-    if (addr.address1) { doc.text(addr.address1, leftX, leftY); leftY += 5; }
-    if (addr.address2) { doc.text(addr.address2, leftX, leftY); leftY += 5; }
-    const cityLine = [addr.city, addr.province, addr.zip].filter(Boolean).join(", ");
-    if (cityLine) { doc.text(cityLine, leftX, leftY); leftY += 5; }
-  } else if (order.customerEmail) {
-    doc.text(order.customerEmail, leftX, leftY);
-    leftY += 5;
-  }
-
-  leftY += 5;
-
-  // "If undelivered, return to:" section
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(9);
-  doc.text("If undelivered, return to:", leftX, leftY);
-  leftY += 5;
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
-  doc.text(sellerName, leftX, leftY);
-  leftY += 5;
-
-  if (merchant?.address) {
-    const maxLineW = halfW - 10;
-    const sellerAddrLines = doc.splitTextToSize(merchant.address, maxLineW);
-    for (const line of sellerAddrLines) {
-      doc.text(line, leftX, leftY);
-      leftY += 4.5;
-    }
-  }
-
-  // --- RIGHT HALF: Drippr Logo (tilted 45°) ---
-  if (rotatedLogoData) {
-    try {
-      const logoSize = 65;
-      const logoX = margin + halfW + (halfW - logoSize) / 2;
-      const logoY = y + (topBoxH - logoSize) / 2;
-      doc.addImage(rotatedLogoData, "PNG", logoX, logoY, logoSize, logoSize);
-    } catch { /* skip */ }
-  }
-
-  y += topBoxH;
-
-  // ═══════════════════════════════════════════════════════════════════
-  //  SECTION 2: PRODUCT DETAILS — matches reference exactly
-  // ═══════════════════════════════════════════════════════════════════
-
-  y += 2;
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(10);
-  doc.setTextColor(0, 0, 0);
-  doc.text("Product Details", margin + 2, y + 5);
-  y += 8;
-
-  // Draw a horizontal line under "Product Details" heading
-  doc.setDrawColor(0, 0, 0);
-  doc.setLineWidth(0.3);
-  doc.line(margin, y, margin + contentW, y);
-  y += 1;
-
-  // Product details table (plain style — like reference)
-  const pdHead = [["SKU", "Size", "Qty", "Color", "Order No."]];
-  const pdBody: string[][] = [];
-
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    const variant = parseVariant(item.variantTitle);
-    pdBody.push([
-      item.title || item.sku || "Product",
-      variant.size,
-      String(item.quantity || 1),
-      variant.color,
-      `${order.shopifyOrderId}_${i + 1}`,
-    ]);
-  }
-
-  if (pdBody.length === 0) {
-    pdBody.push(["-", "-", "-", "-", order.shopifyOrderId]);
-  }
-
-  autoTable(doc, {
-    startY: y,
-    margin: { left: margin, right: margin },
-    head: pdHead,
-    body: pdBody,
-    theme: "plain",
-    headStyles: {
-      fillColor: [255, 255, 255],
-      textColor: [0, 0, 0],
-      fontSize: 8,
-      fontStyle: "bold",
-      cellPadding: 2,
-    },
-    bodyStyles: {
-      fontSize: 8,
-      textColor: [0, 0, 0],
-      cellPadding: 2,
-    },
-    columnStyles: {
-      0: { cellWidth: 64 },   // SKU (product name)
-      1: { cellWidth: 22 },   // Size
-      2: { cellWidth: 22 },   // Qty
-      3: { cellWidth: 28 },   // Color
-      4: { cellWidth: 54 },   // Order No.
-    },
-  });
-
-  y = (doc as any).lastAutoTable.finalY + 2;
-
-  // ═══════════════════════════════════════════════════════════════════
-  //  SECTION 3: TAX INVOICE BAR — dark bar, white text, exactly like reference
-  // ═══════════════════════════════════════════════════════════════════
-
-  const docLabel = type === "billing_slip" ? "BILLING SLIP" : "TAX INVOICE";
-
-  doc.setDrawColor(0, 0, 0);
-  doc.setLineWidth(0.4);
-
-  // Dark bar
-  doc.setFillColor(0, 0, 0);
-  doc.rect(margin, y, contentW, 7, "F");
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(10);
-  doc.setTextColor(255, 255, 255);
-  doc.text(docLabel, pageW / 2, y + 5, { align: "center" });
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
-  doc.text("Original For Recipient", pageW - margin - 3, y + 5, { align: "right" });
-
-  y += 9;
-
-  // ═══════════════════════════════════════════════════════════════════
-  //  SECTION 4: BILL TO / SHIP TO (left) + SOLD BY (right)
-  //  Matches reference layout exactly — same text flow and spacing
-  // ═══════════════════════════════════════════════════════════════════
-
-  const sec4StartY = y;
-  const rightX = margin + halfW + 4;
-
-  // --- LEFT: BILL TO / SHIP TO ---
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(8);
-  doc.setTextColor(0, 0, 0);
-  doc.text("BILL TO / SHIP TO", margin + 2, y + 4);
-  y += 7;
-
-  // Customer name + address as one flowing text (like reference)
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
-
-  let billToText = customerName;
-  if (addr) {
-    const addrParts = [addr.address1, addr.address2].filter(Boolean);
-    const cityParts = [addr.city, addr.province, addr.zip].filter(Boolean).join(", ");
-    if (addrParts.length > 0 || cityParts) {
-      billToText += " - " + [...addrParts, cityParts].filter(Boolean).join(", ");
-    }
-  }
-
-  const billToWrapped = doc.splitTextToSize(billToText, halfW - 6);
-  for (const line of billToWrapped) {
-    doc.text(line, margin + 2, y);
-    y += 4;
-  }
-
-  // Place of Supply
-  const placeOfSupply = addr?.province || "—";
-  doc.text(`, Place of Supply: ${placeOfSupply}`, margin + 2, y);
-  y += 5;
-
-  const leftBottomY = y;
-
-  // --- RIGHT: SOLD BY ---
-  let ry = sec4StartY;
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
-  doc.setTextColor(0, 0, 0);
-
-  // "Sold by : [Business Name]"
-  const soldByLabel = `Sold by : ${sellerName}`;
-  const soldByWrapped = doc.splitTextToSize(soldByLabel, halfW - 8);
-  for (const line of soldByWrapped) {
-    doc.text(line, rightX, ry + 4);
-    ry += 4;
-  }
-
-  // Seller address
-  if (merchant?.address) {
-    const sellerAddrWrapped = doc.splitTextToSize(merchant.address, halfW - 8);
-    for (const line of sellerAddrWrapped) {
-      doc.text(line, rightX, ry + 4);
-      ry += 4;
-    }
-  }
-
-  ry += 4;
-
-  // GSTIN
-  const gstinValue = merchant?.gstin || "N/A";
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(8);
-  doc.text(`GSTIN - ${gstinValue}`, rightX, ry + 4);
-  ry += 8;
-
-  // Purchase Order No.
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
-  doc.text("Purchase Order No.", rightX, ry + 4);
-  ry += 4;
-  doc.setFont("helvetica", "bold");
-  doc.text(order.shopifyOrderId, rightX, ry + 4);
-  ry += 7;
-
-  // Invoice No. | Order Date | Invoice Date — three column sub-row
-  const invColX = rightX;
-  const odColX = rightX + 32;
-  const idColX = rightX + 58;
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(7.5);
-  doc.text("Invoice No.", invColX, ry + 4);
-  doc.text("Order Date", odColX, ry + 4);
-  doc.text("Invoice Date", idColX, ry + 4);
-  ry += 5;
-
-  const invoiceNo = generateInvoiceNumber(order.shopifyOrderId);
-  const orderDate = fmtDate(order.createdAt);
-  const invoiceDate = fmtDate(Date.now());
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(8);
-  doc.text(invoiceNo, invColX, ry + 4);
-  doc.text(orderDate, odColX, ry + 4);
-  doc.text(invoiceDate, idColX, ry + 4);
-  ry += 6;
-
-  y = Math.max(leftBottomY, ry) + 4;
-
-  // Separator line below BILL TO / SOLD BY section
-  doc.setDrawColor(0, 0, 0);
-  doc.setLineWidth(0.3);
-  doc.line(margin, y, margin + contentW, y);
-  y += 2;
-
-  // ═══════════════════════════════════════════════════════════════════
-  //  SECTION 5: LINE ITEMS TABLE — grid borders, exactly like reference
-  // ═══════════════════════════════════════════════════════════════════
-
-  const tableHead = [
-    ["Description", "HSN", "Qty", "Gross Amount", "Discount", "Taxable Value", "Taxes", "Total"],
+function drawMetaStrip(doc: jsPDF, y: number, order: InvoiceOrder) {
+  const cells: Array<[string, string]> = [
+    ["Invoice No.", invoiceNumberFor(String(order.orderNumber || order.shopifyOrderId), order.createdAt)],
+    ["Invoice Date", fmtDate(Date.now())],
+    ["Order No.", String(order.orderNumber || order.shopifyOrderId)],
+    ["Order Date", fmtDate(order.createdAt)],
+    ["Payment", paymentMode(order)],
   ];
+  const boxH = 12;
+  const colW = CONTENT_W / cells.length;
 
-  let grandTax = 0;
-  let grandTotal = 0;
+  doc.setDrawColor(...RULE);
+  doc.rect(MARGIN, y, CONTENT_W, boxH);
 
-  const tableBody: string[][] = [];
+  cells.forEach(([label, value], index) => {
+    const x = MARGIN + colW * index;
+    if (index) doc.line(x, y, x, y + boxH);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(...MUTED);
+    doc.text(label, x + 3, y + 4.6);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8.5);
+    doc.setTextColor(...INK);
+    doc.text(
+      doc.splitTextToSize(value, colW - 6)[0] || value,
+      x + 3,
+      y + 9.4,
+    );
+  });
 
-  for (const item of items) {
-    const qty = item.quantity || 1;
-    const grossAmt = item.total || item.price * qty;
-    const discount = item.discount || 0;
-    const netAmt = item.discountedTotal != null ? item.discountedTotal : grossAmt - discount;
+  return y + boxH;
+}
 
-    // Reverse-calculate IGST @5% from the net amount (inclusive of tax)
-    const taxableValue = Number((netAmt / 1.05).toFixed(2));
-    const igst = Number((netAmt - taxableValue).toFixed(2));
-    const total = netAmt;
+function drawItemsTable(doc: jsPDF, y: number, totals: InvoiceTotals) {
+  // The rate is identical on every row and is stated in full in the totals
+  // block, so the column header stays short. Spelling the regime out per cell
+  // squeezed the column until amounts wrapped mid-number.
+  const head = [
+    [
+      "#",
+      "Description",
+      "HSN",
+      "Qty",
+      "Gross",
+      "Discount",
+      "Taxable Value",
+      "Tax",
+      "Total",
+    ],
+  ];
+  const body = totals.rows.map((row, index) => [
+    String(index + 1),
+    row.description,
+    row.hsn,
+    String(row.quantity),
+    money(row.gross),
+    row.discount ? money(row.discount) : "-",
+    money(row.taxableValue),
+    money(row.tax.kind === "igst" ? row.tax.igst : row.tax.cgst + row.tax.sgst),
+    money(row.net),
+  ]);
 
-    grandTax += igst;
-    grandTotal += total;
-
-    // Build description — full product name including variant
-    let desc = item.name || item.title || "Product";
-    if (item.variantTitle && !desc.includes(item.variantTitle)) {
-      desc += ` - ${item.variantTitle}`;
-    }
-
-    tableBody.push([
-      desc,
-      "-",                  // HSN — dash as requested
-      String(qty),
-      fmtMoney(grossAmt),
-      fmtMoney(discount),
-      fmtMoney(taxableValue),
-      `IGST @5.0%\n${fmtMoney(igst)}`,
-      fmtMoney(total),
-    ]);
-  }
-
-  // Draw the line items table (grid theme — black borders like reference)
   autoTable(doc, {
     startY: y,
-    margin: { left: margin, right: margin },
-    head: tableHead,
-    body: tableBody,
+    head,
+    body,
     theme: "grid",
+    margin: { left: MARGIN, right: MARGIN },
+    // Never split a single item across a page break.
+    rowPageBreak: "avoid",
+    styles: {
+      font: "helvetica",
+      fontSize: 7.5,
+      cellPadding: 2,
+      lineColor: RULE,
+      lineWidth: 0.2,
+      textColor: INK,
+      overflow: "linebreak",
+    },
     headStyles: {
-      fillColor: [255, 255, 255],
-      textColor: [0, 0, 0],
-      fontSize: 7,
+      fillColor: WASH,
+      textColor: INK,
       fontStyle: "bold",
+      fontSize: 7.5,
       halign: "center",
-      valign: "middle",
-      cellPadding: 2,
-      lineColor: [0, 0, 0],
-      lineWidth: 0.3,
-    },
-    bodyStyles: {
-      fontSize: 7,
-      textColor: [0, 0, 0],
-      cellPadding: 2,
-      valign: "middle",
-      lineColor: [0, 0, 0],
-      lineWidth: 0.3,
     },
     columnStyles: {
-      0: { cellWidth: 55, halign: "left" },   // Description
-      1: { cellWidth: 14, halign: "center" },  // HSN
-      2: { cellWidth: 12, halign: "center" },  // Qty
-      3: { cellWidth: 24, halign: "right" },   // Gross Amount
-      4: { cellWidth: 21, halign: "right" },   // Discount
-      5: { cellWidth: 24, halign: "right" },   // Taxable Value
-      6: { cellWidth: 22, halign: "center" },  // Taxes
-      7: { cellWidth: 18, halign: "right" },   // Total
+      0: { cellWidth: 7, halign: "center" },
+      1: { cellWidth: 58 },
+      2: { cellWidth: 16, halign: "center" },
+      3: { cellWidth: 9, halign: "center" },
+      4: { cellWidth: 19, halign: "right" },
+      5: { cellWidth: 18, halign: "right" },
+      6: { cellWidth: 23, halign: "right" },
+      7: { cellWidth: 16, halign: "right" },
+      8: { cellWidth: 20, halign: "right", fontStyle: "bold" },
     },
   });
 
-  const tableEndY = (doc as any).lastAutoTable.finalY;
+  return (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable
+    .finalY;
+}
 
-  // TOTAL ROW — same grid style, bold
-  autoTable(doc, {
-    startY: tableEndY,
-    margin: { left: margin, right: margin },
-    body: [["Total", "", "", "", "", "", fmtMoney(grandTax), fmtMoney(grandTotal)]],
-    theme: "grid",
-    bodyStyles: {
-      fontSize: 7,
-      fontStyle: "bold",
-      textColor: [0, 0, 0],
-      cellPadding: 2,
-      lineColor: [0, 0, 0],
-      lineWidth: 0.3,
-    },
-    columnStyles: {
-      0: { cellWidth: 55, halign: "left" },
-      1: { cellWidth: 14 },
-      2: { cellWidth: 12 },
-      3: { cellWidth: 24 },
-      4: { cellWidth: 21 },
-      5: { cellWidth: 24 },
-      6: { cellWidth: 22, halign: "center" },
-      7: { cellWidth: 18, halign: "right" },
-    },
+function drawTotals(doc: jsPDF, y: number, totals: InvoiceTotals) {
+  // This column must reconcile on its own: taxable value plus tax equals the
+  // grand total. Discounts are already applied per line and shown in the items
+  // table, so folding them in here would make the arithmetic look wrong.
+  const rows: Array<[string, string, boolean]> = [
+    ["Taxable Value", money(totals.taxableValue), false],
+  ];
+  if (totals.intraState) {
+    rows.push(["CGST @2.5%", money(totals.cgst), false]);
+    rows.push(["SGST @2.5%", money(totals.sgst), false]);
+  } else {
+    rows.push(["IGST @5.0%", money(totals.igst), false]);
+  }
+  rows.push(["Grand Total", money(totals.grandTotal), true]);
+
+  const boxW = 78;
+  const x = MARGIN + CONTENT_W - boxW;
+  const rowH = 6.5;
+  const boxH = rows.length * rowH;
+
+  doc.setDrawColor(...RULE);
+  doc.rect(x, y, boxW, boxH);
+
+  rows.forEach(([label, value, strong], index) => {
+    const rowY = y + rowH * index;
+    if (strong) {
+      doc.setFillColor(...WASH);
+      doc.rect(x + 0.15, rowY + 0.15, boxW - 0.3, rowH - 0.3, "F");
+    }
+    if (index) {
+      doc.setDrawColor(...RULE);
+      doc.line(x, rowY, x + boxW, rowY);
+    }
+    doc.setFont("helvetica", strong ? "bold" : "normal");
+    doc.setFontSize(strong ? 9.5 : 8.5);
+    doc.setTextColor(...INK);
+    doc.text(label, x + 4, rowY + rowH - 2);
+    doc.text(value, x + boxW - 4, rowY + rowH - 2, { align: "right" });
   });
 
-  y = (doc as any).lastAutoTable.finalY + 6;
+  return y + boxH;
+}
 
-  // ═══════════════════════════════════════════════════════════════════
-  //  SECTION 6: FOOTER — disclaimer text, exactly like reference
-  // ═══════════════════════════════════════════════════════════════════
-
+function drawFooter(doc: jsPDF, y: number, totals: InvoiceTotals) {
+  doc.setDrawColor(...RULE);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.setTextColor(...INK);
+  doc.text("Amount in words:", MARGIN, y + 5);
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(7);
-  doc.setTextColor(0, 0, 0);
+  const words = doc.splitTextToSize(
+    amountInWords(totals.grandTotal),
+    CONTENT_W - 32,
+  );
+  doc.text(words, MARGIN + 30, y + 5);
 
-  const footerText =
-    "Tax is not payable on reverse charge basis. This is a computer generated invoice and does not require signature. " +
-    "Includes discounts for your city and/or for online payments (as applicable)";
+  let cursor = y + 5 + words.length * 4;
 
-  const footerWrapped = doc.splitTextToSize(footerText, contentW - 4);
-  for (const line of footerWrapped) {
-    doc.text(line, margin + 2, y);
-    y += 3.5;
+  // Savings are informational, kept out of the totals column so that column
+  // still reconciles.
+  if (totals.discount > 0) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(...INK);
+    doc.text("Total savings:", MARGIN, cursor + 4);
+    doc.setFont("helvetica", "normal");
+    doc.text(money(totals.discount), MARGIN + 30, cursor + 4);
+    cursor += 4;
+  }
+  cursor += 3;
+  doc.line(MARGIN, cursor, MARGIN + CONTENT_W, cursor);
+  cursor += 5;
+
+  doc.setFontSize(6.8);
+  doc.setTextColor(...MUTED);
+  const note =
+    "All amounts are inclusive of GST. Tax is not payable on reverse charge basis. " +
+    "Delivery charges, where shown, cover logistics for this order. " +
+    "This is a computer generated invoice and does not require a signature.";
+  const noteLines = doc.splitTextToSize(note, CONTENT_W);
+  doc.text(noteLines, MARGIN, cursor);
+
+  return cursor + noteLines.length * 3;
+}
+
+// ─── Main generator ──────────────────────────────────────────────────
+
+export async function generateInvoicePdf(
+  options: InvoiceOptions,
+): Promise<Blob> {
+  const { type, order, merchant } = options;
+
+  const doc = new jsPDF({
+    orientation: "portrait",
+    unit: "mm",
+    format: "a4",
+    compress: true,
+  });
+
+  const totals = buildInvoiceTotals({
+    lineItems: order.lineItems || [],
+    gstin: merchant?.gstin,
+    buyerState: order.shippingAddress?.province,
+  });
+
+  const logo = await loadLogo();
+  const copyLabel =
+    type === "invoice" ? "Original for Recipient" : "Duplicate for Supplier";
+
+  let y = MARGIN;
+  y = drawHeader(doc, y, logo, copyLabel);
+  y = drawParties(doc, y, order, merchant, totals);
+  y = drawMetaStrip(doc, y, order);
+  y = drawItemsTable(doc, y, totals);
+
+  // Keep the totals and footer together; push to a new page if they will not
+  // fit under a long item table.
+  const tailHeight = 60;
+  if (y + tailHeight > 297 - MARGIN) {
+    doc.addPage();
+    y = MARGIN;
+  }
+
+  y = drawTotals(doc, y + 4, totals);
+  drawFooter(doc, y + 4, totals);
+
+  // Page numbers, added last so the count is final.
+  const pageCount = doc.getNumberOfPages();
+  for (let page = 1; page <= pageCount; page += 1) {
+    doc.setPage(page);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(...MUTED);
+    doc.text(
+      `Page ${page} of ${pageCount}`,
+      PAGE_W - MARGIN,
+      297 - 6,
+      { align: "right" },
+    );
   }
 
   return doc.output("blob");

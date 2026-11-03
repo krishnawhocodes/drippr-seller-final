@@ -3387,6 +3387,11 @@ case "orders.assignPickup": {
   const customerAddress = body.customerAddress ?? null;
   const notes = body.notes ?? null;
 
+  // Orders leaving the seller's city are handed to a courier and need a
+  // shipping label; same-city orders are delivered locally without one.
+  const deliveryScope =
+    body.deliveryScope === "same_city" ? "same_city" : "different_city";
+
   const dp = body.deliveryPartner || {};
   const deliveryPartner = {
     name: dp.name ?? null,
@@ -3399,6 +3404,13 @@ case "orders.assignPickup": {
   const now = Date.now();
 
   const labelInput = body.shippingLabel || null;
+  if (deliveryScope === "different_city" && !String(labelInput?.url || "").trim()) {
+    return res.status(400).json({
+      ok: false,
+      error:
+        "A shipping label is required for orders delivered outside the seller's city.",
+    });
+  }
   const shippingLabel =
     labelInput && String(labelInput.url || "").trim()
       ? {
@@ -3436,7 +3448,13 @@ case "orders.assignPickup": {
       {
         workflowStatus: "pickup_assigned",
         adminPlannedAt: now,
-        pickupPlan: { pickupWindow, pickupAddress, customerAddress, notes },
+        pickupPlan: {
+          pickupWindow,
+          pickupAddress,
+          customerAddress,
+          notes,
+          deliveryScope,
+        },
         deliveryPartner,
         ...(shippingLabel ? { shippingLabel } : {}),
         updatedAt: now,

@@ -100,6 +100,8 @@ type OrderDoc = {
   pickupPlan?: {
     pickupWindow?: string | null;
     pickupAddress?: string | null;
+    customerAddress?: string | null;
+    deliveryScope?: "same_city" | "different_city" | null;
     notes?: string | null;
   } | null;
 
@@ -116,9 +118,14 @@ type OrderDoc = {
   merchant?: {
     name?: string;
     storeName?: string;
+    businessName?: string;
     email?: string;
     phone?: string;
     address?: string;
+    city?: string;
+    state?: string;
+    pincode?: string;
+    gstin?: string;
   } | null;
 
   shippingLabel?: {
@@ -146,6 +153,17 @@ type Filter =
 
 const THREE_HOURS = 3 * 60 * 60 * 1000;
 const THIRTY_MIN = 30 * 60 * 1000;
+
+/** Loose city comparison: "New Delhi" and "new delhi." are the same city. */
+function sameCity(a: unknown, b: unknown) {
+  const key = (value: unknown) =>
+    String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z]/g, "");
+  const left = key(a);
+  const right = key(b);
+  return Boolean(left && right && left === right);
+}
 
 /** Flatten the Shopify delivery address into the form's textarea. */
 function formatShopifyAddress(address: OrderDoc["shippingAddress"]) {
@@ -202,6 +220,9 @@ export default function AdminOrdersMonitor() {
   const [trackingUrl, setTrackingUrl] = useState("");
   const [customerAddress, setCustomerAddress] = useState("");
   const [labelFile, setLabelFile] = useState<File | null>(null);
+  const [deliveryScope, setDeliveryScope] = useState<
+    "same_city" | "different_city"
+  >("different_city");
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -369,33 +390,24 @@ export default function AdminOrdersMonitor() {
 
     setBusy(true);
     try {
-      // Fetch merchant profile for sold-by info
-      let merchantInfo: InvoiceMerchant | null = null;
-      if (order.merchantId) {
-        try {
-          const token = await u.getIdToken();
-          const r = await fetch("/api/admin/admin?action=merchants.list", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ action: "merchants.list" }),
-          });
-          const data = await r.json().catch(() => ({}));
-          const merchant = (data?.merchants || []).find((m: any) => m.uid === order.merchantId);
-          if (merchant) {
-            merchantInfo = {
-              storeName: merchant.storeName || "",
-              businessName: merchant.businessName || "",
-              name: merchant.name || merchant.displayName || "",
-              address: merchant.address || "",
-              gstin: merchant.gstin || "",
-              phone: merchant.phone || "",
-              email: merchant.email || "",
-            };
+      // orders.list already attaches the seller profile. The previous code
+      // read `data.merchants` from merchants.list, which returns `items`, so
+      // merchantInfo was always null and every invoice shipped without a
+      // "Sold by" block or GSTIN (and therefore always fell back to IGST).
+      const merchantInfo: InvoiceMerchant | null = order.merchant
+        ? {
+            storeName: order.merchant.storeName || "",
+            businessName: order.merchant.businessName || "",
+            name: order.merchant.name || "",
+            address: order.merchant.address || "",
+            city: order.merchant.city || "",
+            state: order.merchant.state || "",
+            pincode: order.merchant.pincode || "",
+            gstin: order.merchant.gstin || "",
+            phone: order.merchant.phone || "",
+            email: order.merchant.email || "",
           }
-        } catch {
-          // Continue without merchant info
-        }
-      }
+        : null;
 
       const blob = await generateInvoicePdf({
         type: "invoice",
@@ -409,6 +421,7 @@ export default function AdminOrdersMonitor() {
           totalDiscounts: order.totalDiscounts,
           totalPrice: order.totalPrice,
           currency: order.currency,
+          financialStatus: order.financialStatus,
           customerEmail: order.customerEmail || order.raw?.customer?.email,
           customerName: order.customerName,
           shippingAddress: order.shippingAddress,
@@ -447,6 +460,12 @@ export default function AdminOrdersMonitor() {
     // delivery address on the order; both stay editable.
     setPickupAddress(o.merchant?.address || "");
     setCustomerAddress(formatShopifyAddress(o.shippingAddress));
+    // Suggested from the two cities when both are known; the admin decides.
+    setDeliveryScope(
+      sameCity(o.merchant?.city, o.shippingAddress?.city)
+        ? "same_city"
+        : "different_city",
+    );
     setNotes("");
     setPartnerName("");
     setPartnerPhone("");
@@ -462,6 +481,13 @@ export default function AdminOrdersMonitor() {
     try {
       // Upload the label first so a failed upload does not leave the order
       // marked as planned without its label.
+      if (deliveryScope === "different_city" && !labelFile) {
+        toast.error(
+          "Upload a shipping label for orders going outside the seller's city.",
+        );
+        return;
+      }
+
       let shippingLabel: { url: string; name?: string } | null = null;
       if (labelFile) {
         try {
@@ -481,6 +507,7 @@ export default function AdminOrdersMonitor() {
         pickupWindow,
         pickupAddress,
         customerAddress,
+        deliveryScope,
         notes,
         shippingLabel,
         deliveryPartner: {
@@ -915,30 +942,73 @@ export default function AdminOrdersMonitor() {
                 </div>
               </div>
 
-              <div className="space-y-1.5">
-                <Label htmlFor="plan-shipping-label">
-                  Shipping Label (optional)
-                </Label>
-                <div className="flex flex-wrap items-center gap-3">
-                  <Input
-                    id="plan-shipping-label"
-                    type="file"
-                    accept="application/pdf,image/png,image/jpeg,image/jpg"
-                    className="max-w-sm"
-                    onChange={(e) => setLabelFile(e.target.files?.[0] || null)}
-                    disabled={busy}
-                  />
-                  {labelFile ? (
-                    <span className="text-xs text-muted-foreground">
-                      {labelFile.name}
-                    </span>
-                  ) : null}
+              <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                <Label>Delivery scope</Label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {(
+                    [
+                      [
+                        "same_city",
+                        "Same city",
+                        "Delivered locally. No shipping label needed.",
+                      ],
+                      [
+                        "different_city",
+                        "Different city",
+                        "Goes via courier. Shipping label required.",
+                      ],
+                    ] as const
+                  ).map(([value, title, hint]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setDeliveryScope(value)}
+                      className={`rounded-lg border p-3 text-left transition-colors ${
+                        deliveryScope === value
+                          ? "border-primary bg-primary/5"
+                          : "border-border hover:bg-muted/40"
+                      }`}
+                    >
+                      <span className="block text-sm font-medium">{title}</span>
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        {hint}
+                      </span>
+                    </button>
+                  ))}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  PDF or image. Uploaded on assign and shared with the seller so
-                  they can print it for the parcel.
+                  {planFor?.merchant?.city && planFor?.shippingAddress?.city
+                    ? `Suggested from ${planFor.merchant.city} → ${planFor.shippingAddress.city}.`
+                    : "Seller or customer city is missing, so this could not be detected — please confirm."}
                 </p>
               </div>
+
+              {deliveryScope === "different_city" ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="plan-shipping-label">
+                    Shipping Label <span className="text-destructive">*</span>
+                  </Label>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Input
+                      id="plan-shipping-label"
+                      type="file"
+                      accept="application/pdf,image/png,image/jpeg,image/jpg"
+                      className="max-w-sm"
+                      onChange={(e) => setLabelFile(e.target.files?.[0] || null)}
+                      disabled={busy}
+                    />
+                    {labelFile ? (
+                      <span className="text-xs text-muted-foreground">
+                        {labelFile.name}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    PDF or image. Uploaded on assign and shared with the seller
+                    so they can print it for the parcel.
+                  </p>
+                </div>
+              ) : null}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Input

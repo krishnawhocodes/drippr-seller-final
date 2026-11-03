@@ -46,6 +46,9 @@ type MerchantDoc = {
   businessCategory?: string;
   gstin?: string;
   address?: string;
+  city?: string;
+  state?: string;
+  pincode?: string;
   bank?: BankDetails; // <-- new
   shopStatus?: "open" | "closed";
   shopClosed?: boolean;
@@ -96,6 +99,9 @@ export default function Settings() {
           setBusinessCategory(data.businessCategory || "");
           setGstin(data.gstin || "");
           setAddress(data.address || "");
+          setCity(data.city || "");
+          setState(data.state || "");
+          setPincode(data.pincode || "");
 
           const isClosed =
             data.shopClosed === true || data.shopStatus === "closed";
@@ -162,6 +168,9 @@ export default function Settings() {
   const [businessCategory, setBusinessCategory] = useState("");
   const [gstin, setGstin] = useState("");
   const [address, setAddress] = useState("");
+  const [city, setCity] = useState("");
+  const [state, setState] = useState("");
+  const [pincode, setPincode] = useState("");
   const [shopClosed, setShopClosed] = useState(false);
   const [shopCloseReason, setShopCloseReason] = useState("");
   const [dirtyStore, setDirtyStore] = useState(false);
@@ -184,6 +193,9 @@ export default function Settings() {
   businessCategory: businessCategory.trim() || null,
   gstin: gstin.trim() || null,
   address: address.trim() || null,
+  city: city.trim() || null,
+  state: state.trim() || null,
+  pincode: pincode.trim() || null,
 
   shopClosed,
   shopStatus: shopClosed ? "closed" : "open",
@@ -490,7 +502,7 @@ export default function Settings() {
                     <Label htmlFor="address">Business Address</Label>
                     <Textarea
                       id="address"
-                      placeholder="Enter complete address"
+                      placeholder="Street, building, area"
                       className="min-h-24"
                       value={address}
                       onChange={(e) => {
@@ -499,6 +511,52 @@ export default function Settings() {
                       }}
                       disabled={!uid || loadingDoc || savingStore}
                     />
+                    <p className="text-xs text-muted-foreground">
+                      This is your pickup address and the "Sold by" address on
+                      customer invoices.
+                    </p>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <div className="space-y-2">
+                      <Label htmlFor="city">City</Label>
+                      <Input
+                        id="city"
+                        placeholder="e.g. New Delhi"
+                        value={city}
+                        onChange={(e) => {
+                          setCity(e.target.value);
+                          setDirtyStore(true);
+                        }}
+                        disabled={!uid || loadingDoc || savingStore}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="state">State</Label>
+                      <Input
+                        id="state"
+                        placeholder="e.g. Delhi"
+                        value={state}
+                        onChange={(e) => {
+                          setState(e.target.value);
+                          setDirtyStore(true);
+                        }}
+                        disabled={!uid || loadingDoc || savingStore}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="pincode">Pincode</Label>
+                      <Input
+                        id="pincode"
+                        placeholder="e.g. 110059"
+                        value={pincode}
+                        onChange={(e) => {
+                          setPincode(e.target.value);
+                          setDirtyStore(true);
+                        }}
+                        disabled={!uid || loadingDoc || savingStore}
+                      />
+                    </div>
                   </div>
 
                   <Button type="submit" disabled={!uid || savingStore}>

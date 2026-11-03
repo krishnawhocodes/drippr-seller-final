@@ -60,6 +60,7 @@ export function assignPickup(payload: {
   pickupWindow?: string | null;
   pickupAddress?: string | null;
   customerAddress?: string | null;
+  deliveryScope?: "same_city" | "different_city";
   notes?: string | null;
   deliveryPartner?: {
     name?: string | null;

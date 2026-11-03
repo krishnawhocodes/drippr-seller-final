@@ -334,7 +334,7 @@ export default function Orders() {
     return data;
   }
 
-  async function downloadBillingSlip(order: OrderDoc) {
+  async function downloadInvoice(order: OrderDoc) {
     const u = auth.currentUser;
     if (!u) return toast.error("Please login again");
 
@@ -351,6 +351,9 @@ export default function Orders() {
             businessName: mData.businessName || "",
             name: mData.name || "",
             address: mData.address || "",
+            city: mData.city || "",
+            state: mData.state || "",
+            pincode: mData.pincode || "",
             gstin: mData.gstin || "",
             phone: mData.phone || "",
             email: mData.email || u.email || "",
@@ -372,6 +375,7 @@ export default function Orders() {
           totalDiscounts: order.totalDiscounts,
           totalPrice: order.totalPrice,
           currency: order.currency,
+          financialStatus: order.financialStatus,
           customerEmail: order.customerEmail || order.raw?.customer?.email,
           customerName: order.customerName,
           shippingAddress: order.shippingAddress,
@@ -382,15 +386,15 @@ export default function Orders() {
       const objectUrl = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = objectUrl;
-      a.download = `billing-slip_${order.orderNumber || order.shopifyOrderId}.pdf`;
+      a.download = `invoice_${order.orderNumber || order.shopifyOrderId}.pdf`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(objectUrl);
 
-      toast.success("Billing slip downloaded!");
+      toast.success("Invoice downloaded.");
     } catch (err: any) {
-      toast.error("Failed to generate billing slip: " + (err?.message || err));
+      toast.error("Failed to generate invoice: " + (err?.message || err));
     } finally {
       setActionBusy(false);
     }
@@ -680,12 +684,12 @@ export default function Orders() {
 
                   <Button
                     variant="outline"
-                    onClick={() => downloadBillingSlip(selected)}
+                    onClick={() => downloadInvoice(selected)}
                     disabled={actionBusy}
                     className="w-full sm:w-auto"
                   >
                     <Download className="h-4 w-4 mr-2" />
-                    Download Billing Slip
+                    Download Invoice
                   </Button>
                 </div>
 
