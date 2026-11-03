@@ -37,3 +37,4 @@ dist
 
 # built test bundle
 tests/workflow/flow.mjs
+tests/invoice/totals.mjs

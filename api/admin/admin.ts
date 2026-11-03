@@ -17,6 +17,41 @@ type MerchantProfile = {
   email?: string;
   phone?: string;
   address?: string;
+  city?: string;
+  state?: string;
+  pincode?: string;
+  gstin?: string;
+};
+
+/**
+ * Shapes returned by the Shopify order-customer query used by
+ * `orders.refreshCustomer`. Every field is optional: Shopify blanks them out
+ * for apps that have not been granted protected customer data access.
+ */
+type ShopifyAddress = {
+  name?: string | null;
+  address1?: string | null;
+  address2?: string | null;
+  city?: string | null;
+  province?: string | null;
+  zip?: string | null;
+  country?: string | null;
+  phone?: string | null;
+};
+
+type ShopifyOrderCustomer = {
+  id?: string;
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  customer?: {
+    firstName?: string | null;
+    lastName?: string | null;
+    email?: string | null;
+    phone?: string | null;
+  } | null;
+  shippingAddress?: ShopifyAddress | null;
+  billingAddress?: ShopifyAddress | null;
 };
 
 type FirestoreMergeRef = {
@@ -3225,9 +3260,18 @@ export default async function handler(req: any, res: any) {
               ? {
                   name: merchant.name || merchant.displayName || "",
                   storeName: merchant.storeName || merchant.businessName || "",
+                  businessName: merchant.businessName || "",
                   email: merchant.email || "",
                   phone: merchant.phone || "",
                   address: merchant.address || "",
+                  // Needed downstream: the pickup planner compares the seller's
+                  // city/state with the delivery address to decide whether a
+                  // courier label is required, and the tax invoice prints the
+                  // GSTIN and derives intra- vs inter-state GST from it.
+                  city: merchant.city || "",
+                  state: merchant.state || "",
+                  pincode: merchant.pincode || "",
+                  gstin: merchant.gstin || "",
                 }
               : null,
           };
@@ -3783,6 +3827,164 @@ case "orders.assignPickup": {
 
   return res.status(200).json({ ok: true, assignedAt: now });
 }
+
+      // Re-reads the buyer's name / delivery address straight from Shopify and
+      // merges anything the webhook did not have.
+      //
+      // Why this exists: Shopify strips customer PII (name, phone, email,
+      // street, city, zip) out of webhook payloads for apps that have not been
+      // granted "protected customer data" access, leaving only the coarse
+      // province and country. The order then lands here with an address that
+      // cannot be shipped to. Once access is approved this action backfills
+      // every order that was received while it was missing, so nothing has to
+      // be re-placed. It is also the quickest way to tell a redacted order
+      // apart from an order that genuinely has no address.
+      case "orders.refreshCustomer": {
+        const orderId = String(body.orderId || "").trim();
+        if (!orderId)
+          return res.status(400).json({ ok: false, error: "orderId is required" });
+
+        const orderRef = adminDb.collection("orders").doc(orderId);
+        const orderSnap = await orderRef.get();
+        if (!orderSnap.exists)
+          return res.status(404).json({ ok: false, error: "Order not found" });
+
+        const order = (orderSnap.data() || {}) as Record<string, unknown>;
+        const shopifyOrderId = String(order.shopifyOrderId || "").trim();
+        if (!shopifyOrderId)
+          return res
+            .status(400)
+            .json({ ok: false, error: "Order has no Shopify id to look up" });
+
+        const ORDER_CUSTOMER_QUERY = `
+          query OrderCustomer($id: ID!) {
+            order(id: $id) {
+              id
+              name
+              email
+              phone
+              customer { firstName lastName email phone }
+              shippingAddress {
+                name address1 address2 city province zip country phone
+              }
+              billingAddress {
+                name address1 address2 city province zip country phone
+              }
+            }
+          }
+        `;
+
+        let fetched: ShopifyOrderCustomer | null = null;
+        try {
+          const result = await shopifyGraphQL(ORDER_CUSTOMER_QUERY, {
+            id: `gid://shopify/Order/${shopifyOrderId}`,
+          });
+          fetched = result?.data?.order || null;
+        } catch (shopifyError) {
+          // A scope / protected-data rejection is a configuration problem, not
+          // a server fault, so say precisely what to fix instead of a 500.
+          const detail =
+            shopifyError instanceof Error
+              ? shopifyError.message
+              : String(shopifyError);
+          const deniedAccess =
+            /access denied|protected customer data|not approved|ACCESS_DENIED/i.test(
+              detail,
+            );
+          return res.status(200).json({
+            ok: false,
+            code: deniedAccess ? "protected_customer_data" : "shopify_error",
+            error: deniedAccess
+              ? "Shopify refused the customer fields. Approve protected customer data access for this app, then run this again."
+              : "Shopify could not be reached for this order.",
+            detail: detail.slice(0, 500),
+          });
+        }
+
+        if (!fetched)
+          return res.status(200).json({
+            ok: false,
+            code: "not_found_on_shopify",
+            error: "Shopify no longer has this order.",
+          });
+
+        const pickAddress = (raw: ShopifyAddress | null | undefined) => {
+          if (!raw) return null;
+          const out = {
+            name: String(raw.name || "").trim(),
+            address1: String(raw.address1 || "").trim(),
+            address2: String(raw.address2 || "").trim(),
+            city: String(raw.city || "").trim(),
+            province: String(raw.province || "").trim(),
+            zip: String(raw.zip || "").trim(),
+            country: String(raw.country || "").trim(),
+            phone: String(raw.phone || "").trim(),
+          };
+          return Object.values(out).some(Boolean) ? out : null;
+        };
+
+        const incoming =
+          pickAddress(fetched.shippingAddress) ||
+          pickAddress(fetched.billingAddress);
+        const existing = (order.shippingAddress || null) as Record<
+          string,
+          string
+        > | null;
+
+        // Merge field by field: never let a blank from Shopify wipe something
+        // the webhook already captured.
+        const merged: Record<string, string> = { ...(existing || {}) };
+        let changed = false;
+        for (const [key, value] of Object.entries(incoming || {})) {
+          if (value && merged[key] !== value) {
+            merged[key] = value;
+            changed = true;
+          }
+        }
+
+        const customerName =
+          String(fetched.shippingAddress?.name || "").trim() ||
+          [fetched.customer?.firstName, fetched.customer?.lastName]
+            .map((part: unknown) => String(part || "").trim())
+            .filter(Boolean)
+            .join(" ") ||
+          String(order.customerName || "").trim();
+        const customerEmail =
+          String(fetched.email || fetched.customer?.email || "").trim() ||
+          String(order.customerEmail || "").trim();
+
+        if (customerName && customerName !== order.customerName) changed = true;
+        if (customerEmail && customerEmail !== order.customerEmail) changed = true;
+
+        if (changed) {
+          await orderRef.set(
+            {
+              shippingAddress: Object.keys(merged).length ? merged : null,
+              customerName: customerName || null,
+              customerEmail: customerEmail || null,
+              customerRefreshedAt: Date.now(),
+              updatedAt: Date.now(),
+            },
+            { merge: true },
+          );
+        }
+
+        // A street line is the one field that decides whether a parcel can
+        // actually be addressed, so report on that rather than "some data".
+        const stillRedacted = !String(merged.address1 || "").trim();
+        return res.status(200).json({
+          ok: true,
+          changed,
+          stillRedacted,
+          shippingAddress: Object.keys(merged).length ? merged : null,
+          customerName: customerName || null,
+          customerEmail: customerEmail || null,
+          code: stillRedacted ? "protected_customer_data" : undefined,
+          error: stillRedacted
+            ? "Shopify returned this order without a street address. Approve protected customer data access for this app, then run this again."
+            : undefined,
+        });
+      }
 
       case "products.repairPricing": {
         const BATCH_SIZE = 10;

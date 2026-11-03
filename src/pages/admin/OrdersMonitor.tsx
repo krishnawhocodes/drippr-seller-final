@@ -14,8 +14,14 @@ import {
   Truck,
   RefreshCw,
   CheckCircle2,
+  AlertTriangle,
 } from "lucide-react";
-import { assignPickup, ordersList, uploadAdminFile } from "@/lib/adminApi";
+import {
+  assignPickup,
+  ordersList,
+  refreshOrderCustomer,
+  uploadAdminFile,
+} from "@/lib/adminApi";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { generateInvoicePdf } from "@/lib/generateInvoicePdf";
@@ -163,8 +169,8 @@ type Filter =
 const THREE_HOURS = 3 * 60 * 60 * 1000;
 const THIRTY_MIN = 30 * 60 * 1000;
 
-/** Loose city comparison: "New Delhi" and "new delhi." are the same city. */
-function sameCity(a: unknown, b: unknown) {
+/** Loose place comparison: "New Delhi" and "new delhi." are the same place. */
+function samePlace(a: unknown, b: unknown) {
   const key = (value: unknown) =>
     String(value || "")
       .toLowerCase()
@@ -172,6 +178,65 @@ function sameCity(a: unknown, b: unknown) {
   const left = key(a);
   const right = key(b);
   return Boolean(left && right && left === right);
+}
+
+type DeliveryScopeGuess = {
+  scope: "same_city" | "different_city";
+  /** How the guess was reached, so the admin knows how far to trust it. */
+  basis: "city" | "state" | "none";
+  reason: string;
+};
+
+/**
+ * Suggests whether an order leaves the seller's city.
+ *
+ * Cities are the precise signal, but Shopify withholds the buyer's city from
+ * apps without protected customer data access while still sending the
+ * province. Falling back to the state keeps the suggestion useful on those
+ * orders: a Delhi seller shipping to Madhya Pradesh is certainly out of city,
+ * even though the city itself is unknown. Same-state is deliberately NOT
+ * treated as same-city, because that is the one case the state cannot settle.
+ */
+function guessDeliveryScope(
+  order: Pick<OrderDoc, "merchant" | "shippingAddress">,
+): DeliveryScopeGuess {
+  const sellerCity = order.merchant?.city;
+  const buyerCity = order.shippingAddress?.city;
+  if (sellerCity && buyerCity) {
+    const same = samePlace(sellerCity, buyerCity);
+    return {
+      scope: same ? "same_city" : "different_city",
+      basis: "city",
+      reason: same
+        ? `Both in ${String(sellerCity).trim()}.`
+        : `${String(sellerCity).trim()} → ${String(buyerCity).trim()}.`,
+    };
+  }
+
+  const sellerState = order.merchant?.state;
+  const buyerState = order.shippingAddress?.province;
+  if (sellerState && buyerState && !samePlace(sellerState, buyerState)) {
+    return {
+      scope: "different_city",
+      basis: "state",
+      reason: `${String(sellerState).trim()} → ${String(buyerState).trim()}, so it leaves the city.`,
+    };
+  }
+
+  return {
+    scope: "different_city",
+    basis: "none",
+    reason: sellerState && buyerState
+      ? `Both in ${String(buyerState).trim()}, but the delivery city is missing — please confirm.`
+      : "Seller or customer location is missing, so this could not be detected — please confirm.",
+  };
+}
+
+/** True once the address has enough detail for a parcel to be delivered. */
+function addressIsDeliverable(address: OrderDoc["shippingAddress"]) {
+  return Boolean(
+    String(address?.address1 || "").trim() && String(address?.city || "").trim(),
+  );
 }
 
 /** Flatten the Shopify delivery address into the form's textarea. */
@@ -228,6 +293,7 @@ export default function AdminOrdersMonitor() {
   const [etaText, setEtaText] = useState("");
   const [trackingUrl, setTrackingUrl] = useState("");
   const [customerAddress, setCustomerAddress] = useState("");
+  const [refreshingCustomer, setRefreshingCustomer] = useState(false);
   const [labelFile, setLabelFile] = useState<File | null>(null);
   const [deliveryScope, setDeliveryScope] = useState<
     "same_city" | "different_city"
@@ -469,18 +535,63 @@ export default function AdminOrdersMonitor() {
     // delivery address on the order; both stay editable.
     setPickupAddress(o.merchant?.address || "");
     setCustomerAddress(formatShopifyAddress(o.shippingAddress));
-    // Suggested from the two cities when both are known; the admin decides.
-    setDeliveryScope(
-      sameCity(o.merchant?.city, o.shippingAddress?.city)
-        ? "same_city"
-        : "different_city",
-    );
+    // Suggested from the two locations; the admin always decides.
+    setDeliveryScope(guessDeliveryScope(o).scope);
     setNotes("");
     setPartnerName("");
     setPartnerPhone("");
     setEtaText("");
     setTrackingUrl("");
     setLabelFile(null);
+  }
+
+  /**
+   * Pulls the buyer's name and delivery address from Shopify again for one
+   * order. Used after protected customer data access is approved, to repair
+   * orders that arrived while the fields were still being withheld.
+   */
+  async function refreshCustomerFor(order: OrderDoc) {
+    setRefreshingCustomer(true);
+    try {
+      const result = await refreshOrderCustomer(order.id);
+      const nextAddress = (result.shippingAddress ||
+        null) as OrderDoc["shippingAddress"];
+
+      if (nextAddress) setCustomerAddress(formatShopifyAddress(nextAddress));
+
+      // Keep the open dialog and the table in step with what came back.
+      const merge = (o: OrderDoc): OrderDoc =>
+        o.id === order.id
+          ? {
+              ...o,
+              shippingAddress: nextAddress ?? o.shippingAddress,
+              customerName: result.customerName ?? o.customerName,
+              customerEmail: result.customerEmail ?? o.customerEmail,
+            }
+          : o;
+      setOrders((list) => list.map(merge));
+      setPlanFor((current) => (current ? merge(current) : current));
+      setSelected((current) => (current ? merge(current) : current));
+
+      if (result.stillRedacted) {
+        toast.warning(
+          result.error ||
+            "Shopify returned this order without a street address.",
+        );
+      } else if (result.changed) {
+        toast.success("Customer details updated from Shopify");
+      } else {
+        toast.info("Shopify had nothing new for this order");
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not refetch the customer from Shopify",
+      );
+    } finally {
+      setRefreshingCustomer(false);
+    }
   }
 
   /**
@@ -755,15 +866,15 @@ export default function AdminOrdersMonitor() {
 
       {/* DETAILS */}
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
+        <DialogContent className="flex max-w-3xl flex-col gap-0 p-0">
+          <DialogHeader className="shrink-0 border-b px-6 py-4 pr-12">
             <DialogTitle>
               Order Details — {selected?.orderNumber || selected?.shopifyOrderId || selected?.id}
             </DialogTitle>
           </DialogHeader>
 
           {selected && (
-            <div className="space-y-4 text-sm">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-5 text-sm">
               {/* Office hours notice */}
               {!isOfficeOpen && (workflowFor(selected) === "vendor_pending" || workflowFor(selected) === "vendor_accepted") && (
                 <div className="border border-orange-200 bg-orange-50 rounded-md p-3">
@@ -780,11 +891,23 @@ export default function AdminOrdersMonitor() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <div className="text-muted-foreground">Merchant</div>
-                  <div className="text-xs">{selected.merchantId}</div>
+                  <div>
+                    {selected.merchant?.storeName ||
+                      selected.merchant?.name ||
+                      "—"}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {selected.merchantId}
+                  </div>
                 </div>
                 <div>
                   <div className="text-muted-foreground">Customer</div>
-                  <div>{customerFor(selected)}</div>
+                  <div>{selected.customerName || customerFor(selected)}</div>
+                  {selected.customerName && selected.customerEmail ? (
+                    <div className="text-xs text-muted-foreground">
+                      {selected.customerEmail}
+                    </div>
+                  ) : null}
                 </div>
                 <div>
                   <div className="text-muted-foreground">Created</div>
@@ -798,6 +921,44 @@ export default function AdminOrdersMonitor() {
                     </Badge>
                   </div>
                 </div>
+              </div>
+
+              <div className="space-y-2 rounded-md border p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="font-medium">Delivery Address</div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={refreshingCustomer}
+                    onClick={() => refreshCustomerFor(selected)}
+                  >
+                    <RefreshCw
+                      className={`mr-1 h-3 w-3 ${refreshingCustomer ? "animate-spin" : ""}`}
+                    />
+                    Refetch from Shopify
+                  </Button>
+                </div>
+                {formatShopifyAddress(selected.shippingAddress) ? (
+                  <div className="whitespace-pre-line text-sm">
+                    {formatShopifyAddress(selected.shippingAddress)}
+                  </div>
+                ) : (
+                  <div className="text-muted-foreground">
+                    Shopify did not send a delivery address for this order.
+                  </div>
+                )}
+                {!addressIsDeliverable(selected.shippingAddress) && (
+                  <p className="flex gap-1.5 text-xs leading-relaxed text-amber-700">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      Incomplete — Shopify withholds the buyer's name,
+                      phone, street, city and PIN until this app is granted
+                      protected customer data access.
+                    </span>
+                  </p>
+                )}
               </div>
 
               <div className="border rounded-md">
@@ -886,15 +1047,15 @@ export default function AdminOrdersMonitor() {
 
       {/* PLAN PICKUP */}
       <Dialog open={planOpen} onOpenChange={setPlanOpen}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
+        <DialogContent className="flex max-w-3xl flex-col gap-0 p-0">
+          <DialogHeader className="shrink-0 border-b px-6 py-4 pr-12">
             <DialogTitle>
               Plan Pickup — {planFor?.orderNumber || planFor?.shopifyOrderId || planFor?.id}
             </DialogTitle>
           </DialogHeader>
 
           {planFor && (
-            <div className="space-y-4">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-5">
               {/* Office hours notice */}
               {!isOfficeOpen && (
                 <div className="border border-orange-200 bg-orange-50 rounded-md p-3 text-sm">
@@ -905,6 +1066,29 @@ export default function AdminOrdersMonitor() {
                   <div className="text-orange-700 text-xs mt-1">
                     Timer is paused and will resume at 9 AM
                   </div>
+                </div>
+              )}
+
+              {!addressIsDeliverable(planFor.shippingAddress) && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
+                  <div className="flex items-center gap-2 font-medium text-amber-900">
+                    <AlertTriangle className="h-4 w-4" />
+                    Shopify withheld the customer's address
+                  </div>
+                  <p className="mt-1 text-xs leading-relaxed text-amber-800">
+                    Only the state and country came through, so this parcel
+                    cannot be addressed yet. Shopify hides a buyer's name,
+                    phone, street, city and PIN from apps that have not been
+                    granted <strong>protected customer data</strong> access.
+                    Request it in Shopify under Settings → Apps and sales
+                    channels → Develop apps → your app →
+                    Configuration → Admin API integration → Protected
+                    customer data access, then press “Refetch from
+                    Shopify” to pull this order in. Until then, copy the
+                    address across by hand from the Shopify order page —
+                    whatever you type here is what the seller and the courier
+                    will see.
+                  </p>
                 </div>
               )}
 
@@ -967,7 +1151,22 @@ export default function AdminOrdersMonitor() {
                   </p>
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="plan-customer-address">Customer Address</Label>
+                  <div className="flex items-center justify-between gap-2">
+                    <Label htmlFor="plan-customer-address">Customer Address</Label>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      disabled={refreshingCustomer}
+                      onClick={() => planFor && refreshCustomerFor(planFor)}
+                    >
+                      <RefreshCw
+                        className={`mr-1 h-3 w-3 ${refreshingCustomer ? "animate-spin" : ""}`}
+                      />
+                      Refetch from Shopify
+                    </Button>
+                  </div>
                   <Textarea
                     id="plan-customer-address"
                     rows={5}
@@ -1018,9 +1217,7 @@ export default function AdminOrdersMonitor() {
                   ))}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {planFor?.merchant?.city && planFor?.shippingAddress?.city
-                    ? `Suggested from ${planFor.merchant.city} → ${planFor.shippingAddress.city}.`
-                    : "Seller or customer city is missing, so this could not be detected — please confirm."}
+                  {planFor ? guessDeliveryScope(planFor).reason : null}
                 </p>
               </div>
 

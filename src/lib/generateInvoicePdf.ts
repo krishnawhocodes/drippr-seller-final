@@ -179,21 +179,29 @@ function drawHeader(
   doc.setTextColor(...MUTED);
   doc.text(copyLabel, MARGIN + 5, y + 18);
 
-  // DRIPPR mark, top right, square aspect preserved.
-  const logoSize = 17;
+  // DRIPPR mark, top right, square aspect preserved. The mark already reads
+  // "Drippr", so the wordmark is only drawn when the image cannot be loaded -
+  // printing both just said the name twice.
+  const logoSize = 19;
   const logoX = MARGIN + CONTENT_W - logoSize - 5;
   const logoY = y + (boxH - logoSize) / 2;
+  let logoDrawn = false;
   if (logo) {
     try {
       doc.addImage(logo, "PNG", logoX, logoY, logoSize, logoSize);
+      logoDrawn = true;
     } catch {
       /* fall through to the wordmark */
     }
   }
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(12);
-  doc.setTextColor(...INK);
-  doc.text("DRIPPR", logoX - 3, y + boxH / 2 + 1.5, { align: "right" });
+  if (!logoDrawn) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.setTextColor(...INK);
+    doc.text("DRIPPR", MARGIN + CONTENT_W - 5, y + boxH / 2 + 1.5, {
+      align: "right",
+    });
+  }
 
   return y + boxH;
 }

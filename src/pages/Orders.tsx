@@ -205,7 +205,35 @@ export default function Orders() {
   const money = (v: number | undefined) =>
     new Intl.NumberFormat("en-IN", { style: "currency", currency }).format(Number(v || 0));
 
-  const customerFor = (o: OrderDoc) => o.customerEmail || o.raw?.customer?.email || "—";
+  const customerFor = (o: OrderDoc) =>
+    o.customerName || o.customerEmail || o.raw?.customer?.email || "—";
+
+  /**
+   * Where the parcel is going. Prefers the snapshot the admin confirmed when
+   * planning the pickup, because that is the address the courier was given;
+   * falls back to the raw Shopify address on the order.
+   */
+  const deliveryAddressFor = (o: OrderDoc) => {
+    const planned = String(o.pickupPlan?.customerAddress || "").trim();
+    if (planned) return planned;
+    const a = o.shippingAddress;
+    if (!a) return "";
+    const cityLine = [a.city, a.province, a.zip]
+      .map((part) => String(part || "").trim())
+      .filter(Boolean)
+      .join(", ");
+    return [
+      a.name,
+      a.address1,
+      a.address2,
+      cityLine,
+      a.country,
+      a.phone ? `Phone: ${a.phone}` : "",
+    ]
+      .map((line) => String(line || "").trim())
+      .filter(Boolean)
+      .join("\n");
+  };
 
   const payLabelFor = (o: OrderDoc) => (o.financialStatus || "pending").toLowerCase();
   const ordLabelFor = (o: OrderDoc) => (o.status || "open").toLowerCase();
@@ -583,13 +611,14 @@ export default function Orders() {
 
       {/* Order details dialog */}
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
+        <DialogContent className="flex max-w-3xl flex-col gap-0 p-0">
+          <DialogHeader className="shrink-0 border-b px-6 py-4 pr-12">
             <DialogTitle>
               Order {selected?.orderNumber || selected?.shopifyOrderId}
             </DialogTitle>
           </DialogHeader>
 
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           {selected ? (() => {
             const wf = workflowFor(selected);
             const tl = timeLeftMs(selected);
@@ -706,7 +735,19 @@ export default function Orders() {
                         </div>
                         <div>
                           <div className="text-muted-foreground">Pickup Address</div>
-                          <div>{selected.pickupPlan.pickupAddress || "—"}</div>
+                          <div className="whitespace-pre-line">
+                            {selected.pickupPlan.pickupAddress || "—"}
+                          </div>
+                        </div>
+                        <div className="sm:col-span-2">
+                          <div className="text-muted-foreground">Delivery Address</div>
+                          <div className="whitespace-pre-line">
+                            {deliveryAddressFor(selected) || (
+                              <span className="text-muted-foreground">
+                                Not shared for this order.
+                              </span>
+                            )}
+                          </div>
                         </div>
                         <div className="sm:col-span-2">
                           <div className="text-muted-foreground">Notes</div>
@@ -827,6 +868,7 @@ export default function Orders() {
               </div>
             );
           })() : null}
+          </div>
         </DialogContent>
       </Dialog>
     </DashboardLayout>

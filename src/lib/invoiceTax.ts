@@ -193,7 +193,8 @@ export function buildInvoiceTotals(args: {
     : DELIVERY_PER_UNIT;
 
   const rows: InvoiceRow[] = [];
-  let deliveryTotal = 0;
+  let deliveryGrossTotal = 0;
+  let deliveryNetTotal = 0;
 
   for (const item of args.lineItems || []) {
     const quantity = Math.max(0, Number(item.quantity) || 0);
@@ -214,14 +215,23 @@ export function buildInvoiceTotals(args: {
     // Only peel out delivery when the unit price can actually carry it, so a
     // legacy order priced below the delivery charge is never driven negative.
     const carriesDelivery = deliveryPerUnit > 0 && unitPrice > deliveryPerUnit;
-    const lineDelivery = carriesDelivery
+    const wantedDelivery = carriesDelivery
       ? round2(deliveryPerUnit * quantity)
       : 0;
-    // Delivery is never discounted; any discount stays against the product.
-    const productNet = round2(net - lineDelivery);
-    const productGross = round2(gross - lineDelivery);
+    // Split the delivery out of the list price and out of what was actually
+    // paid separately. A heavily discounted line can pay less than the full
+    // delivery charge - at 100% off it pays nothing at all - and capping each
+    // side at what is there keeps every figure on the invoice at or above
+    // zero. Taking the full charge off a discounted line is what produced
+    // negative taxable values on fully discounted orders.
+    const deliveryGross = Math.min(wantedDelivery, Math.max(0, gross));
+    const deliveryNet = Math.min(wantedDelivery, Math.max(0, net));
 
-    deliveryTotal = round2(deliveryTotal + lineDelivery);
+    const productGross = round2(Math.max(0, gross - deliveryGross));
+    const productNet = round2(Math.max(0, net - deliveryNet));
+
+    deliveryGrossTotal = round2(deliveryGrossTotal + deliveryGross);
+    deliveryNetTotal = round2(deliveryNetTotal + deliveryNet);
 
     const { taxableValue, tax } = reverseGst(productNet, intraState);
     rows.push({
@@ -229,22 +239,24 @@ export function buildInvoiceTotals(args: {
       hsn: String(item.hsn || DEFAULT_HSN),
       quantity,
       gross: productGross,
-      discount,
+      // Derived rather than copied from Shopify so that every row reconciles:
+      // gross - discount === net, on each line and in the totals.
+      discount: round2(productGross - productNet),
       net: productNet,
       taxableValue,
       tax,
     });
   }
 
-  if (deliveryTotal > 0) {
-    const { taxableValue, tax } = reverseGst(deliveryTotal, intraState);
+  if (deliveryGrossTotal > 0) {
+    const { taxableValue, tax } = reverseGst(deliveryNetTotal, intraState);
     rows.push({
       description: "Delivery Charges",
       hsn: DELIVERY_HSN,
       quantity: 1,
-      gross: deliveryTotal,
-      discount: 0,
-      net: deliveryTotal,
+      gross: deliveryGrossTotal,
+      discount: round2(deliveryGrossTotal - deliveryNetTotal),
+      net: deliveryNetTotal,
       taxableValue,
       tax,
     });
