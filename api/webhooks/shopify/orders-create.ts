@@ -2,6 +2,10 @@
 import crypto from "node:crypto";
 import { getAdmin } from "../../_lib/firebaseAdmin.js";
 import { FieldValue } from "firebase-admin/firestore";
+import {
+  addBusinessHours,
+  VENDOR_ACCEPT_WINDOW_MS,
+} from "../../_lib/officeHours.js";
 
 export const config = {
   api: { bodyParser: false },
@@ -448,7 +452,6 @@ export default async function handler(req: any, res: any) {
     const eventId = webhookId || `order_${shopifyOrderId}`;
     const eventRef = adminDb.collection("webhookEvents").doc(eventId);
 
-    const THREE_HOURS = 3 * 60 * 60 * 1000;
     let alreadyProcessed = false;
 
     await adminDb.runTransaction(async (tx: any) => {
@@ -524,7 +527,11 @@ export default async function handler(req: any, res: any) {
             : {},
 
           workflowStatus: "vendor_pending",
-          vendorAcceptBy: createdAt + THREE_HOURS,
+          // Office-hours aware: an order placed at 20:00 is not silently due
+          // at 23:00 while the office is shut. Computed once here so the
+          // seller panel, the admin monitor and the accept endpoint all agree
+          // on the same deadline.
+          vendorAcceptBy: addBusinessHours(createdAt, VENDOR_ACCEPT_WINDOW_MS),
           vendorAcceptedAt: null,
           adminPlanBy: null,
           adminPlannedAt: null,

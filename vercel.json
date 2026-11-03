@@ -6,21 +6,8 @@
   },
   "rewrites": [
     {
-      "source": "/api/orders/accept",
-      "destination": "https://drippr-seller-serverless.vercel.app/api/orders/accept"
-    },
-    {
-      "source": "/api/orders/mark-dispatched",
-      "destination": "https://drippr-seller-serverless.vercel.app/api/orders/mark-dispatched"
-    },
-    {
-      "source": "/api/admin/assign-pickup",
-      "destination": "https://drippr-seller-serverless.vercel.app/api/admin/assign-pickup"
-    },
-    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
   ]
 }
-

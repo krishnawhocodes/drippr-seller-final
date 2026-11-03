@@ -1,188 +1,141 @@
-// Office hours utilities
-// Office hours: 9 AM - 9 PM (Mon-Sun)
+// src/lib/officeHours.ts
+// Browser mirror of api/_lib/officeHours.ts.
+//
+// Both sides pin the business day to IST rather than the device clock. If this
+// used the browser's local time, a seller on a laptop set to another timezone
+// would see a countdown that disagreed with the server, and could be told an
+// order is still acceptable when the API has already expired it.
+//
+// Office hours: 9 AM - 9 PM IST.
 
-const OFFICE_START_HOUR = 9; // 9 AM
-const OFFICE_END_HOUR = 21; // 9 PM (21:00)
+export const OFFICE_START_HOUR = 9;
+export const OFFICE_END_HOUR = 21;
 
-/**
- * Check if a given timestamp is within office hours
- */
+const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function toIst(timestamp: number) {
+  const shifted = new Date(timestamp + IST_OFFSET_MS);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth(),
+    day: shifted.getUTCDate(),
+    hour: shifted.getUTCHours(),
+    minute: shifted.getUTCMinutes(),
+  };
+}
+
+function fromIst(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute = 0,
+) {
+  return Date.UTC(year, month, day, hour, minute) - IST_OFFSET_MS;
+}
+
 export function isWithinOfficeHours(timestamp: number): boolean {
-  const date = new Date(timestamp);
-  const hours = date.getHours();
-  return hours >= OFFICE_START_HOUR && hours < OFFICE_END_HOUR;
+  const { hour } = toIst(timestamp);
+  return hour >= OFFICE_START_HOUR && hour < OFFICE_END_HOUR;
 }
 
-/**
- * Get the next office opening time from a given timestamp
- * If already in office hours, returns the timestamp itself
- * If outside office hours, returns next 9 AM
- */
 export function getNextOfficeOpen(timestamp: number): number {
-  const date = new Date(timestamp);
-  const hours = date.getHours();
-
-  // If already within office hours, return as-is
-  if (hours >= OFFICE_START_HOUR && hours < OFFICE_END_HOUR) {
-    return timestamp;
+  const { year, month, day, hour } = toIst(timestamp);
+  if (hour >= OFFICE_START_HOUR && hour < OFFICE_END_HOUR) return timestamp;
+  if (hour < OFFICE_START_HOUR) {
+    return fromIst(year, month, day, OFFICE_START_HOUR);
   }
-
-  // If before office hours today (before 9 AM), return today at 9 AM
-  if (hours < OFFICE_START_HOUR) {
-    const nextOpen = new Date(date);
-    nextOpen.setHours(OFFICE_START_HOUR, 0, 0, 0);
-    return nextOpen.getTime();
-  }
-
-  // If after office hours (>= 9 PM), return tomorrow at 9 AM
-  const nextOpen = new Date(date);
-  nextOpen.setDate(nextOpen.getDate() + 1);
-  nextOpen.setHours(OFFICE_START_HOUR, 0, 0, 0);
-  return nextOpen.getTime();
+  const tomorrow = toIst(timestamp + DAY_MS);
+  return fromIst(tomorrow.year, tomorrow.month, tomorrow.day, OFFICE_START_HOUR);
 }
 
-/**
- * Calculate the deadline by adding business hours to a start time
- * This accounts for office hours and skips non-business time
- * 
- * @param startTime - The starting timestamp
- * @param durationMs - Duration in milliseconds to add (e.g., 3 hours = 3 * 60 * 60 * 1000)
- * @returns The deadline timestamp
- */
-export function addBusinessHours(startTime: number, durationMs: number): number {
-  // If order comes outside office hours, start from next office open
-  let effectiveStart = isWithinOfficeHours(startTime) 
-    ? startTime 
+function officeCloseOn(timestamp: number): number {
+  const { year, month, day } = toIst(timestamp);
+  return fromIst(year, month, day, OFFICE_END_HOUR);
+}
+
+/** Adds a duration that only elapses during office hours. */
+export function addBusinessHours(
+  startTime: number,
+  durationMs: number,
+): number {
+  let remaining = Math.max(0, Number(durationMs) || 0);
+  let current = isWithinOfficeHours(startTime)
+    ? startTime
     : getNextOfficeOpen(startTime);
 
-  let remaining = durationMs;
-  let current = effectiveStart;
-
-  while (remaining > 0) {
-    const currentDate = new Date(current);
-    const currentHour = currentDate.getHours();
-    const currentMinute = currentDate.getMinutes();
-    const currentSecond = currentDate.getSeconds();
-
-    // If we're outside office hours, jump to next office open
-    if (currentHour < OFFICE_START_HOUR) {
-      current = getNextOfficeOpen(current);
-      continue;
-    }
-
-    if (currentHour >= OFFICE_END_HOUR) {
-      current = getNextOfficeOpen(current);
-      continue;
-    }
-
-    // Calculate time until office close
-    const officeCloseToday = new Date(currentDate);
-    officeCloseToday.setHours(OFFICE_END_HOUR, 0, 0, 0);
-    const timeUntilClose = officeCloseToday.getTime() - current;
-
-    if (remaining <= timeUntilClose) {
-      // We can finish within today's office hours
-      return current + remaining;
-    } else {
-      // Need to continue tomorrow
-      remaining -= timeUntilClose;
-      current = getNextOfficeOpen(officeCloseToday.getTime());
-    }
+  for (let guard = 0; guard < 400 && remaining > 0; guard += 1) {
+    const closeAt = officeCloseOn(current);
+    const availableToday = closeAt - current;
+    if (remaining <= availableToday) return current + remaining;
+    remaining -= availableToday;
+    current = getNextOfficeOpen(closeAt);
   }
-
   return current;
 }
 
 /**
- * Calculate remaining business hours between now and a deadline
- * Returns only the time that falls within office hours
- * 
- * @param deadline - The target deadline timestamp
- * @param now - Current timestamp
- * @returns Remaining milliseconds within business hours (can be negative if overdue)
+ * Office-hours time left until `deadline`. Negative (the raw difference) when
+ * the deadline has already passed, so callers can tell overdue from paused.
  */
-export function getRemainingBusinessTime(deadline: number, now: number): number {
-  // If deadline is in the past, return negative difference
-  if (deadline <= now) {
-    return deadline - now; // negative value
-  }
+export function getRemainingBusinessTime(
+  deadline: number,
+  now: number,
+): number {
+  if (deadline <= now) return deadline - now;
 
   let remaining = 0;
   let current = now;
 
-  while (current < deadline) {
-    const currentDate = new Date(current);
-    const currentHour = currentDate.getHours();
-
-    // If current time is outside office hours, jump to next office open
-    if (currentHour < OFFICE_START_HOUR || currentHour >= OFFICE_END_HOUR) {
+  for (let guard = 0; guard < 400 && current < deadline; guard += 1) {
+    if (!isWithinOfficeHours(current)) {
       const nextOpen = getNextOfficeOpen(current);
-      if (nextOpen >= deadline) {
-        // Deadline is before next office opening, so no time remaining
-        break;
-      }
+      if (nextOpen >= deadline) break;
       current = nextOpen;
       continue;
     }
-
-    // We're in office hours, calculate time until office close or deadline
-    const officeCloseToday = new Date(currentDate);
-    officeCloseToday.setHours(OFFICE_END_HOUR, 0, 0, 0);
-    const closeTime = officeCloseToday.getTime();
-
-    const nextBoundary = Math.min(closeTime, deadline);
-    const segment = nextBoundary - current;
-    
-    remaining += segment;
-    current = nextBoundary;
-
-    // If we haven't reached deadline, we hit office close, so jump to next day
-    if (current < deadline && current >= closeTime) {
-      current = getNextOfficeOpen(current);
-    }
+    const boundary = Math.min(officeCloseOn(current), deadline);
+    remaining += boundary - current;
+    current = boundary;
+    if (current < deadline) current = getNextOfficeOpen(current);
   }
 
   return remaining;
 }
 
-/**
- * Format business hours countdown for display
- * Only counts down during office hours
- */
-export function formatBusinessHoursCountdown(deadline: number, now: number): string {
+/** hh:mm:ss of office time left, or "Overdue". */
+export function formatBusinessHoursCountdown(
+  deadline: number,
+  now: number,
+): string {
   const remaining = getRemainingBusinessTime(deadline, now);
-  
-  if (remaining <= 0) {
-    return "Overdue";
-  }
+  if (remaining <= 0) return "Overdue";
 
   const seconds = Math.floor(remaining / 1000);
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
-
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(Math.floor(seconds / 3600))}:${pad(
+    Math.floor((seconds % 3600) / 60),
+  )}:${pad(seconds % 60)}`;
 }
 
-/**
- * Check if we're currently in office hours
- */
 export function isCurrentlyOfficeHours(): boolean {
   return isWithinOfficeHours(Date.now());
 }
 
-/**
- * Get a human-readable message about when office opens next
- */
+/** Always rendered in IST so every seller sees the same opening time. */
 export function getOfficeStatusMessage(): string {
   const now = Date.now();
-  
-  if (isWithinOfficeHours(now)) {
-    return "Office is open";
-  }
+  if (isWithinOfficeHours(now)) return "Office is open";
 
-  const nextOpen = getNextOfficeOpen(now);
-  const nextOpenDate = new Date(nextOpen);
-  
-  return `Office opens at ${nextOpenDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} on ${nextOpenDate.toLocaleDateString()}`;
+  const nextOpen = new Date(getNextOfficeOpen(now));
+  const time = nextOpen.toLocaleTimeString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const date = nextOpen.toLocaleDateString("en-IN", {
+    timeZone: "Asia/Kolkata",
+  });
+  return `Office opens at ${time} IST on ${date}`;
 }
