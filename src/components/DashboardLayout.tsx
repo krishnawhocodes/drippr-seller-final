@@ -13,7 +13,6 @@ import {
   User,
   LogOut,
   Image,
-  MessageSquare,
   ShieldCheck
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -40,7 +39,6 @@ const navigation = [
   { name: "Payments", href: "/dashboard/payments", icon: Wallet },
   { name: "Analytics", href: "/dashboard/analytics", icon: BarChart3 },
   { name: "Media Bucket", href: "/dashboard/media-bucket", icon: Image },
-  { name: "Seller Support AI", href: "/dashboard/seller-support-ai", icon: MessageSquare },
   { name: "Support", href: "/dashboard/support", icon: HelpCircle },
   { name: "Settings", href: "/dashboard/settings", icon: Settings },
 ];

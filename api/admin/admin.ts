@@ -630,6 +630,84 @@ const INVENTORY_ITEM_UPDATE = /* GraphQL */ `
   }
 `;
 
+/**
+ * Firestore hands back Timestamps (and the client sometimes writes plain
+ * Dates), but the admin UI works in epoch milliseconds.
+ */
+function toMillis(value: unknown): number {
+  if (!value) return 0;
+  if (typeof value === "number") return value;
+  if (value instanceof Date) return value.getTime();
+  const candidate = value as { toMillis?: () => number; _seconds?: number };
+  if (typeof candidate.toMillis === "function") return candidate.toMillis();
+  if (typeof candidate._seconds === "number") return candidate._seconds * 1000;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Normalises a support ticket for the admin UI.
+ *
+ * The seller form writes timeline entries as `{ at, by, type, message }` while
+ * the admin panel reads `note`, so the two never lined up. Both shapes are
+ * accepted here and emitted in one consistent form.
+ */
+type RawTimelineEntry = {
+  at?: unknown;
+  by?: unknown;
+  type?: unknown;
+  note?: unknown;
+  message?: unknown;
+  status?: unknown;
+};
+
+type RawSupportTicket = {
+  merchantId?: unknown;
+  name?: unknown;
+  email?: unknown;
+  subject?: unknown;
+  message?: unknown;
+  category?: unknown;
+  priority?: unknown;
+  status?: unknown;
+  adminReply?: unknown;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  timeline?: unknown;
+};
+
+function normalizeSupportTicket(id: string, data: RawSupportTicket) {
+  const timeline = (Array.isArray(data?.timeline) ? data.timeline : [])
+    .map((entry: RawTimelineEntry) => ({
+      at: toMillis(entry?.at),
+      by: String(entry?.by || "system"),
+      type: String(entry?.type || "message"),
+      note: String(entry?.note ?? entry?.message ?? entry?.status ?? ""),
+    }))
+    .sort((a: { at: number }, b: { at: number }) => a.at - b.at);
+
+  return {
+    id,
+    merchantId: String(data?.merchantId || ""),
+    name: String(data?.name || "Unknown"),
+    email: String(data?.email || ""),
+    subject: String(data?.subject || "(no subject)"),
+    message: String(data?.message || ""),
+    category: String(data?.category || "other"),
+    priority: String(data?.priority || "medium"),
+    // "under_processing" is written by support.reply; the UI knows
+    // "processing".
+    status:
+      String(data?.status || "pending") === "under_processing"
+        ? "processing"
+        : String(data?.status || "pending"),
+    adminReply: String(data?.adminReply || ""),
+    createdAt: toMillis(data?.createdAt),
+    updatedAt: toMillis(data?.updatedAt),
+    timeline,
+  };
+}
+
 function throwUserErrors(result: any, path: string) {
   const errors = path
     .split(".")
@@ -3346,10 +3424,32 @@ export default async function handler(req: any, res: any) {
       // -------------------- SUPPORT CENTER (optional, nice to have here too) --------------------
       case "support.list": {
         const status = String((req.query.status ?? body.status ?? "all") as string);
-        let ref = adminDb.collection("supportRequests") as FirebaseFirestore.Query;
-        if (status !== "all") ref = ref.where("status", "==", status);
-        const snap = await ref.orderBy("createdAt", "desc").limit(200).get();
-        const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+        const search = String((req.query.q ?? body.q ?? "") as string)
+          .trim()
+          .toLowerCase();
+
+        // Filtering in memory keeps this working without a composite index,
+        // and "processing" has to also match the legacy "under_processing"
+        // value that support.reply writes.
+        const snap = await adminDb
+          .collection("supportRequests")
+          .orderBy("createdAt", "desc")
+          .limit(300)
+          .get();
+
+        let items = snap.docs.map((doc) =>
+          normalizeSupportTicket(doc.id, doc.data()),
+        );
+        if (status && status !== "all") {
+          items = items.filter((item) => item.status === status);
+        }
+        if (search) {
+          items = items.filter((item) =>
+            `${item.subject} ${item.name} ${item.email} ${item.message}`
+              .toLowerCase()
+              .includes(search),
+          );
+        }
         return res.status(200).json({ ok: true, items });
       }
 
@@ -3357,17 +3457,54 @@ export default async function handler(req: any, res: any) {
         const { id, message, nextStatus } = body as { id: string; message: string; nextStatus?: string };
         if (!id || !message) return res.status(400).json({ ok: false, error: "id & message required" });
 
-        await adminDb.collection("supportRequests").doc(id).set(
-          {
-            adminReply: message,
-            status: nextStatus || "under_processing",
-            repliedAt: Date.now(),
-            repliedBy: me.uid,
-            updatedAt: Date.now(),
-          },
-          { merge: true }
-        );
-        return res.status(200).json({ ok: true });
+        const ticketRef = adminDb.collection("supportRequests").doc(id);
+        const now = Date.now();
+        const resolvedStatus = nextStatus || "processing";
+
+        // Append to the thread rather than only overwriting adminReply, so the
+        // seller and the admin both see the full conversation.
+        await adminDb.runTransaction(async (tx: FirebaseFirestore.Transaction) => {
+          const snap = await tx.get(ticketRef);
+          if (!snap.exists) {
+            const error: any = new Error("Support ticket not found");
+            error.statusCode = 404;
+            throw error;
+          }
+          const existing = (snap.data() || {}) as RawSupportTicket;
+          const timeline: RawTimelineEntry[] = Array.isArray(existing.timeline)
+            ? [...(existing.timeline as RawTimelineEntry[])]
+            : [];
+          timeline.push({
+            at: now,
+            by: "admin",
+            type: "message",
+            message,
+            note: message,
+          });
+          if (nextStatus && nextStatus !== existing.status) {
+            timeline.push({
+              at: now,
+              by: "admin",
+              type: "status",
+              message: `Status changed to ${nextStatus}`,
+              note: `Status changed to ${nextStatus}`,
+            });
+          }
+          tx.set(
+            ticketRef,
+            {
+              adminReply: message,
+              status: resolvedStatus,
+              timeline: timeline.slice(-50),
+              repliedAt: now,
+              repliedBy: me.uid,
+              updatedAt: now,
+            },
+            { merge: true },
+          );
+        });
+
+        return res.status(200).json({ ok: true, status: resolvedStatus });
       }
       
       

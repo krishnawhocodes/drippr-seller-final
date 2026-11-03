@@ -1,0 +1,75 @@
+{
+  "__comment": [
+    "Composite indexes required by the seller panel's queries. Firestore",
+    "rejects these queries outright when the matching index is missing, so",
+    "keeping them in the repo means a rebuilt or restored project comes up",
+    "working instead of erroring. Deploy with:",
+    "  firebase deploy --only firestore:indexes"
+  ],
+  "indexes": [
+    {
+      "__query": "Orders page / Dashboard recent orders: merchantId + newest first",
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "merchantId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "__query": "Analytics: merchantId + createdAt >= cutoff, ascending",
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "merchantId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "__query": "Dashboard pending count: merchantId + status == open",
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "merchantId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "__query": "Products page: merchantId + newest first",
+      "collectionGroup": "merchantProducts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "merchantId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "__query": "Seller support tickets: merchantId + newest first",
+      "collectionGroup": "supportRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "merchantId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "__query": "Media bucket: merchantId + newest first",
+      "collectionGroup": "merchantMedia",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "merchantId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "__query": "Payments payout history: merchantId + newest first",
+      "collectionGroup": "payouts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "merchantId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

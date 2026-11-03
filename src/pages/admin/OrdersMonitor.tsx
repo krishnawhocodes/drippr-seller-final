@@ -5,7 +5,16 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { Search, Eye, ClipboardList, Clock, Download, Truck, RefreshCw } from "lucide-react";
+import {
+  Search,
+  Eye,
+  ClipboardList,
+  Clock,
+  Download,
+  Truck,
+  RefreshCw,
+  CheckCircle2,
+} from "lucide-react";
 import { assignPickup, ordersList, uploadAdminFile } from "@/lib/adminApi";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -474,6 +483,26 @@ export default function AdminOrdersMonitor() {
     setLabelFile(null);
   }
 
+  /**
+   * Takes over an order the seller let expire. Without this the order is
+   * unfulfillable: the seller can no longer accept it and a pickup cannot be
+   * planned for something still sitting in vendor_pending.
+   */
+  async function acceptForSeller(order: OrderDoc) {
+    setBusy(true);
+    try {
+      await authedJsonPost("/api/orders/accept", { orderId: order.id });
+      toast.success(`Accepted ${order.orderNumber || order.id} for the seller`);
+      fetchOrders();
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not accept the order",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function submitPlan() {
     if (!planFor?.id) return;
 
@@ -679,10 +708,22 @@ export default function AdminOrdersMonitor() {
                               <Eye className="h-4 w-4" />
                             </Button>
 
-                            <Button onClick={() => openPlan(o)} disabled={!canPlan || busy}>
-                              <ClipboardList className="h-4 w-4 mr-2" />
-                              Plan Pickup
-                            </Button>
+                            {st === "vendor_expired" ? (
+                              <Button
+                                variant="secondary"
+                                onClick={() => acceptForSeller(o)}
+                                disabled={busy}
+                                title="The seller missed the window. Accept on their behalf so this order can still ship."
+                              >
+                                <CheckCircle2 className="h-4 w-4 mr-2" />
+                                Accept for seller
+                              </Button>
+                            ) : (
+                              <Button onClick={() => openPlan(o)} disabled={!canPlan || busy}>
+                                <ClipboardList className="h-4 w-4 mr-2" />
+                                Plan Pickup
+                              </Button>
+                            )}
 
                             <Button
                               variant="outline"

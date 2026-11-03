@@ -1,0 +1,91 @@
+rules_version = '2';
+
+// DRIPPR seller panel - Firestore security rules.
+//
+// Scope: these rules govern the BROWSER only. Every serverless function in
+// api/ uses the Firebase Admin SDK, which bypasses rules entirely, so the
+// panel's privileged work (approvals, Shopify sync, order transitions, admin
+// reads) is unaffected by anything here and is gated by ADMIN_UIDS instead.
+//
+// The browser only ever needs to:
+//   - read and write its own merchants/{uid} profile
+//   - read its own products, orders, stats, payouts and media
+//   - read its own support tickets, and create new ones
+// Everything else is denied, so one seller can never see another's data.
+//
+// NOTE: adding this file does not deploy it. Deploy with:
+//   firebase deploy --only firestore:rules
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    // True when the document being read belongs to the caller.
+    function ownsExisting() {
+      return signedIn() && resource.data.merchantId == request.auth.uid;
+    }
+
+    // True when the document being written is stamped with the caller's uid.
+    function ownsIncoming() {
+      return signedIn() && request.resource.data.merchantId == request.auth.uid;
+    }
+
+    // Seller profile: the only collection the browser writes directly.
+    match /merchants/{uid} {
+      allow read: if isSelf(uid);
+      allow create, update: if isSelf(uid);
+      allow delete: if false;
+    }
+
+    // Written by the API on approval and by Shopify sync. Read-only here.
+    match /merchantProducts/{productId} {
+      allow read: if ownsExisting();
+      allow write: if false;
+    }
+
+    // Written by the Shopify webhooks and the order workflow endpoints.
+    match /orders/{orderId} {
+      allow read: if ownsExisting();
+      allow write: if false;
+    }
+
+    // Aggregates maintained by the orders/create webhook.
+    match /merchantStats/{uid} {
+      allow read: if isSelf(uid);
+      allow write: if false;
+    }
+
+    match /payouts/{payoutId} {
+      allow read: if ownsExisting();
+      allow write: if false;
+    }
+
+    // Saved by the API after an ImageKit upload.
+    match /merchantMedia/{mediaId} {
+      allow read: if ownsExisting();
+      allow write: if false;
+    }
+
+    // Sellers raise tickets from the browser; only the admin API may reply,
+    // change status or delete, so a seller cannot rewrite their own history.
+    match /supportRequests/{ticketId} {
+      allow read: if ownsExisting();
+      allow create: if ownsIncoming()
+                    && request.resource.data.status == 'pending';
+      allow update, delete: if false;
+    }
+
+    // Internal collections the browser must never touch: skuClaims,
+    // shopifyProductOwners, adminSettings, webhookEvents, admins.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

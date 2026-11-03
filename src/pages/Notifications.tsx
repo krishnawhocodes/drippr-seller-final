@@ -1,298 +1,430 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { 
-  Bell, 
-  Package, 
-  ShoppingCart, 
-  DollarSign, 
-  AlertCircle, 
-  CheckCircle, 
-  Clock, 
-  TrendingUp,
-  X,
+import {
+  Bell,
+  Package,
+  ShoppingCart,
+  AlertCircle,
+  CheckCircle,
+  Clock,
+  Truck,
+  MessageSquare,
   ExternalLink,
-  Settings
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { auth, db } from "@/lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
+import {
+  collection,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  where,
+} from "firebase/firestore";
+import {
+  getRemainingBusinessTime,
+  formatBusinessHoursCountdown,
+} from "@/lib/officeHours";
 
-interface Notification {
+type OrderRow = {
   id: string;
-  type: "order" | "product" | "payment" | "alert" | "success" | "info";
+  orderNumber?: string;
+  shopifyOrderId?: string;
+  workflowStatus?: string;
+  createdAt?: number;
+  vendorAcceptBy?: number;
+  adminPlannedAt?: number;
+  dispatchedAt?: number;
+  lineItems?: unknown[];
+  shippingLabel?: { url?: string } | null;
+};
+
+type ProductRow = {
+  id: string;
+  title?: string;
+  status?: string;
+  published?: boolean;
+  reviewNote?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
+};
+
+type TicketRow = {
+  id: string;
+  subject?: string;
+  adminReply?: string;
+  repliedAt?: number;
+  updatedAt?: { seconds?: number } | number;
+};
+
+type NotificationKind =
+  | "order_action"
+  | "order_info"
+  | "product_rejected"
+  | "product_live"
+  | "product_review"
+  | "support_reply";
+
+type Notification = {
+  id: string;
+  kind: NotificationKind;
   title: string;
   description: string;
-  time: string;
-  isRead: boolean;
-  link?: string;
-  actionText?: string;
+  at: number;
+  link: string;
+  actionText: string;
+  urgent?: boolean;
+};
+
+const ICONS: Record<NotificationKind, typeof Bell> = {
+  order_action: ShoppingCart,
+  order_info: Truck,
+  product_rejected: AlertCircle,
+  product_live: CheckCircle,
+  product_review: Package,
+  support_reply: MessageSquare,
+};
+
+const TONES: Record<NotificationKind, string> = {
+  order_action: "text-primary bg-primary/10 border-primary/20",
+  order_info: "text-sky-600 bg-sky-500/10 border-sky-500/20",
+  product_rejected: "text-destructive bg-destructive/10 border-destructive/20",
+  product_live: "text-emerald-600 bg-emerald-500/10 border-emerald-500/20",
+  product_review: "text-amber-600 bg-amber-500/10 border-amber-500/20",
+  support_reply: "text-violet-600 bg-violet-500/10 border-violet-500/20",
+};
+
+function relativeTime(at: number) {
+  const diff = Date.now() - at;
+  if (!at || diff < 0) return "just now";
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
+  return new Date(at).toLocaleDateString("en-IN");
 }
 
-const mockNotifications: Notification[] = [
-  {
-    id: "1",
-    type: "order",
-    title: "New Order Received",
-    description: "Order #12345 has been placed. 3 items worth ₹2,499",
-    time: "2 minutes ago",
-    isRead: false,
-    link: "/dashboard/orders",
-    actionText: "View Order"
-  },
-  {
-    id: "2",
-    type: "success",
-    title: "Product Approved",
-    description: "Your product 'Premium Cotton T-Shirt' has been approved and is now live",
-    time: "1 hour ago",
-    isRead: false,
-    link: "/dashboard/products",
-    actionText: "View Product"
-  },
-  {
-    id: "3",
-    type: "payment",
-    title: "Payment Received",
-    description: "₹5,000 has been credited to your account",
-    time: "3 hours ago",
-    isRead: true,
-    link: "/dashboard/payments",
-    actionText: "View Details"
-  },
-  {
-    id: "4",
-    type: "alert",
-    title: "Low Stock Alert",
-    description: "5 products are running low on stock. Restock soon to avoid missing sales",
-    time: "5 hours ago",
-    isRead: true,
-    link: "/dashboard/products",
-    actionText: "Manage Stock"
-  },
-  {
-    id: "5",
-    type: "info",
-    title: "Weekly Performance Report",
-    description: "Your store had 45% more orders this week. Sales increased by ₹15,000",
-    time: "1 day ago",
-    isRead: true,
-    link: "/dashboard/analytics",
-    actionText: "View Analytics"
-  },
-  {
-    id: "6",
-    type: "product",
-    title: "Product Under Review",
-    description: "Your product 'Leather Wallet' is being reviewed by our team",
-    time: "2 days ago",
-    isRead: true,
-    link: "/dashboard/products",
-    actionText: "Check Status"
-  }
-];
-
-const getNotificationIcon = (type: string) => {
-  switch (type) {
-    case "order": return ShoppingCart;
-    case "product": return Package;
-    case "payment": return DollarSign;
-    case "alert": return AlertCircle;
-    case "success": return CheckCircle;
-    case "info": return TrendingUp;
-    default: return Bell;
-  }
-};
-
-const getNotificationColor = (type: string) => {
-  switch (type) {
-    case "order": return "text-primary bg-primary/10 border-primary/20";
-    case "product": return "text-blue-500 bg-blue-500/10 border-blue-500/20";
-    case "payment": return "text-green-500 bg-green-500/10 border-green-500/20";
-    case "alert": return "text-destructive bg-destructive/10 border-destructive/20";
-    case "success": return "text-emerald-500 bg-emerald-500/10 border-emerald-500/20";
-    case "info": return "text-accent bg-accent/10 border-accent/20";
-    default: return "text-muted-foreground bg-muted/10 border-border";
-  }
-};
-
+/**
+ * Notifications are derived live from the seller's own orders, products and
+ * support tickets. This page previously rendered a hardcoded list, so it
+ * showed invented activity and never surfaced anything that actually needed
+ * the seller's attention.
+ */
 export default function Notifications() {
-  const [notifications, setNotifications] = useState(mockNotifications);
-  const unreadCount = notifications.filter(n => !n.isRead).length;
+  const [uid, setUid] = useState<string | null>(auth.currentUser?.uid ?? null);
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [products, setProducts] = useState<ProductRow[]>([]);
+  const [tickets, setTickets] = useState<TicketRow[]>([]);
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(true);
 
-  const markAsRead = (id: string) => {
-    setNotifications(notifications.map(n => 
-      n.id === id ? { ...n, isRead: true } : n
-    ));
-  };
+  useEffect(() => onAuthStateChanged(auth, (u) => setUid(u?.uid ?? null)), []);
 
-  const markAllAsRead = () => {
-    setNotifications(notifications.map(n => ({ ...n, isRead: true })));
-  };
+  useEffect(() => {
+    if (!uid) {
+      setOrders([]);
+      setProducts([]);
+      setTickets([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
 
-  const removeNotification = (id: string) => {
-    setNotifications(notifications.filter(n => n.id !== id));
-  };
+    function rows<T>(snap: {
+      forEach: (cb: (doc: { id: string; data: () => unknown }) => void) => void;
+    }): T[] {
+      const out: T[] = [];
+      snap.forEach((doc) => out.push({ id: doc.id, ...(doc.data() as object) } as T));
+      return out;
+    }
+
+    const unsubOrders = onSnapshot(
+      query(
+        collection(db, "orders"),
+        where("merchantId", "==", uid),
+        orderBy("createdAt", "desc"),
+        limit(50),
+      ),
+      (snap) => {
+        setOrders(rows<OrderRow>(snap));
+        setLoading(false);
+      },
+      () => setLoading(false),
+    );
+
+    const unsubProducts = onSnapshot(
+      query(
+        collection(db, "merchantProducts"),
+        where("merchantId", "==", uid),
+        orderBy("createdAt", "desc"),
+        limit(50),
+      ),
+      (snap) => setProducts(rows<ProductRow>(snap)),
+      () => undefined,
+    );
+
+    const unsubTickets = onSnapshot(
+      query(collection(db, "supportRequests"), where("merchantId", "==", uid)),
+      (snap) => setTickets(rows<TicketRow>(snap)),
+      () => undefined,
+    );
+
+    return () => {
+      unsubOrders();
+      unsubProducts();
+      unsubTickets();
+    };
+  }, [uid]);
+
+  const notifications = useMemo<Notification[]>(() => {
+    const now = Date.now();
+    const items: Notification[] = [];
+
+    for (const order of orders) {
+      const label = order.orderNumber || order.shopifyOrderId || order.id;
+      const status = String(order.workflowStatus || "vendor_pending");
+
+      if (status === "vendor_pending") {
+        const deadline =
+          Number(order.vendorAcceptBy) || Number(order.createdAt) || now;
+        const left = getRemainingBusinessTime(deadline, now);
+        items.push(
+          left > 0
+            ? {
+                id: `order-accept-${order.id}`,
+                kind: "order_action",
+                title: `Order ${label} needs your acceptance`,
+                description: `${
+                  (order.lineItems || []).length
+                } item(s). Time left: ${formatBusinessHoursCountdown(deadline, now)}.`,
+                at: Number(order.createdAt) || now,
+                link: "/dashboard/orders",
+                actionText: "Accept order",
+                urgent: true,
+              }
+            : {
+                id: `order-expired-${order.id}`,
+                kind: "product_rejected",
+                title: `Order ${label} acceptance window closed`,
+                description:
+                  "DRIPPR support can still take this order forward for you.",
+                at: Number(order.createdAt) || now,
+                link: "/dashboard/support",
+                actionText: "Contact support",
+                urgent: true,
+              },
+        );
+      }
+
+      if (status === "pickup_assigned") {
+        items.push({
+          id: `order-dispatch-${order.id}`,
+          kind: "order_action",
+          title: `Pickup assigned for order ${label}`,
+          description: order.shippingLabel?.url
+            ? "Print the shipping label and hand the parcel over, then mark it dispatched."
+            : "Hand the parcel to the delivery partner, then mark it dispatched.",
+          at: Number(order.adminPlannedAt) || Number(order.createdAt) || now,
+          link: "/dashboard/orders",
+          actionText: "Mark dispatched",
+          urgent: true,
+        });
+      }
+
+      if (status === "dispatched" && order.dispatchedAt) {
+        items.push({
+          id: `order-done-${order.id}`,
+          kind: "order_info",
+          title: `Order ${label} dispatched`,
+          description: "On its way to the customer.",
+          at: Number(order.dispatchedAt),
+          link: "/dashboard/orders",
+          actionText: "View order",
+        });
+      }
+    }
+
+    for (const product of products) {
+      const status = String(product.status || "");
+      const title = product.title || "Your product";
+      const at = Number(product.updatedAt) || Number(product.createdAt) || now;
+
+      if (status === "rejected") {
+        items.push({
+          id: `product-rejected-${product.id}`,
+          kind: "product_rejected",
+          title: `"${title}" was not approved`,
+          description: product.reviewNote
+            ? String(product.reviewNote)
+            : "Open the product to see what needs changing.",
+          at,
+          link: "/dashboard/products",
+          actionText: "Review product",
+          urgent: true,
+        });
+      } else if (status === "pending" || status === "update_in_review") {
+        items.push({
+          id: `product-review-${product.id}`,
+          kind: "product_review",
+          title: `"${title}" is awaiting review`,
+          description:
+            status === "update_in_review"
+              ? "Your changes are with the DRIPPR team."
+              : "DRIPPR is reviewing this submission.",
+          at,
+          link: "/dashboard/products",
+          actionText: "View status",
+        });
+      } else if (status === "approved" && product.published) {
+        items.push({
+          id: `product-live-${product.id}`,
+          kind: "product_live",
+          title: `"${title}" is live on the store`,
+          description: "Customers can now buy this product.",
+          at,
+          link: "/dashboard/products",
+          actionText: "View product",
+        });
+      }
+    }
+
+    for (const ticket of tickets) {
+      if (!ticket.adminReply) continue;
+      items.push({
+        id: `ticket-${ticket.id}`,
+        kind: "support_reply",
+        title: `DRIPPR replied: ${ticket.subject || "your ticket"}`,
+        description: String(ticket.adminReply).slice(0, 160),
+        at:
+          Number(ticket.repliedAt) ||
+          (typeof ticket.updatedAt === "object" && ticket.updatedAt?.seconds
+            ? ticket.updatedAt.seconds * 1000
+            : Number(ticket.updatedAt)) ||
+          now,
+        link: "/dashboard/support",
+        actionText: "Open ticket",
+      });
+    }
+
+    return items
+      .filter((item) => !dismissed.has(item.id))
+      .sort((a, b) => Number(b.urgent) - Number(a.urgent) || b.at - a.at);
+  }, [orders, products, tickets, dismissed]);
+
+  const urgentCount = notifications.filter((item) => item.urgent).length;
 
   return (
     <DashboardLayout>
-      {/* Animated Background */}
-      <div className="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
-        <div className="absolute top-20 -left-20 w-72 h-72 bg-primary/20 rounded-full blur-3xl animate-pulse" />
-        <div className="absolute bottom-20 -right-20 w-96 h-96 bg-accent/20 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1s' }} />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 bg-primary/10 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '2s' }} />
-      </div>
-
-      <div className="space-y-6 animate-fade-in">
-        {/* Header with Glass Effect */}
-        <Card className="backdrop-blur-xl bg-card/60 border-border/50 shadow-xl">
-          <div className="p-6 space-y-4">
-            <div className="flex items-start justify-between">
-              <div className="space-y-1">
-                <div className="flex items-center gap-3">
-                  <div className="relative">
-                    <Bell className="h-8 w-8 text-primary animate-pulse" />
-                    {unreadCount > 0 && (
-                      <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold animate-scale-in">
-                        {unreadCount}
-                      </span>
-                    )}
-                  </div>
-                  <h1 className="text-3xl font-bold text-foreground">Notifications</h1>
-                </div>
+      <div className="space-y-6">
+        <Card>
+          <div className="space-y-4 p-6">
+            <div className="flex items-start gap-3">
+              <div className="relative">
+                <Bell className="h-8 w-8 text-primary" />
+                {urgentCount > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-xs font-bold text-destructive-foreground">
+                    {urgentCount}
+                  </span>
+                )}
+              </div>
+              <div>
+                <h1 className="text-3xl font-bold">Notifications</h1>
                 <p className="text-muted-foreground">
-                  Stay updated with your store activities and important updates
+                  Live from your orders, products and support tickets.
                 </p>
               </div>
-              <Link to="/dashboard/settings">
-                <Button variant="outline" size="icon" className="backdrop-blur-sm hover-scale">
-                  <Settings className="h-4 w-4" />
-                </Button>
-              </Link>
             </div>
-
-            {/* Stats */}
-            <div className="flex flex-wrap gap-4">
-              <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary/10 backdrop-blur-sm border border-primary/20">
-                <Clock className="h-4 w-4 text-primary" />
-                <span className="text-sm font-medium text-foreground">{unreadCount} Unread</span>
-              </div>
-              <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent/10 backdrop-blur-sm border border-accent/20">
-                <Bell className="h-4 w-4 text-accent-foreground" />
-                <span className="text-sm font-medium text-foreground">{notifications.length} Total</span>
-              </div>
-              {unreadCount > 0 && (
-                <Button 
-                  onClick={markAllAsRead}
-                  variant="outline" 
-                  size="sm"
-                  className="backdrop-blur-sm hover-scale"
-                >
-                  Mark all as read
-                </Button>
-              )}
+            <div className="flex flex-wrap gap-3 text-sm">
+              <span className="rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-1.5 font-medium">
+                {urgentCount} needing action
+              </span>
+              <span className="rounded-lg border bg-muted/40 px-3 py-1.5 font-medium">
+                {notifications.length} total
+              </span>
             </div>
           </div>
         </Card>
 
-        {/* Notifications List */}
         <div className="space-y-3">
-          {notifications.length === 0 ? (
-            <Card className="backdrop-blur-xl bg-card/60 border-border/50 shadow-xl">
-              <div className="p-12 text-center space-y-4 animate-fade-in">
-                <div className="flex justify-center">
-                  <div className="p-4 rounded-full bg-muted/50 backdrop-blur-sm">
-                    <Bell className="h-12 w-12 text-muted-foreground" />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <h3 className="text-xl font-semibold text-foreground">All caught up!</h3>
-                  <p className="text-muted-foreground">You have no notifications at the moment</p>
-                </div>
-              </div>
+          {loading ? (
+            <Card className="p-10 text-center text-muted-foreground">
+              Loading your activity…
+            </Card>
+          ) : notifications.length === 0 ? (
+            <Card className="p-12 text-center">
+              <Bell className="mx-auto mb-3 h-12 w-12 text-muted-foreground" />
+              <h3 className="text-xl font-semibold">All caught up</h3>
+              <p className="text-muted-foreground">
+                Nothing needs your attention right now.
+              </p>
             </Card>
           ) : (
-            notifications.map((notification, index) => {
-              const Icon = getNotificationIcon(notification.type);
-              const colorClass = getNotificationColor(notification.type);
-              
+            notifications.map((item) => {
+              const Icon = ICONS[item.kind];
               return (
                 <Card
-                  key={notification.id}
+                  key={item.id}
                   className={cn(
-                    "group backdrop-blur-xl border-border/50 shadow-lg hover:shadow-xl transition-all duration-300 hover-scale cursor-pointer animate-fade-in overflow-hidden",
-                    notification.isRead ? "bg-card/40" : "bg-card/70 border-primary/30"
+                    "p-5 transition-shadow hover:shadow-md",
+                    item.urgent && "border-primary/30",
                   )}
-                  style={{ animationDelay: `${index * 0.1}s` }}
-                  onClick={() => !notification.isRead && markAsRead(notification.id)}
                 >
-                  {/* Gradient Overlay for Unread */}
-                  {!notification.isRead && (
-                    <div className="absolute inset-0 bg-gradient-to-r from-primary/5 to-transparent pointer-events-none" />
-                  )}
-                  
-                  <div className="relative p-5">
-                    <div className="flex gap-4">
-                      {/* Icon */}
-                      <div className={cn(
-                        "flex-shrink-0 w-12 h-12 rounded-xl flex items-center justify-center border backdrop-blur-sm transition-transform duration-300 group-hover:scale-110",
-                        colorClass
-                      )}>
-                        <Icon className="h-5 w-5" />
+                  <div className="flex gap-4">
+                    <div
+                      className={cn(
+                        "flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-xl border",
+                        TONES[item.kind],
+                      )}
+                    >
+                      <Icon className="h-5 w-5" />
+                    </div>
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="font-semibold">{item.title}</h3>
+                            {item.urgent && (
+                              <Badge className="border-destructive/20 bg-destructive/10 text-destructive">
+                                Action needed
+                              </Badge>
+                            )}
+                          </div>
+                          <p className="text-sm text-muted-foreground">
+                            {item.description}
+                          </p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="shrink-0"
+                          onClick={() =>
+                            setDismissed((current) =>
+                              new Set(current).add(item.id),
+                            )
+                          }
+                        >
+                          Dismiss
+                        </Button>
                       </div>
-
-                      {/* Content */}
-                      <div className="flex-1 space-y-2 min-w-0">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="space-y-1 flex-1">
-                            <div className="flex items-center gap-2">
-                              <h3 className="font-semibold text-foreground group-hover:text-primary transition-colors">
-                                {notification.title}
-                              </h3>
-                              {!notification.isRead && (
-                                <Badge className="h-2 w-2 rounded-full p-0 bg-primary animate-pulse" />
-                              )}
-                            </div>
-                            <p className="text-sm text-muted-foreground line-clamp-2">
-                              {notification.description}
-                            </p>
-                          </div>
-
-                          {/* Remove Button */}
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              removeNotification(notification.id);
-                            }}
-                          >
-                            <X className="h-4 w-4" />
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                          <Clock className="h-3 w-3" />
+                          {relativeTime(item.at)}
+                        </span>
+                        <Link to={item.link}>
+                          <Button variant="ghost" size="sm" className="gap-1">
+                            {item.actionText}
+                            <ExternalLink className="h-3 w-3" />
                           </Button>
-                        </div>
-
-                        {/* Footer */}
-                        <div className="flex items-center justify-between gap-4">
-                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                            <Clock className="h-3 w-3" />
-                            {notification.time}
-                          </div>
-
-                          {notification.link && (
-                            <Link to={notification.link} onClick={(e) => e.stopPropagation()}>
-                              <Button 
-                                variant="ghost" 
-                                size="sm" 
-                                className="h-8 gap-1 text-primary hover:text-primary"
-                              >
-                                {notification.actionText}
-                                <ExternalLink className="h-3 w-3" />
-                              </Button>
-                            </Link>
-                          )}
-                        </div>
+                        </Link>
                       </div>
                     </div>
                   </div>

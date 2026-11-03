@@ -63,23 +63,36 @@ export default async function handler(req: any, res: any) {
         const deadline = vendorAcceptDeadline(
           order as { createdAt?: number; vendorAcceptBy?: number | null },
         );
-        if (getRemainingBusinessTime(deadline, now) <= 0) {
+        const expired = getRemainingBusinessTime(deadline, now) <= 0;
+
+        // An expired order used to be unfulfillable: the seller could no
+        // longer accept it and the admin could not plan a pickup for it, so it
+        // sat in vendor_pending forever. Admins can take it over instead.
+        if (expired && !caller.isAdmin) {
           throw new WorkflowError(
             400,
-            "The acceptance window for this order has expired. Please contact DRIPPR support.",
+            "The acceptance window for this order has expired. DRIPPR support can still take it forward for you.",
           );
         }
+
+        const overridden = expired && caller.isAdmin;
 
         return {
           workflowStatus: "vendor_accepted",
           vendorAcceptedAt: now,
           vendorAcceptedBy: caller.uid,
+          acceptedByAdmin: caller.isAdmin,
+          acceptanceOverridden: overridden,
           // Admin planning is not time boxed, kept explicit for clarity.
           adminPlanBy: null,
           workflowTimeline: appendTimeline(order.workflowTimeline, {
             at: now,
-            type: "vendor_accepted",
-            note: "Seller accepted the order",
+            type: overridden ? "accepted_by_admin" : "vendor_accepted",
+            note: overridden
+              ? "DRIPPR accepted on the seller's behalf after the window expired"
+              : caller.isAdmin
+                ? "DRIPPR accepted on the seller's behalf"
+                : "Seller accepted the order",
             by: caller.uid,
           }),
         };

@@ -34,3 +34,6 @@ dist
 *.zip
 
 !.env.example
+
+# built test bundle
+tests/workflow/flow.mjs

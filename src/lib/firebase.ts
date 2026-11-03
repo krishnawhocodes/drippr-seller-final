@@ -30,8 +30,10 @@ export const storage = getStorage(app);
 
 export { onAuthStateChanged, GoogleAuthProvider };
 
-
-// expose for ad-hoc admin actions in DevTools
-// (remove later when done)
-if (typeof window !== "undefined") (window as any).__auth = auth;
-;(window as any).auth = auth;
+// NOTE: the Firebase web config above is public by design - it identifies the
+// project, it does not grant access. Access is enforced by Firestore security
+// rules (firestore.rules) and by the server-side ADMIN_UIDS allowlist.
+//
+// The previous build also assigned `window.auth` / `window.__auth` here for
+// ad-hoc DevTools use. That handed any injected script or browser extension a
+// live authenticated session, so it has been removed.
