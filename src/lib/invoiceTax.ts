@@ -50,6 +50,7 @@ export type InvoiceTotals = {
   /** True when seller and buyer are in the same state (CGST + SGST). */
   intraState: boolean;
   placeOfSupply: string;
+  sellerState: string;
 };
 
 function round2(value: number) {
@@ -110,16 +111,35 @@ export function sellerStateFromGstin(gstin: unknown): string {
 }
 
 /**
- * Intra-state (CGST + SGST) when the seller's GSTIN state matches the delivery
- * state. Without a GSTIN we cannot prove intra-state, so we fall back to IGST,
- * which is the safer default on a marketplace invoice.
+ * Where the supply is made from.
+ *
+ * A GSTIN encodes the state it was issued in, and that is the state GST law
+ * cares about, so it outranks anything typed into a profile. Sellers who have
+ * not given a GSTIN yet still have a state on their address, which is enough
+ * to place the supply correctly.
  */
-export function isIntraState(gstin: unknown, buyerState: unknown) {
-  const sellerState = sellerStateFromGstin(gstin);
-  if (!sellerState) return false;
+export function resolveSellerState(seller: {
+  gstin?: unknown;
+  state?: unknown;
+}): string {
+  const fromGstin = sellerStateFromGstin(seller?.gstin);
+  if (fromGstin) return fromGstin;
+  return String(seller?.state || "").trim();
+}
+
+/**
+ * Intra-state supplies attract CGST + SGST; everything else attracts IGST.
+ *
+ * Both states have to be known to call it intra-state. An unknown state means
+ * we cannot prove the supply stayed put, and IGST is the safer default on a
+ * marketplace invoice: charging IGST where CGST + SGST was due is a
+ * classification error, while under-collecting is a shortfall.
+ */
+export function isIntraState(sellerState: unknown, buyerState: unknown) {
+  const seller = stateKey(sellerState);
   const buyer = stateKey(buyerState);
-  if (!buyer) return false;
-  return stateKey(sellerState) === buyer;
+  if (!seller || !buyer) return false;
+  return seller === buyer;
 }
 
 function splitTax(taxAmount: number, intraState: boolean): TaxBreakdown {
@@ -183,11 +203,12 @@ function lineLabel(item: SourceLineItem) {
  */
 export function buildInvoiceTotals(args: {
   lineItems: SourceLineItem[];
-  gstin?: unknown;
+  /** Where the seller supplies from; see resolveSellerState. */
+  sellerState?: unknown;
   buyerState?: unknown;
   deliveryPerUnit?: number;
 }): InvoiceTotals {
-  const intraState = isIntraState(args.gstin, args.buyerState);
+  const intraState = isIntraState(args.sellerState, args.buyerState);
   const deliveryPerUnit = Number.isFinite(Number(args.deliveryPerUnit))
     ? Number(args.deliveryPerUnit)
     : DELIVERY_PER_UNIT;
@@ -281,6 +302,7 @@ export function buildInvoiceTotals(args: {
     grandTotal: sum((row) => row.net),
     intraState,
     placeOfSupply: String(args.buyerState || "").trim(),
+    sellerState: String(args.sellerState || "").trim(),
   };
 }
 

@@ -59,7 +59,18 @@ export function assignPickup(payload: {
   orderId: string;
   pickupWindow?: string | null;
   pickupAddress?: string | null;
-  customerAddress?: string | null;
+  /** Buyer details captured by the admin; the invoice is billed to these. */
+  customerDetails?: {
+    name?: string;
+    address1?: string;
+    address2?: string;
+    city?: string;
+    province?: string;
+    zip?: string;
+    country?: string;
+    phone?: string;
+    email?: string;
+  };
   deliveryScope?: "same_city" | "different_city";
   notes?: string | null;
   deliveryPartner?: {

@@ -14,6 +14,7 @@ import {
   amountInWords,
   buildInvoiceTotals,
   invoiceNumberFor,
+  resolveSellerState,
   type InvoiceTotals,
   type SourceLineItem,
 } from "./invoiceTax";
@@ -501,7 +502,12 @@ export async function generateInvoicePdf(
 
   const totals = buildInvoiceTotals({
     lineItems: order.lineItems || [],
-    gstin: merchant?.gstin,
+    // The seller's own state decides CGST + SGST versus IGST, taken from the
+    // GSTIN where there is one and from the saved address otherwise.
+    sellerState: resolveSellerState({
+      gstin: merchant?.gstin,
+      state: merchant?.state,
+    }),
     buyerState: order.shippingAddress?.province,
   });
 

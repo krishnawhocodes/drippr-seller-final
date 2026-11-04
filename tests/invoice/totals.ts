@@ -8,7 +8,12 @@
 //
 // Run with:  npm run test:invoice
 
-import { buildInvoiceTotals, type SourceLineItem } from "../../src/lib/invoiceTax";
+import {
+  buildInvoiceTotals,
+  isIntraState,
+  resolveSellerState,
+  type SourceLineItem,
+} from "../../src/lib/invoiceTax";
 
 let failures = 0;
 
@@ -26,10 +31,17 @@ function check(
   label: string,
   args: {
     lineItems: SourceLineItem[];
-    gstin?: string;
+    sellerState?: string;
     buyerState?: string;
   },
-  expected: { grandTotal: number; rows?: number; intraState?: boolean },
+  expected: {
+    grandTotal: number;
+    rows?: number;
+    intraState?: boolean;
+    cgst?: number;
+    sgst?: number;
+    igst?: number;
+  },
 ) {
   const totals = buildInvoiceTotals(args);
   console.log("\n" + label);
@@ -90,6 +102,45 @@ function check(
       totals.intraState === expected.intraState,
       label + ": intraState is " + expected.intraState,
     );
+    // The split is the whole point of getting intraState right.
+    if (expected.intraState) {
+      expect(
+        totals.igst === 0 && totals.cgst > 0 && totals.sgst > 0,
+        label + ": splits into CGST and SGST, with no IGST",
+        `igst=${totals.igst} cgst=${totals.cgst} sgst=${totals.sgst}`,
+      );
+      expect(
+        near(totals.cgst + totals.sgst, totals.taxTotal),
+        label + ": CGST + SGST is the whole tax",
+      );
+      // Each row is halved and rounded on its own, so the two sides can drift
+      // by up to half a paisa per row. They must still be halves, not a split
+      // that has gone lopsided.
+      expect(
+        Math.abs(totals.cgst - totals.sgst) <= 0.01 * totals.rows.length + 0.001,
+        label + ": CGST and SGST are equal halves",
+        `cgst=${totals.cgst} sgst=${totals.sgst} over ${totals.rows.length} rows`,
+      );
+    } else {
+      expect(
+        totals.cgst === 0 && totals.sgst === 0,
+        label + ": carries no CGST or SGST",
+        `cgst=${totals.cgst} sgst=${totals.sgst}`,
+      );
+    }
+  }
+  for (const [key, want] of [
+    ["cgst", expected.cgst],
+    ["sgst", expected.sgst],
+    ["igst", expected.igst],
+  ] as const) {
+    if (want != null) {
+      expect(
+        near(totals[key], want),
+        label + ": " + key + " is " + want,
+        "got " + totals[key],
+      );
+    }
   }
 }
 
@@ -153,19 +204,49 @@ check(
   "Intra-state order splits into CGST + SGST",
   {
     lineItems: [line()],
-    gstin: "07AABCU9603R1ZX",
+    sellerState: resolveSellerState({ gstin: "07AABCU9603R1ZX" }),
     buyerState: "Delhi",
   },
-  { grandTotal: 799, rows: 2, intraState: true },
+  // 799 inclusive of 5% -> 38.05 tax, halved either side.
+  { grandTotal: 799, rows: 2, intraState: true, cgst: 19.03, sgst: 19.02, igst: 0 },
 );
 
 check(
-  "Seller with a GSTIN shipping out of state stays on IGST",
+  "Seller shipping out of state stays on IGST",
   {
     lineItems: [line()],
-    gstin: "07AABCU9603R1ZX",
+    sellerState: resolveSellerState({ gstin: "07AABCU9603R1ZX" }),
     buyerState: "Karnataka",
   },
+  { grandTotal: 799, intraState: false, igst: 38.05, cgst: 0, sgst: 0 },
+);
+
+// The case the panel hit in practice: a seller who has filled in their
+// address but not yet their GSTIN. Before the state was read off the profile
+// this fell through to IGST on every order, including local ones.
+check(
+  "Seller without a GSTIN still gets CGST + SGST on a local order",
+  {
+    lineItems: [line()],
+    sellerState: resolveSellerState({ state: "Delhi" }),
+    buyerState: "Delhi",
+  },
+  { grandTotal: 799, intraState: true, igst: 0 },
+);
+
+check(
+  "State spelling and case do not change the verdict",
+  {
+    lineItems: [line()],
+    sellerState: "TAMIL NADU",
+    buyerState: "tamil-nadu",
+  },
+  { grandTotal: 799, intraState: true },
+);
+
+check(
+  "An unknown buyer state falls back to IGST",
+  { lineItems: [line()], sellerState: "Delhi", buyerState: "" },
   { grandTotal: 799, intraState: false },
 );
 

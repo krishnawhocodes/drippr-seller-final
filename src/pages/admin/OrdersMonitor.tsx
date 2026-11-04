@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
   Search,
-  Eye,
   ClipboardList,
   Clock,
   Download,
@@ -15,6 +14,7 @@ import {
   RefreshCw,
   CheckCircle2,
   AlertTriangle,
+  Info,
 } from "lucide-react";
 import {
   assignPickup,
@@ -22,6 +22,14 @@ import {
   refreshOrderCustomer,
   uploadAdminFile,
 } from "@/lib/adminApi";
+import {
+  INDIAN_STATES,
+  customerDetailsComplete,
+  formatCustomerAddress,
+  missingCustomerFields,
+  normalizeCustomerAddress,
+  type CustomerAddress,
+} from "@/lib/orderCustomer";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { generateInvoicePdf } from "@/lib/generateInvoicePdf";
@@ -167,7 +175,6 @@ type Filter =
   | "wf:vendor_expired";
 
 const THREE_HOURS = 3 * 60 * 60 * 1000;
-const THIRTY_MIN = 30 * 60 * 1000;
 
 /** Loose place comparison: "New Delhi" and "new delhi." are the same place. */
 function samePlace(a: unknown, b: unknown) {
@@ -268,8 +275,6 @@ function fmtCountdown(ms: number) {
 }
 
 export default function AdminOrdersMonitor() {
-  const [planningOrder, setPlanningOrder] = useState<any | null>(null);
-  const [isPlanOpen, setIsPlanOpen] = useState(false);
   const [orders, setOrders] = useState<OrderDoc[]>([]);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -292,8 +297,13 @@ export default function AdminOrdersMonitor() {
   const [partnerPhone, setPartnerPhone] = useState("");
   const [etaText, setEtaText] = useState("");
   const [trackingUrl, setTrackingUrl] = useState("");
-  const [customerAddress, setCustomerAddress] = useState("");
   const [refreshingCustomer, setRefreshingCustomer] = useState(false);
+  // Plan Pickup runs in two steps: confirm who the parcel is going to, then
+  // arrange the pickup itself. The invoice is built from step one, so it has
+  // to be settled before anything else is decided.
+  const [planStep, setPlanStep] = useState<"customer" | "pickup">("customer");
+  const [customer, setCustomer] = useState<CustomerAddress>({});
+  const [customerEmail, setCustomerEmail] = useState("");
   const [labelFile, setLabelFile] = useState<File | null>(null);
   const [deliveryScope, setDeliveryScope] = useState<
     "same_city" | "different_city"
@@ -334,7 +344,10 @@ export default function AdminOrdersMonitor() {
   const money = (v: number | undefined) =>
     new Intl.NumberFormat("en-IN", { style: "currency", currency }).format(Number(v || 0));
 
-  const customerFor = (o: OrderDoc) => o.customerEmail || o.raw?.customer?.email || "—";
+  const customerFor = (o: OrderDoc) =>
+    o.customerName || o.customerEmail || o.raw?.customer?.email || "—";
+  const payLabelFor = (o: OrderDoc) =>
+    (o.financialStatus || "pending").replace(/_/g, " ");
 
   // ✅ Calculate deadline with business hours
   const getVendorAcceptByDeadline = (o: OrderDoc): number => {
@@ -393,13 +406,20 @@ export default function AdminOrdersMonitor() {
     return "bg-muted text-muted-foreground border-muted";
   };
 
-  const timerFor = (o: OrderDoc): { label: string; ms: number } | null => {
+  const timerFor = (
+    o: OrderDoc,
+  ): { label: string; ms: number; paused: boolean } | null => {
     const st = workflowFor(o);
 
     if (st === "vendor_pending") {
       const acceptBy = getVendorAcceptByDeadline(o);
       const remaining = getRemainingBusinessTime(acceptBy, now);
-      return { label: "Vendor accept in", ms: remaining };
+      // No business time left before a deadline that has not yet arrived means
+      // the clock is parked outside office hours, not that the seller missed
+      // it. Orders created before deadlines became office-hours aware still
+      // carry a raw createdAt + 3h, which lands here.
+      const paused = remaining <= 0 && acceptBy > now;
+      return { label: "Vendor accept in", ms: remaining, paused };
     }
 
     // Admin has no time limit — no timer shown for vendor_accepted
@@ -460,6 +480,17 @@ export default function AdminOrdersMonitor() {
   }
 
   async function downloadInvoice(order: OrderDoc) {
+    // The invoice bills to the captured address; without it the document
+    // would go out with an empty BILL TO and the wrong place of supply.
+    const missing = missingCustomerFields(order.shippingAddress);
+    if (missing.length) {
+      toast.error(
+        "Capture the customer's " +
+          missing.join(", ") +
+          " in Plan Pickup before downloading the invoice.",
+      );
+      return;
+    }
     const u = auth.currentUser;
     if (!u) return toast.error("Please login again");
 
@@ -530,11 +561,17 @@ export default function AdminOrdersMonitor() {
     setPlanFor(o);
     setPlanOpen(true);
 
+    // Start on the pickup step when the buyer's details are already complete,
+    // so a store that does get them from Shopify is not made to re-confirm
+    // an address nobody changed.
+    const known = normalizeCustomerAddress(o.shippingAddress);
+    setCustomer(known);
+    setCustomerEmail(o.customerEmail || "");
+    setPlanStep(customerDetailsComplete(known) ? "pickup" : "customer");
+
     setPickupWindow("");
-    // Prefill from the seller who owns the product and from the Shopify
-    // delivery address on the order; both stay editable.
+    // Prefilled from the seller who owns the product; stays editable.
     setPickupAddress(o.merchant?.address || "");
-    setCustomerAddress(formatShopifyAddress(o.shippingAddress));
     // Suggested from the two locations; the admin always decides.
     setDeliveryScope(guessDeliveryScope(o).scope);
     setNotes("");
@@ -544,6 +581,9 @@ export default function AdminOrdersMonitor() {
     setTrackingUrl("");
     setLabelFile(null);
   }
+
+  const setCustomerField = (key: keyof CustomerAddress, value: string) =>
+    setCustomer((current) => ({ ...current, [key]: value }));
 
   /**
    * Pulls the buyer's name and delivery address from Shopify again for one
@@ -557,7 +597,22 @@ export default function AdminOrdersMonitor() {
       const nextAddress = (result.shippingAddress ||
         null) as OrderDoc["shippingAddress"];
 
-      if (nextAddress) setCustomerAddress(formatShopifyAddress(nextAddress));
+      // Fill the form with whatever Shopify was willing to release, without
+      // wiping anything the admin has already typed in by hand.
+      if (nextAddress) {
+        setCustomer((current) => {
+          const merged = { ...current } as CustomerAddress;
+          for (const [key, value] of Object.entries(nextAddress)) {
+            if (value && !String(merged[key as keyof CustomerAddress] || "").trim()) {
+              merged[key as keyof CustomerAddress] = value;
+            }
+          }
+          return merged;
+        });
+      }
+      if (result.customerEmail) {
+        setCustomerEmail((current) => current || result.customerEmail || "");
+      }
 
       // Keep the open dialog and the table in step with what came back.
       const merge = (o: OrderDoc): OrderDoc =>
@@ -619,11 +674,23 @@ export default function AdminOrdersMonitor() {
 
     setBusy(true);
     try {
+      // Re-check here as well as on the server: the invoice bills to these,
+      // and an order planned without them cannot be invoiced at all.
+      const missing = missingCustomerFields(customer);
+      if (missing.length) {
+        setPlanStep("customer");
+        toast.error("Customer details still needed: " + missing.join(", "));
+        return;
+      }
+
       // Upload the label first so a failed upload does not leave the order
-      // marked as planned without its label.
-      if (deliveryScope === "different_city" && !labelFile) {
+      // marked as planned without its label. Every parcel carries one: DRIPPR
+      // prints the local ones, the courier returns the rest.
+      if (!labelFile) {
         toast.error(
-          "Upload a shipping label for orders going outside the seller's city.",
+          deliveryScope === "same_city"
+            ? "Upload the DRIPPR shipping label for this local delivery."
+            : "Upload the courier's shipping label for this delivery.",
         );
         return;
       }
@@ -646,7 +713,10 @@ export default function AdminOrdersMonitor() {
         orderId: planFor.id, // use the selected order's Firestore doc id
         pickupWindow,
         pickupAddress,
-        customerAddress,
+        customerDetails: {
+          ...normalizeCustomerAddress(customer),
+          email: customerEmail.trim(),
+        },
         deliveryScope,
         notes,
         shippingLabel,
@@ -658,9 +728,10 @@ export default function AdminOrdersMonitor() {
         },
       });
 
-      toast.success("Pickup assigned successfully");
+      toast.success("Pickup assigned. The invoice is now available.");
       setPlanOpen(false);
       setPlanFor(null);
+      fetchOrders();
     } catch (e: any) {
       toast.error(e?.message || "Failed to assign pickup");
     } finally {
@@ -756,18 +827,22 @@ export default function AdminOrdersMonitor() {
           </CardHeader>
 
           <CardContent>
-            <div className="overflow-x-auto">
-              <Table>
+            {/* No horizontal scrolling: the columns are fixed and each cell
+                wraps onto a second or third line instead of pushing the table
+                wider than the page. */}
+            <div className="w-full">
+              <Table className="w-full table-fixed">
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Order</TableHead>
-                    <TableHead>Merchant</TableHead>
-                    <TableHead>Customer</TableHead>
-                    <TableHead>Amount</TableHead>
-                    <TableHead>Created</TableHead>
-                    <TableHead>Workflow</TableHead>
-                    <TableHead>Timer</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
+                    {/* Fixed pixel widths for everything that has a known
+                        size, so the item column absorbs the slack instead of
+                        the action buttons being squeezed out of their cell. */}
+                    <TableHead className="w-[104px]">Order</TableHead>
+                    <TableHead className="w-[15%]">Seller</TableHead>
+                    <TableHead>Item &amp; SKU</TableHead>
+                    <TableHead className="w-[96px] text-right">Amount</TableHead>
+                    <TableHead className="w-[116px]">Status</TableHead>
+                    <TableHead className="w-[124px] text-right">&nbsp;</TableHead>
                   </TableRow>
                 </TableHeader>
 
@@ -776,74 +851,131 @@ export default function AdminOrdersMonitor() {
                     const st = workflowFor(o);
                     const t = timerFor(o);
                     const canPlan = st === "vendor_accepted" || st === "admin_overdue";
+                    const items = o.lineItems || [];
+                    const first = items[0];
 
                     return (
-                      <TableRow key={o.id}>
+                      <TableRow key={o.id} className="align-top">
                         <TableCell className="font-medium">
-                          {o.orderNumber || o.shopifyOrderId || o.id}
+                          <div className="truncate">
+                            {o.orderNumber || o.shopifyOrderId || o.id}
+                          </div>
+                          <div className="text-xs font-normal text-muted-foreground">
+                            {new Date(o.createdAt || Date.now()).toLocaleDateString()}
+                          </div>
+                          <div className="text-xs font-normal text-muted-foreground">
+                            {new Date(o.createdAt || Date.now()).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </div>
                         </TableCell>
 
-                        <TableCell className="text-xs">{o.merchantId}</TableCell>
-
-                        <TableCell>{customerFor(o)}</TableCell>
-
-                        <TableCell className="font-semibold">{money(o.discountedSubtotal ?? o.subtotal)}</TableCell>
-
-                        <TableCell>{new Date(o.createdAt || Date.now()).toLocaleString()}</TableCell>
-
                         <TableCell>
-                          <Badge className={badgeClass(st)}>{badgeText(st)}</Badge>
+                          <div className="line-clamp-2 text-sm">
+                            {o.merchant?.storeName || o.merchant?.name || "—"}
+                          </div>
+                          <div className="truncate text-xs text-muted-foreground">
+                            {customerFor(o)}
+                          </div>
                         </TableCell>
 
+                        {/* Sellers identify what to pull off the shelf by SKU,
+                            not by the marketing title, so it is shown here
+                            rather than hidden behind the detail view. */}
                         <TableCell>
-                          {t ? (
-                            <div className="flex flex-col gap-1">
-                              <div className="text-xs text-muted-foreground">{t.label}</div>
-                              <div className={t.ms > 0 ? "font-medium" : "font-medium text-destructive"}>
-                                {t.ms > 0 ? (
-                                  <>
-                                    {fmtCountdown(t.ms)}
-                                    {!isOfficeOpen && <span className="text-orange-600 text-xs ml-1">(Paused)</span>}
-                                  </>
-                                ) : "Overdue"}
+                          {first ? (
+                            <>
+                              <div className="line-clamp-2 text-sm">
+                                {first.name || first.title}
                               </div>
-                            </div>
+                              <div className="truncate font-mono text-xs text-muted-foreground">
+                                {first.sku || "no SKU"}
+                              </div>
+                              {items.length > 1 && (
+                                <div className="text-xs text-muted-foreground">
+                                  +{items.length - 1} more item
+                                  {items.length > 2 ? "s" : ""}
+                                </div>
+                              )}
+                            </>
                           ) : (
                             <span className="text-muted-foreground">—</span>
                           )}
                         </TableCell>
 
-                        <TableCell className="text-right">
-                          <div className="flex gap-2 justify-end">
-                            <Button variant="ghost" size="icon" onClick={() => openDetails(o)}>
-                              <Eye className="h-4 w-4" />
-                            </Button>
+                        <TableCell className="text-right font-semibold">
+                          {money(o.discountedSubtotal ?? o.subtotal)}
+                        </TableCell>
 
-                            {st === "vendor_expired" ? (
-                              <Button
-                                variant="secondary"
-                                onClick={() => acceptForSeller(o)}
-                                disabled={busy}
-                                title="The seller missed the window. Accept on their behalf so this order can still ship."
+                        <TableCell>
+                          <Badge className={badgeClass(st)}>{badgeText(st)}</Badge>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {payLabelFor(o)}
+                          </div>
+                        </TableCell>
+
+                        <TableCell className="text-right">
+                          <div className="flex flex-col items-end gap-1.5">
+                            {/* Unlabelled on purpose: a bare countdown reads as
+                                urgency, and it only appears while one is
+                                actually running. */}
+                            {t && (
+                              <span
+                                className={
+                                  t.ms > 0 || t.paused
+                                    ? "font-mono text-xs text-muted-foreground"
+                                    : "font-mono text-xs font-medium text-destructive"
+                                }
+                                title={t.paused ? "Paused until the office opens" : t.label}
                               >
-                                <CheckCircle2 className="h-4 w-4 mr-2" />
-                                Accept for seller
-                              </Button>
-                            ) : (
-                              <Button onClick={() => openPlan(o)} disabled={!canPlan || busy}>
-                                <ClipboardList className="h-4 w-4 mr-2" />
-                                Plan Pickup
-                              </Button>
+                                {t.ms > 0
+                                  ? fmtCountdown(t.ms) + (isOfficeOpen ? "" : " ⏸")
+                                  : t.paused
+                                    ? "Paused ⏸"
+                                    : "Overdue"}
+                              </span>
                             )}
 
-                            <Button
-                              variant="outline"
-                              onClick={() => downloadInvoice(o)}
-                              disabled={busy}
-                            >
-                              <Download className="h-4 w-4 mr-2" />
-                              Invoice
-                            </Button>
+                            <div className="flex flex-wrap items-center justify-end gap-1">
+                              {st === "vendor_expired" ? (
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  className="h-8 px-2"
+                                  onClick={() => acceptForSeller(o)}
+                                  disabled={busy}
+                                  title="The seller missed the window. Accept on their behalf so this order can still ship."
+                                >
+                                  <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                                  Accept
+                                </Button>
+                              ) : canPlan ? (
+                                <Button
+                                  size="sm"
+                                  className="h-8 px-2"
+                                  onClick={() => openPlan(o)}
+                                  disabled={busy}
+                                >
+                                  <ClipboardList className="mr-1 h-3.5 w-3.5" />
+                                  Plan
+                                </Button>
+                              ) : null}
+
+                              {/* Everything else about the order, including
+                                  the invoice and the label, lives behind this
+                                  one button. */}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                onClick={() => openDetails(o)}
+                                title="Order details, invoice and shipping label"
+                                aria-label="Order details"
+                              >
+                                <Info className="h-4 w-4" />
+                              </Button>
+                            </div>
                           </div>
                         </TableCell>
                       </TableRow>
@@ -852,7 +984,7 @@ export default function AdminOrdersMonitor() {
 
                   {filtered.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={8} className="text-center text-muted-foreground">
+                      <TableCell colSpan={6} className="text-center text-muted-foreground">
                         No orders found.
                       </TableCell>
                     </TableRow>
@@ -887,6 +1019,67 @@ export default function AdminOrdersMonitor() {
                   </div>
                 </div>
               )}
+
+              {(() => {
+                const ready = customerDetailsComplete(selected.shippingAddress);
+                const label = selected.shippingLabel;
+                return (
+                  <div className="space-y-2 rounded-md border p-3">
+                    <div className="font-medium">Documents</div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => downloadInvoice(selected)}
+                        disabled={busy || !ready}
+                        title={
+                          ready
+                            ? "Download the GST tax invoice"
+                            : "Capture the customer's details in Plan Pickup first"
+                        }
+                      >
+                        <Download className="mr-2 h-4 w-4" />
+                        Invoice
+                      </Button>
+
+                      {label?.url ? (
+                        <Button size="sm" variant="outline" asChild>
+                          <a href={label.url} target="_blank" rel="noreferrer">
+                            <Download className="mr-2 h-4 w-4" />
+                            Shipping label
+                          </a>
+                        </Button>
+                      ) : (
+                        <Button size="sm" variant="outline" disabled>
+                          <Download className="mr-2 h-4 w-4" />
+                          Shipping label
+                        </Button>
+                      )}
+                    </div>
+                    {!ready ? (
+                      <p className="flex gap-1.5 text-xs text-amber-700">
+                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span>
+                          The invoice needs the buyer&rsquo;s{" "}
+                          {missingCustomerFields(selected.shippingAddress).join(", ")}
+                          . Capture them when planning the pickup.
+                        </span>
+                      </p>
+                    ) : !label?.url ? (
+                      <p className="text-xs text-muted-foreground">
+                        The shipping label is uploaded when the pickup is planned.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        {label.name}
+                        {label.uploadedAt
+                          ? " · " + new Date(label.uploadedAt).toLocaleString()
+                          : ""}
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
@@ -996,10 +1189,10 @@ export default function AdminOrdersMonitor() {
                       <TableRow key={idx}>
                         <TableCell>
                           <div className="flex flex-col">
-                            <div className="font-medium">{li.title}</div>
-                            {li.sku ? (
-                              <div className="text-xs text-muted-foreground">SKU: {li.sku}</div>
-                            ) : null}
+                            <div className="font-medium">{li.name || li.title}</div>
+                            <div className="font-mono text-xs text-muted-foreground">
+                              {li.sku || "no SKU"}
+                            </div>
                           </div>
                         </TableCell>
                         <TableCell className="text-right">{li.quantity}</TableCell>
@@ -1070,244 +1263,457 @@ export default function AdminOrdersMonitor() {
         <DialogContent className="flex max-w-3xl flex-col gap-0 p-0">
           <DialogHeader className="shrink-0 border-b px-6 py-4 pr-12">
             <DialogTitle>
-              Plan Pickup — {planFor?.orderNumber || planFor?.shopifyOrderId || planFor?.id}
+              Plan Pickup &mdash;{" "}
+              {planFor?.orderNumber || planFor?.shopifyOrderId || planFor?.id}
             </DialogTitle>
+            <div className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
+              <span
+                className={
+                  planStep === "customer" ? "font-medium text-foreground" : ""
+                }
+              >
+                1. Customer details
+              </span>
+              <span>&rarr;</span>
+              <span
+                className={
+                  planStep === "pickup" ? "font-medium text-foreground" : ""
+                }
+              >
+                2. Pickup &amp; label
+              </span>
+            </div>
           </DialogHeader>
 
           {planFor && (
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-5">
-              {/* Office hours notice */}
               {!isOfficeOpen && (
-                <div className="border border-orange-200 bg-orange-50 rounded-md p-3 text-sm">
+                <div className="rounded-md border border-orange-200 bg-orange-50 p-3 text-sm">
                   <div className="flex items-center gap-2 text-orange-800">
                     <Clock className="h-4 w-4" />
                     <span className="font-medium">{officeStatus}</span>
                   </div>
-                  <div className="text-orange-700 text-xs mt-1">
+                  <div className="mt-1 text-xs text-orange-700">
                     Timer is paused and will resume at 9 AM
                   </div>
                 </div>
               )}
 
-              {!addressIsDeliverable(planFor.shippingAddress) && (
-                <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
-                  <div className="flex items-center gap-2 font-medium text-amber-900">
-                    <AlertTriangle className="h-4 w-4" />
-                    No street address on this order
+              {/* ---------------- STEP 1: who the parcel goes to ----------- */}
+              {planStep === "customer" ? (
+                <>
+                  <div className="rounded-md border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
+                    Copy the buyer&rsquo;s details across from the Shopify order.
+                    Shopify does not release a name, phone, street or PIN to
+                    this app on the store&rsquo;s current plan, and the tax
+                    invoice is billed to whatever is entered here &mdash; so
+                    the order cannot be invoiced until it is filled in. The
+                    state decides whether the order is taxed as CGST + SGST or
+                    as IGST, so set it accurately.
                   </div>
-                  <p className="mt-1 text-xs leading-relaxed text-amber-800">
-                    Only the state and country came through, so this parcel
-                    cannot be addressed yet. Open the order in Shopify admin to
-                    see which of two things happened. If Shopify shows no
-                    street address either, the order never had one — usual
-                    for orders created by hand rather than through checkout. If
-                    Shopify does show the full address, then it is being
-                    stripped on the way to this app: name, phone, street, city
-                    and PIN are <strong>Level 2 customer data</strong>, which
-                    custom apps only receive on some Shopify plans. There is no
-                    setting to switch on — ask Shopify support about Level
-                    2 PII access for custom apps on your plan, then press
-                    “Refetch from Shopify”.
-                  </p>
-                  <p className="mt-1.5 text-xs leading-relaxed text-amber-800">
-                    Either way you can type the address in below: whatever you
-                    enter is what the seller and the courier will see.
-                  </p>
-                </div>
-              )}
 
-              <div className="text-sm">
-                <div className="text-muted-foreground">Timer</div>
-                {(() => {
-                  const t = timerFor(planFor);
-                  if (!t) return <div className="text-muted-foreground">—</div>;
-                  return (
-                    <div className="flex items-center gap-2">
-                      <Clock className="h-4 w-4" />
-                      <span className={t.ms > 0 ? "font-medium" : "font-medium text-destructive"}>
-                        {t.ms > 0 ? (
-                          <>
-                            {fmtCountdown(t.ms)}
-                            {!isOfficeOpen && <span className="text-orange-600 text-xs ml-1">(Paused)</span>}
-                          </>
-                        ) : "Overdue"}
-                      </span>
-                    </div>
-                  );
-                })()}
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label htmlFor="plan-pickup-window">Pickup Window</Label>
-                  <Input
-                    id="plan-pickup-window"
-                    placeholder='e.g. "Today 4-6 PM"'
-                    value={pickupWindow}
-                    onChange={(e) => setPickupWindow(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="plan-notes">Notes (optional)</Label>
-                  <Input
-                    id="plan-notes"
-                    placeholder="Anything the pickup agent should know"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label htmlFor="plan-pickup-address">Pickup Address</Label>
-                  <Textarea
-                    id="plan-pickup-address"
-                    rows={5}
-                    placeholder="Seller pickup address"
-                    value={pickupAddress}
-                    onChange={(e) => setPickupAddress(e.target.value)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    {planFor?.merchant?.address
-                      ? `From ${planFor.merchant.storeName || planFor.merchant.name || "the seller"}'s profile.`
-                      : "This seller has not saved a business address yet — enter it manually."}
-                  </p>
-                </div>
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <Label htmlFor="plan-customer-address">Customer Address</Label>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm font-medium">Buyer</div>
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
                       className="h-7 px-2 text-xs"
                       disabled={refreshingCustomer}
-                      onClick={() => planFor && refreshCustomerFor(planFor)}
+                      onClick={() => refreshCustomerFor(planFor)}
                     >
                       <RefreshCw
                         className={`mr-1 h-3 w-3 ${refreshingCustomer ? "animate-spin" : ""}`}
                       />
-                      Refetch from Shopify
+                      Try Shopify again
                     </Button>
                   </div>
-                  <Textarea
-                    id="plan-customer-address"
-                    rows={5}
-                    placeholder="Customer delivery address"
-                    value={customerAddress}
-                    onChange={(e) => setCustomerAddress(e.target.value)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    {planFor?.shippingAddress
-                      ? "From the Shopify order."
-                      : "Shopify did not send a delivery address for this order."}
-                  </p>
-                </div>
-              </div>
 
-              <div className="space-y-2 rounded-md border bg-muted/20 p-3">
-                <Label>Delivery scope</Label>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {(
-                    [
-                      [
-                        "same_city",
-                        "Same city",
-                        "Delivered locally. No shipping label needed.",
-                      ],
-                      [
-                        "different_city",
-                        "Different city",
-                        "Goes via courier. Shipping label required.",
-                      ],
-                    ] as const
-                  ).map(([value, title, hint]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => setDeliveryScope(value)}
-                      className={`rounded-lg border p-3 text-left transition-colors ${
-                        deliveryScope === value
-                          ? "border-primary bg-primary/5"
-                          : "border-border hover:bg-muted/40"
-                      }`}
-                    >
-                      <span className="block text-sm font-medium">{title}</span>
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        {hint}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {planFor ? guessDeliveryScope(planFor).reason : null}
-                </p>
-              </div>
-
-              {deliveryScope === "different_city" ? (
-                <div className="space-y-1.5">
-                  <Label htmlFor="plan-shipping-label">
-                    Shipping Label <span className="text-destructive">*</span>
-                  </Label>
-                  <div className="flex flex-wrap items-center gap-3">
-                    <Input
-                      id="plan-shipping-label"
-                      type="file"
-                      accept="application/pdf,image/png,image/jpeg,image/jpg"
-                      className="max-w-sm"
-                      onChange={(e) => setLabelFile(e.target.files?.[0] || null)}
-                      disabled={busy}
-                    />
-                    {labelFile ? (
-                      <span className="text-xs text-muted-foreground">
-                        {labelFile.name}
-                      </span>
-                    ) : null}
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="cust-name">
+                        Full name <span className="text-destructive">*</span>
+                      </Label>
+                      <Input
+                        id="cust-name"
+                        placeholder="As it appears on the Shopify order"
+                        value={customer.name || ""}
+                        onChange={(e) => setCustomerField("name", e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="cust-phone">
+                        Phone <span className="text-destructive">*</span>
+                      </Label>
+                      <Input
+                        id="cust-phone"
+                        placeholder="10-digit mobile"
+                        value={customer.phone || ""}
+                        onChange={(e) => setCustomerField("phone", e.target.value)}
+                      />
+                    </div>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    PDF or image. Uploaded on assign and shared with the seller
-                    so they can print it for the parcel.
-                  </p>
-                </div>
-              ) : null}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Input
-                  placeholder="Delivery Partner Name"
-                  value={partnerName}
-                  onChange={(e) => setPartnerName(e.target.value)}
-                />
-                <Input
-                  placeholder="Delivery Partner Phone"
-                  value={partnerPhone}
-                  onChange={(e) => setPartnerPhone(e.target.value)}
-                />
-                <Input
-                  placeholder='ETA text (e.g. "Arriving in 45 min")'
-                  value={etaText}
-                  onChange={(e) => setEtaText(e.target.value)}
-                />
-                <Input
-                  placeholder="Tracking URL (optional)"
-                  value={trackingUrl}
-                  onChange={(e) => setTrackingUrl(e.target.value)}
-                />
-              </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="cust-email">Email (optional)</Label>
+                    <Input
+                      id="cust-email"
+                      placeholder="For the invoice copy"
+                      value={customerEmail}
+                      onChange={(e) => setCustomerEmail(e.target.value)}
+                    />
+                  </div>
 
-              <div className="flex flex-col sm:flex-row gap-3">
-                <Button onClick={submitPlan} disabled={busy}>
-                  <Truck className="h-4 w-4 mr-2" />
-                  Assign Pickup
-                </Button>
-                <Button variant="outline" onClick={() => setPlanOpen(false)} disabled={busy}>
-                  Cancel
-                </Button>
-              </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="cust-address1">
+                      Address <span className="text-destructive">*</span>
+                    </Label>
+                    <Textarea
+                      id="cust-address1"
+                      rows={2}
+                      placeholder="House / flat, street, area"
+                      value={customer.address1 || ""}
+                      onChange={(e) => setCustomerField("address1", e.target.value)}
+                    />
+                  </div>
 
-              <div className="text-xs text-muted-foreground">
-                Planning works only when vendor has accepted (or admin overdue).
-              </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="cust-address2">
+                      Landmark / second line (optional)
+                    </Label>
+                    <Input
+                      id="cust-address2"
+                      value={customer.address2 || ""}
+                      onChange={(e) => setCustomerField("address2", e.target.value)}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="cust-city">
+                        City <span className="text-destructive">*</span>
+                      </Label>
+                      <Input
+                        id="cust-city"
+                        value={customer.city || ""}
+                        onChange={(e) => setCustomerField("city", e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="cust-state">
+                        State <span className="text-destructive">*</span>
+                      </Label>
+                      <Select
+                        value={customer.province || ""}
+                        onValueChange={(value) => setCustomerField("province", value)}
+                      >
+                        <SelectTrigger id="cust-state">
+                          <SelectValue placeholder="Select state" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {INDIAN_STATES.map((state) => (
+                            <SelectItem key={state} value={state}>
+                              {state}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="cust-zip">
+                        PIN code <span className="text-destructive">*</span>
+                      </Label>
+                      <Input
+                        id="cust-zip"
+                        inputMode="numeric"
+                        value={customer.zip || ""}
+                        onChange={(e) => setCustomerField("zip", e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  {(() => {
+                    const missing = missingCustomerFields(customer);
+                    const sellerState = planFor.merchant?.state || "";
+                    const buyerState = customer.province || "";
+                    const taxKnown = Boolean(sellerState && buyerState);
+                    const intra =
+                      taxKnown &&
+                      sellerState.toLowerCase().replace(/[^a-z]/g, "") ===
+                        buyerState.toLowerCase().replace(/[^a-z]/g, "");
+
+                    return (
+                      <>
+                        {buyerState ? (
+                          <div className="rounded-md border bg-muted/20 p-3 text-xs">
+                            <span className="font-medium">
+                              {taxKnown
+                                ? intra
+                                  ? "This order will be taxed as CGST 2.5% + SGST 2.5%."
+                                  : "This order will be taxed as IGST 5%."
+                                : "This order will be taxed as IGST 5%."}
+                            </span>{" "}
+                            <span className="text-muted-foreground">
+                              {taxKnown
+                                ? `${sellerState} \u2192 ${buyerState}.`
+                                : "The seller has not saved a state, so the supply cannot be shown as local."}
+                            </span>
+                          </div>
+                        ) : null}
+
+                        {missing.length ? (
+                          <p className="flex gap-1.5 text-xs text-amber-700">
+                            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                            <span>Still needed: {missing.join(", ")}.</span>
+                          </p>
+                        ) : (
+                          <div className="rounded-md border p-3">
+                            <div className="mb-1 text-xs text-muted-foreground">
+                              Parcel will be addressed to
+                            </div>
+                            <div className="whitespace-pre-line text-sm">
+                              {formatCustomerAddress(customer)}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex flex-col gap-3 sm:flex-row">
+                          <Button
+                            onClick={() => setPlanStep("pickup")}
+                            disabled={missing.length > 0 || busy}
+                          >
+                            Continue to pickup
+                          </Button>
+                          <Button
+                            variant="outline"
+                            onClick={() => setPlanOpen(false)}
+                            disabled={busy}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </>
+              ) : (
+                /* ---------------- STEP 2: how it gets there -------------- */
+                <>
+                  <div className="rounded-md border p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-xs text-muted-foreground">
+                          Delivering to
+                        </div>
+                        <div className="whitespace-pre-line text-sm">
+                          {formatCustomerAddress(customer)}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 shrink-0 px-2 text-xs"
+                        onClick={() => setPlanStep("customer")}
+                        disabled={busy}
+                      >
+                        Edit
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="text-sm">
+                    <div className="text-muted-foreground">Timer</div>
+                    {(() => {
+                      const t = timerFor(planFor);
+                      if (!t) return <div className="text-muted-foreground">&mdash;</div>;
+                      return (
+                        <div className="flex items-center gap-2">
+                          <Clock className="h-4 w-4" />
+                          <span
+                            className={
+                              t.ms > 0 || t.paused
+                                ? "font-medium"
+                                : "font-medium text-destructive"
+                            }
+                          >
+                            {t.ms > 0 ? (
+                              <>
+                                {fmtCountdown(t.ms)}
+                                {!isOfficeOpen && (
+                                  <span className="ml-1 text-xs text-orange-600">
+                                    (Paused)
+                                  </span>
+                                )}
+                              </>
+                            ) : t.paused ? (
+                              <span className="text-orange-600">
+                                Paused until the office opens
+                              </span>
+                            ) : (
+                              "Overdue"
+                            )}
+                          </span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="plan-pickup-window">Pickup Window</Label>
+                      <Input
+                        id="plan-pickup-window"
+                        placeholder='e.g. "Today 4-6 PM"'
+                        value={pickupWindow}
+                        onChange={(e) => setPickupWindow(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="plan-notes">Notes (optional)</Label>
+                      <Input
+                        id="plan-notes"
+                        placeholder="Anything the pickup agent should know"
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label htmlFor="plan-pickup-address">Pickup Address</Label>
+                    <Textarea
+                      id="plan-pickup-address"
+                      rows={3}
+                      placeholder="Seller pickup address"
+                      value={pickupAddress}
+                      onChange={(e) => setPickupAddress(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {planFor?.merchant?.address
+                        ? `From ${planFor.merchant.storeName || planFor.merchant.name || "the seller"}'s profile.`
+                        : "This seller has not saved a business address yet \u2014 enter it manually."}
+                    </p>
+                  </div>
+
+                  <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                    <Label>Delivery scope</Label>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {(
+                        [
+                          [
+                            "same_city",
+                            "Same city",
+                            "Delivered locally. DRIPPR provides the label.",
+                          ],
+                          [
+                            "different_city",
+                            "Different city",
+                            "Goes via courier. Shiprocket provides the label.",
+                          ],
+                        ] as const
+                      ).map(([value, title, hint]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => setDeliveryScope(value)}
+                          className={`rounded-lg border p-3 text-left transition-colors ${
+                            deliveryScope === value
+                              ? "border-primary bg-primary/5"
+                              : "border-border hover:bg-muted/40"
+                          }`}
+                        >
+                          <span className="block text-sm font-medium">{title}</span>
+                          <span className="mt-1 block text-xs text-muted-foreground">
+                            {hint}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {planFor ? guessDeliveryScope(planFor).reason : null}
+                    </p>
+                  </div>
+
+                  {/* Every parcel ships with a label; only its source differs. */}
+                  <div className="space-y-1.5">
+                    <Label htmlFor="plan-shipping-label">
+                      Shipping Label <span className="text-destructive">*</span>
+                    </Label>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <Input
+                        id="plan-shipping-label"
+                        type="file"
+                        accept="application/pdf,image/png,image/jpeg,image/jpg"
+                        className="max-w-sm"
+                        onChange={(e) => setLabelFile(e.target.files?.[0] || null)}
+                        disabled={busy}
+                      />
+                      {labelFile ? (
+                        <span className="text-xs text-muted-foreground">
+                          {labelFile.name}
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {deliveryScope === "same_city"
+                        ? "The DRIPPR label for this local delivery. PDF or image."
+                        : "The courier's label from Shiprocket. PDF or image."}{" "}
+                      Shared with the seller so they can print it for the parcel.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <Input
+                      placeholder="Delivery Partner Name"
+                      value={partnerName}
+                      onChange={(e) => setPartnerName(e.target.value)}
+                    />
+                    <Input
+                      placeholder="Delivery Partner Phone"
+                      value={partnerPhone}
+                      onChange={(e) => setPartnerPhone(e.target.value)}
+                    />
+                    <Input
+                      placeholder='ETA text (e.g. "Arriving in 45 min")'
+                      value={etaText}
+                      onChange={(e) => setEtaText(e.target.value)}
+                    />
+                    <Input
+                      placeholder="Tracking URL (optional)"
+                      value={trackingUrl}
+                      onChange={(e) => setTrackingUrl(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <Button onClick={submitPlan} disabled={busy}>
+                      <Truck className="mr-2 h-4 w-4" />
+                      Assign Pickup
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => setPlanStep("customer")}
+                      disabled={busy}
+                    >
+                      Back
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => setPlanOpen(false)}
+                      disabled={busy}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+
+                  <div className="text-xs text-muted-foreground">
+                    Planning works only when the vendor has accepted (or the
+                    admin is overdue). Assigning makes the invoice available to
+                    both you and the seller.
+                  </div>
+                </>
+              )}
             </div>
           )}
         </DialogContent>

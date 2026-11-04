@@ -54,6 +54,40 @@ type ShopifyOrderCustomer = {
   billingAddress?: ShopifyAddress | null;
 };
 
+/**
+ * Buyer fields the tax invoice and the courier both need. Mirrors
+ * src/lib/orderCustomer.ts; the server re-checks because the browser's copy
+ * is only a convenience.
+ */
+const REQUIRED_CUSTOMER_KEYS = [
+  { key: "name", label: "full name" },
+  { key: "address1", label: "address" },
+  { key: "city", label: "city" },
+  { key: "province", label: "state" },
+  { key: "zip", label: "PIN code" },
+  { key: "phone", label: "phone" },
+] as const;
+
+function cleanText(value: unknown) {
+  return String(value ?? "").trim();
+}
+
+function formatCustomerAddressLines(address: Record<string, string>) {
+  const cityLine = [address.city, address.province, address.zip]
+    .filter(Boolean)
+    .join(", ");
+  return [
+    address.name,
+    address.address1,
+    address.address2,
+    cityLine,
+    address.country || "India",
+    address.phone ? `Phone: ${address.phone}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 type FirestoreMergeRef = {
   set: (
     data: Record<string, unknown>,
@@ -3852,15 +3886,42 @@ case "orders.assignPickup": {
 
   const pickupWindow = body.pickupWindow ?? null;
   const pickupAddress = body.pickupAddress ?? null;
-  // Snapshot of the Shopify delivery address at planning time, so the pickup
-  // record stays correct even if the order is edited later.
-  const customerAddress = body.customerAddress ?? null;
   const notes = body.notes ?? null;
 
-  // Orders leaving the seller's city are handed to a courier and need a
-  // shipping label; same-city orders are delivered locally without one.
+  // Every parcel ships with a label. The scope only records where that label
+  // comes from: DRIPPR prints the local ones, the courier returns the rest.
   const deliveryScope =
     body.deliveryScope === "same_city" ? "same_city" : "different_city";
+
+  // Buyer details the admin copied over from the Shopify order. On plans below
+  // Grow this is the only way they reach us, and the invoice is built from
+  // them, so they are recorded on the order as part of planning the pickup.
+  const rawCustomer = body.customerDetails || {};
+  const customerAddress = {
+    name: cleanText(rawCustomer.name),
+    address1: cleanText(rawCustomer.address1),
+    address2: cleanText(rawCustomer.address2),
+    city: cleanText(rawCustomer.city),
+    province: cleanText(rawCustomer.province),
+    zip: cleanText(rawCustomer.zip),
+    country: cleanText(rawCustomer.country) || "India",
+    phone: cleanText(rawCustomer.phone),
+  };
+  const customerEmail = cleanText(rawCustomer.email);
+
+  const missing = REQUIRED_CUSTOMER_KEYS.filter(
+    (field) => !customerAddress[field.key],
+  ).map((field) => field.label);
+  if (missing.length) {
+    return res.status(400).json({
+      ok: false,
+      error:
+        "Fill in the customer's " +
+        missing.join(", ") +
+        " before assigning the pickup. The invoice is built from these.",
+      missing,
+    });
+  }
 
   const dp = body.deliveryPartner || {};
   const deliveryPartner = {
@@ -3874,11 +3935,13 @@ case "orders.assignPickup": {
   const now = Date.now();
 
   const labelInput = body.shippingLabel || null;
-  if (deliveryScope === "different_city" && !String(labelInput?.url || "").trim()) {
+  if (!String(labelInput?.url || "").trim()) {
     return res.status(400).json({
       ok: false,
       error:
-        "A shipping label is required for orders delivered outside the seller's city.",
+        deliveryScope === "same_city"
+          ? "Upload the DRIPPR shipping label before assigning this local pickup."
+          : "Upload the courier's shipping label before assigning this pickup.",
     });
   }
   const shippingLabel =
@@ -3921,10 +3984,19 @@ case "orders.assignPickup": {
         pickupPlan: {
           pickupWindow,
           pickupAddress,
-          customerAddress,
+          // Kept as text as well, because this is what was handed to the
+          // courier at this moment in time.
+          customerAddress: formatCustomerAddressLines(customerAddress),
           notes,
           deliveryScope,
         },
+        // The order's own delivery address, which the invoice bills to.
+        shippingAddress: customerAddress,
+        customerName: customerAddress.name,
+        ...(customerEmail ? { customerEmail } : {}),
+        customerDetailsSource: "admin",
+        customerDetailsCapturedAt: now,
+        customerDetailsCapturedBy: me.uid,
         deliveryPartner,
         ...(shippingLabel ? { shippingLabel } : {}),
         updatedAt: now,

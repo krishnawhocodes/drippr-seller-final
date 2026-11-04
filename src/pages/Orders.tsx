@@ -4,7 +4,19 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Search, Eye, Download, CheckCircle2, Truck, Clock } from "lucide-react";
+import {
+  Search,
+  Download,
+  CheckCircle2,
+  Truck,
+  Clock,
+  Info,
+  AlertTriangle,
+} from "lucide-react";
+import {
+  customerDetailsComplete,
+  formatCustomerAddress,
+} from "@/lib/orderCustomer";
 import { generateInvoicePdf } from "@/lib/generateInvoicePdf";
 import type { InvoiceMerchant } from "@/lib/generateInvoicePdf";
 import {
@@ -140,7 +152,6 @@ type UiFilter =
   | "wf:admin_overdue";
 
 const THREE_HOURS = 3 * 60 * 60 * 1000;
-const THIRTY_MIN = 30 * 60 * 1000;
 
 function fmtCountdown(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -305,13 +316,18 @@ export default function Orders() {
     return "bg-muted text-muted-foreground border-muted";
   };
 
-  const timeLeftMs = (o: OrderDoc): { label: string; ms: number } | null => {
+  const timeLeftMs = (
+    o: OrderDoc,
+  ): { label: string; ms: number; paused: boolean } | null => {
     const st = workflowFor(o);
 
     if (st === "vendor_pending") {
       const acceptBy = getVendorAcceptByDeadline(o);
       const remaining = getRemainingBusinessTime(acceptBy, now);
-      return { label: "Accept in", ms: remaining };
+      // A deadline still in the future with no business time before it means
+      // the clock is parked outside office hours, not that it was missed.
+      const paused = remaining <= 0 && acceptBy > now;
+      return { label: "Accept in", ms: remaining, paused };
     }
 
     // Admin has no time limit — no timer for vendor_accepted
@@ -363,6 +379,12 @@ export default function Orders() {
   }
 
   async function downloadInvoice(order: OrderDoc) {
+    if (!customerDetailsComplete(order.shippingAddress)) {
+      toast.error(
+        "DRIPPR is still confirming the delivery details for this order. The invoice will be ready once the pickup is planned.",
+      );
+      return;
+    }
     const u = auth.currentUser;
     if (!u) return toast.error("Please login again");
 
@@ -525,17 +547,19 @@ export default function Orders() {
           </CardHeader>
 
           <CardContent>
-            <div className="overflow-x-auto">
-              <Table>
+            {/* Fixed columns that wrap, rather than a table wide enough to
+                need scrolling in both directions to read one row. */}
+            <div className="w-full">
+              <Table className="w-full table-fixed">
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Order</TableHead>
-                    <TableHead>Customer</TableHead>
-                    <TableHead>Products</TableHead>
-                    <TableHead>Amount</TableHead>
-                    <TableHead>Date</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
+                    {/* Fixed widths for the known-size columns; the item
+                        column takes whatever is left. */}
+                    <TableHead className="w-[104px]">Order</TableHead>
+                    <TableHead>Item &amp; SKU</TableHead>
+                    <TableHead className="w-[96px] text-right">Amount</TableHead>
+                    <TableHead className="w-[124px]">Status</TableHead>
+                    <TableHead className="w-[124px] text-right">&nbsp;</TableHead>
                   </TableRow>
                 </TableHeader>
 
@@ -543,53 +567,107 @@ export default function Orders() {
                   {filtered.map((o) => {
                     const wf = workflowFor(o);
                     const tl = timeLeftMs(o);
+                    const items = o.lineItems || [];
+                    const first = items[0];
 
                     return (
-                      <TableRow key={o.id}>
+                      <TableRow key={o.id} className="align-top">
                         <TableCell className="font-medium">
-                          {o.orderNumber || o.shopifyOrderId}
+                          <div className="truncate">
+                            {o.orderNumber || o.shopifyOrderId}
+                          </div>
+                          <div className="text-xs font-normal text-muted-foreground">
+                            {new Date(o.createdAt).toLocaleDateString()}
+                          </div>
+                          <div className="text-xs font-normal text-muted-foreground">
+                            {new Date(o.createdAt).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </div>
                         </TableCell>
 
-                        <TableCell>{customerFor(o)}</TableCell>
-
-                        <TableCell className="max-w-xs truncate">
-                          {(o.lineItems || [])
-                            .map((li) => `${li.title} × ${li.quantity}`)
-                            .join(", ")}
+                        {/* The SKU is what gets picked off the shelf, so it
+                            sits beside the title rather than inside the
+                            detail view. */}
+                        <TableCell>
+                          {first ? (
+                            <>
+                              <div className="line-clamp-2 text-sm">
+                                {first.title}
+                                {first.quantity > 1 ? ` \u00d7 ${first.quantity}` : ""}
+                              </div>
+                              <div className="truncate font-mono text-xs text-muted-foreground">
+                                {first.sku || "no SKU"}
+                              </div>
+                              {items.length > 1 && (
+                                <div className="text-xs text-muted-foreground">
+                                  +{items.length - 1} more item
+                                  {items.length > 2 ? "s" : ""}
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-muted-foreground">&mdash;</span>
+                          )}
                         </TableCell>
 
-                        <TableCell className="font-semibold">{money(o.discountedSubtotal ?? o.subtotal)}</TableCell>
-
-                        <TableCell>{new Date(o.createdAt).toLocaleString()}</TableCell>
+                        <TableCell className="text-right font-semibold">
+                          {money(o.discountedSubtotal ?? o.subtotal)}
+                        </TableCell>
 
                         <TableCell>
-                          <div className="flex flex-col gap-1">
-                            <Badge className={workflowBadgeClass(wf)}>{workflowBadgeText(wf)}</Badge>
-
-                            {tl ? (
-                              <div className="text-xs text-muted-foreground">
-                                {tl.ms > 0 ? (
-                                  <>
-                                    {tl.label}: <span className="font-medium">{fmtCountdown(tl.ms)}</span>
-                                    {!isOfficeOpen && <span className="text-orange-600 ml-1">(Paused)</span>}
-                                  </>
-                                ) : (
-                                  <span className="text-destructive">Overdue</span>
-                                )}
-                              </div>
-                            ) : null}
-
-                            {/* small payment badge (keeps old visibility) */}
-                            <div>
-                              <Badge className={payBadgeClass(o)}>{payLabelFor(o)}</Badge>
-                            </div>
+                          <Badge className={workflowBadgeClass(wf)}>
+                            {workflowBadgeText(wf)}
+                          </Badge>
+                          <div className="mt-1">
+                            <Badge className={payBadgeClass(o)}>{payLabelFor(o)}</Badge>
                           </div>
                         </TableCell>
 
                         <TableCell className="text-right">
-                          <Button variant="ghost" size="icon" onClick={() => handleViewOrder(o)}>
-                            <Eye className="h-4 w-4" />
-                          </Button>
+                          <div className="flex flex-col items-end gap-1.5">
+                            {/* No heading: a bare countdown reads as urgency,
+                                and it only shows while one is running. */}
+                            {tl && (
+                              <span
+                                className={
+                                  tl.ms > 0 || tl.paused
+                                    ? "font-mono text-xs text-muted-foreground"
+                                    : "font-mono text-xs font-medium text-destructive"
+                                }
+                                title={tl.paused ? "Paused until the office opens" : tl.label}
+                              >
+                                {tl.ms > 0
+                                  ? fmtCountdown(tl.ms) + (isOfficeOpen ? "" : " \u23f8")
+                                  : tl.paused
+                                    ? "Paused \u23f8"
+                                    : "Overdue"}
+                              </span>
+                            )}
+                            <div className="flex flex-wrap items-center justify-end gap-1">
+                              {wf === "vendor_pending" && tl && (tl.ms > 0 || tl.paused) ? (
+                                <Button
+                                  size="sm"
+                                  className="h-8 px-2"
+                                  onClick={() => handleViewOrder(o)}
+                                  disabled={actionBusy}
+                                >
+                                  Accept
+                                </Button>
+                              ) : null}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                onClick={() => handleViewOrder(o)}
+                                title="Order details, invoice and shipping label"
+                                aria-label="Order details"
+                              >
+                                <Info className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
                         </TableCell>
                       </TableRow>
                     );
@@ -597,7 +675,7 @@ export default function Orders() {
 
                   {filtered.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={7} className="text-center text-muted-foreground">
+                      <TableCell colSpan={5} className="text-center text-muted-foreground">
                         No orders found.
                       </TableCell>
                     </TableRow>
@@ -622,8 +700,12 @@ export default function Orders() {
           {selected ? (() => {
             const wf = workflowFor(selected);
             const tl = timeLeftMs(selected);
-            const canAccept = wf === "vendor_pending" && !!tl && tl.ms > 0;
+            const canAccept =
+              wf === "vendor_pending" && !!tl && (tl.ms > 0 || tl.paused);
             const canDispatch = wf === "pickup_assigned";
+            // DRIPPR captures the buyer's details when planning the pickup;
+            // until then the invoice would have an empty BILL TO.
+            const invoiceReady = customerDetailsComplete(selected.shippingAddress);
 
             return (
               <div className="space-y-5">
@@ -663,7 +745,13 @@ export default function Orders() {
                               {tl.label}: {fmtCountdown(tl.ms)}
                               {!isOfficeOpen && <span className="text-orange-600"> (Paused)</span>}
                             </>
-                          ) : "Overdue"}
+                          ) : tl.paused ? (
+                            <span className="text-orange-600">
+                              Paused until the office opens
+                            </span>
+                          ) : (
+                            "Overdue"
+                          )}
                         </span>
                       ) : null}
                     </div>
@@ -714,13 +802,42 @@ export default function Orders() {
                   <Button
                     variant="outline"
                     onClick={() => downloadInvoice(selected)}
-                    disabled={actionBusy}
+                    disabled={actionBusy || !invoiceReady}
                     className="w-full sm:w-auto"
+                    title={
+                      invoiceReady
+                        ? "Download the GST tax invoice"
+                        : "DRIPPR is still confirming the delivery details for this order"
+                    }
                   >
                     <Download className="h-4 w-4 mr-2" />
                     Download Invoice
                   </Button>
+
+                  {selected.shippingLabel?.url ? (
+                    <Button variant="outline" asChild className="w-full sm:w-auto">
+                      <a
+                        href={selected.shippingLabel.url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <Download className="h-4 w-4 mr-2" />
+                        Shipping Label
+                      </a>
+                    </Button>
+                  ) : null}
                 </div>
+
+                {!invoiceReady && (
+                  <p className="flex gap-1.5 text-xs text-amber-700">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      The invoice becomes available once DRIPPR has confirmed
+                      the delivery address, which happens when the pickup is
+                      planned.
+                    </span>
+                  </p>
+                )}
 
                 {/* Pickup / Partner details (visible after admin assigns pickup) */}
                 {(wf === "pickup_assigned" || wf === "dispatched") && (
@@ -742,11 +859,12 @@ export default function Orders() {
                         <div className="sm:col-span-2">
                           <div className="text-muted-foreground">Delivery Address</div>
                           <div className="whitespace-pre-line">
-                            {deliveryAddressFor(selected) || (
-                              <span className="text-muted-foreground">
-                                Not shared for this order.
-                              </span>
-                            )}
+                            {formatCustomerAddress(selected.shippingAddress) ||
+                              deliveryAddressFor(selected) || (
+                                <span className="text-muted-foreground">
+                                  Not shared for this order.
+                                </span>
+                              )}
                           </div>
                         </div>
                         <div className="sm:col-span-2">
@@ -841,9 +959,9 @@ export default function Orders() {
                           <TableCell>
                             <div className="flex flex-col">
                               <div className="font-medium">{li.title}</div>
-                              {li.sku ? (
-                                <div className="text-xs text-muted-foreground">SKU: {li.sku}</div>
-                              ) : null}
+                              <div className="font-mono text-xs text-muted-foreground">
+                                {li.sku || "no SKU"}
+                              </div>
                             </div>
                           </TableCell>
                           <TableCell className="text-right">{li.quantity}</TableCell>
