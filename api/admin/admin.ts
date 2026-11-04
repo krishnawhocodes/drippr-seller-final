@@ -3857,14 +3857,14 @@ case "orders.assignPickup": {
             .status(400)
             .json({ ok: false, error: "Order has no Shopify id to look up" });
 
-        const ORDER_CUSTOMER_QUERY = `
+        const orderQuery = (withCustomer: boolean) => `
           query OrderCustomer($id: ID!) {
             order(id: $id) {
               id
               name
               email
               phone
-              customer { firstName lastName email phone }
+              ${withCustomer ? "customer { firstName lastName email phone }" : ""}
               shippingAddress {
                 name address1 address2 city province zip country phone
               }
@@ -3875,11 +3875,25 @@ case "orders.assignPickup": {
           }
         `;
 
+        const gid = `gid://shopify/Order/${shopifyOrderId}`;
+
         let fetched: ShopifyOrderCustomer | null = null;
         try {
-          const result = await shopifyGraphQL(ORDER_CUSTOMER_QUERY, {
-            id: `gid://shopify/Order/${shopifyOrderId}`,
-          });
+          let result;
+          try {
+            result = await shopifyGraphQL(orderQuery(true), { id: gid });
+          } catch (customerFieldError) {
+            // The customer connection needs read_customers, which the order
+            // scopes do not imply. Rather than lose the delivery address over
+            // a scope we only wanted a fallback name from, ask again without
+            // it; the address lives on the order itself.
+            const detail =
+              customerFieldError instanceof Error
+                ? customerFieldError.message
+                : String(customerFieldError);
+            if (!/customer/i.test(detail)) throw customerFieldError;
+            result = await shopifyGraphQL(orderQuery(false), { id: gid });
+          }
           fetched = result?.data?.order || null;
         } catch (shopifyError) {
           // A scope / protected-data rejection is a configuration problem, not
