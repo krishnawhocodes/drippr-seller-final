@@ -195,6 +195,23 @@ export const adminMe = () => call("admin.me");
  * gateway already enforces that, so they were folded in to stay within the
  * hosting plan's function budget.
  */
+export type ShopifyDiagnostics = {
+  ok: true;
+  shop: string;
+  apiVersion: string;
+  grantedScopes: string[];
+  scopeError: string | null;
+  probedOrderNumber: string | null;
+  probeError: string | null;
+  /** Null when no order was available to test against. */
+  customerDataReadable: boolean | null;
+  required: Array<{ scope: string; granted: boolean; why: string }>;
+};
+
+/** Asks Shopify what the deployed token can actually do. */
+export const shopifyDiagnostics = (): Promise<ShopifyDiagnostics> =>
+  call("shopify.diagnostics");
+
 export const listShopifyWebhooks = () => call("webhooks.list");
 
 export const registerShopifyWebhooks = () => call("webhooks.register");

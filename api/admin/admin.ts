@@ -2958,6 +2958,109 @@ export default async function handler(req: any, res: any) {
         return res.status(resp.ok ? 200 : 400).json({ ok: resp.ok, ...data });
       }
 
+      // Reports what the deployed Shopify token is actually allowed to do.
+      //
+      // Scopes alone do not settle whether customer PII will arrive: Shopify
+      // grades that separately as "protected customer data", where Level 2
+      // (name, address, phone, email) is always available to a custom app
+      // created in the Partner Dashboard but "varies by plan" for one created
+      // in the Shopify admin. So this reads the granted scopes AND tries a
+      // real order, which is the only way to tell a missing scope apart from
+      // a plan restriction without guessing.
+      case "shopify.diagnostics": {
+        const shop = process.env.SHOPIFY_STORE_DOMAIN || "";
+        const api = process.env.SHOPIFY_API_VERSION || "2025-01";
+        const adminToken = process.env.SHOPIFY_ADMIN_TOKEN || "";
+        if (!shop || !adminToken) {
+          return res.status(400).json({
+            ok: false,
+            error: "SHOPIFY_STORE_DOMAIN or SHOPIFY_ADMIN_TOKEN is not set.",
+          });
+        }
+
+        // 1. Which scopes this token carries.
+        let grantedScopes: string[] = [];
+        let scopeError: string | null = null;
+        try {
+          const scopeRes = await fetch(
+            `https://${shop}/admin/oauth/access_scopes.json`,
+            { headers: { "X-Shopify-Access-Token": adminToken } },
+          );
+          const scopeJson = (await scopeRes.json().catch(() => ({}))) as {
+            access_scopes?: Array<{ handle?: string }>;
+          };
+          if (!scopeRes.ok) {
+            scopeError = `Shopify returned ${scopeRes.status} for the scope list.`;
+          } else {
+            grantedScopes = (scopeJson.access_scopes || [])
+              .map((scope) => String(scope?.handle || ""))
+              .filter(Boolean)
+              .sort();
+          }
+        } catch (error) {
+          scopeError =
+            error instanceof Error ? error.message : "Could not reach Shopify.";
+        }
+
+        // 2. Whether a real order actually yields a street address. Uses the
+        //    newest order we have mirrored, so this reflects live behaviour
+        //    rather than what the scope list implies.
+        let customerDataReadable: boolean | null = null;
+        let probedOrderNumber: string | null = null;
+        let probeError: string | null = null;
+        try {
+          const recent = await adminDb
+            .collection("orders")
+            .orderBy("createdAt", "desc")
+            .limit(1)
+            .get();
+          const probe = recent.docs[0];
+          if (!probe) {
+            probeError = "No orders have reached the panel yet to test with.";
+          } else {
+            const probeData = probe.data() as Record<string, unknown>;
+            probedOrderNumber = String(
+              probeData.orderNumber || probeData.shopifyOrderId || "",
+            );
+            const result = await shopifyGraphQL(
+              `query ProbeOrder($id: ID!) {
+                order(id: $id) { shippingAddress { address1 city zip } }
+              }`,
+              { id: `gid://shopify/Order/${String(probeData.shopifyOrderId || "")}` },
+            );
+            const probed = result?.data?.order?.shippingAddress || null;
+            customerDataReadable = Boolean(String(probed?.address1 || "").trim());
+          }
+        } catch (error) {
+          probeError =
+            error instanceof Error ? error.message : "Could not reach Shopify.";
+          customerDataReadable = false;
+        }
+
+        const has = (scope: string) => grantedScopes.includes(scope);
+        return res.status(200).json({
+          ok: true,
+          shop,
+          apiVersion: api,
+          grantedScopes,
+          scopeError,
+          probedOrderNumber,
+          probeError,
+          customerDataReadable,
+          // The scopes this panel actually exercises.
+          required: [
+            { scope: "read_orders", granted: has("read_orders"), why: "Read orders placed on the store" },
+            { scope: "write_products", granted: has("write_products"), why: "Create and update approved products" },
+            { scope: "write_inventory", granted: has("write_inventory"), why: "Set stock levels" },
+            { scope: "read_locations", granted: has("read_locations"), why: "Resolve the inventory location" },
+            { scope: "write_files", granted: has("write_files"), why: "Upload product images" },
+            { scope: "write_discounts", granted: has("write_discounts"), why: "Create discount codes" },
+            { scope: "read_customers", granted: has("read_customers"), why: "Buyer name and contact on orders" },
+            { scope: "read_all_orders", granted: has("read_all_orders"), why: "Reach orders older than 60 days" },
+          ],
+        });
+      }
+
       case "webhooks.register": {
         const shop = process.env.SHOPIFY_STORE_DOMAIN || "";
         const api = process.env.SHOPIFY_API_VERSION || "2025-01";

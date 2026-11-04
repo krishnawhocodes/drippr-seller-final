@@ -5,13 +5,15 @@ import {
   listShopifyWebhooks,
   registerShopifyWebhooks,
   createTestDiscount,
+  shopifyDiagnostics,
+  type ShopifyDiagnostics,
 } from "@/lib/adminApi";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Save, RefreshCw, Webhook, CheckCircle2, XCircle, Tag, Wrench } from "lucide-react";
+import { Save, RefreshCw, Webhook, CheckCircle2, XCircle, Tag, Wrench, PlugZap, AlertTriangle } from "lucide-react";
 import { auth } from "@/lib/firebase";
 
 export default function AdminSettings() {
@@ -24,6 +26,8 @@ export default function AdminSettings() {
   const [repairingPricing, setRepairingPricing] = useState(false);
   const [repairResult, setRepairResult] = useState<any>(null);
   const [repairProgress, setRepairProgress] = useState("");
+  const [diagnostics, setDiagnostics] = useState<ShopifyDiagnostics | null>(null);
+  const [diagnosing, setDiagnosing] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -35,6 +39,27 @@ export default function AdminSettings() {
   const handleSave = async () => {
     await setPublicationId(publicationId);
     toast.success("Settings saved successfully!");
+  };
+
+  const runDiagnostics = async () => {
+    setDiagnosing(true);
+    try {
+      const data = await shopifyDiagnostics();
+      setDiagnostics(data);
+      if (data.customerDataReadable === true) {
+        toast.success("Shopify is sending full customer addresses");
+      } else if (data.customerDataReadable === false) {
+        toast.warning("Shopify is withholding customer addresses");
+      } else {
+        toast.info("Connected, but there was no order to test with");
+      }
+    } catch (err) {
+      toast.error(
+        'Diagnostics failed: ' + (err instanceof Error ? err.message : String(err)),
+      );
+    } finally {
+      setDiagnosing(false);
+    }
   };
 
   const checkWebhooks = async () => {
@@ -73,6 +98,112 @@ export default function AdminSettings() {
 
   return (
     <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Shopify Connection</CardTitle>
+          <CardDescription>
+            What the live Shopify token is actually allowed to do. Run this
+            before changing anything in Shopify: it reads the granted scopes
+            and then tries a real order, which is the only way to tell a
+            missing scope apart from a plan restriction.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Button onClick={runDiagnostics} disabled={diagnosing}>
+            <PlugZap className={`h-4 w-4 mr-2 ${diagnosing ? "animate-pulse" : ""}`} />
+            {diagnosing ? "Checking..." : "Check Shopify access"}
+          </Button>
+
+          {diagnostics && (
+            <div className="space-y-4">
+              <div className="text-xs text-muted-foreground">
+                {diagnostics.shop} &middot; API {diagnostics.apiVersion}
+              </div>
+
+              {diagnostics.customerDataReadable === true && (
+                <div className="rounded-md border border-green-300 bg-green-50 p-3 text-sm">
+                  <div className="flex items-center gap-2 font-medium text-green-900">
+                    <CheckCircle2 className="h-4 w-4" />
+                    Customer addresses are coming through
+                  </div>
+                  <p className="mt-1 text-xs text-green-800">
+                    Tested against order {diagnostics.probedOrderNumber}, which
+                    returned a street address.
+                  </p>
+                </div>
+              )}
+
+              {diagnostics.customerDataReadable === false && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
+                  <div className="flex items-center gap-2 font-medium text-amber-900">
+                    <AlertTriangle className="h-4 w-4" />
+                    Shopify is withholding customer addresses
+                  </div>
+                  <p className="mt-1 text-xs leading-relaxed text-amber-800">
+                    Order {diagnostics.probedOrderNumber} came back without a
+                    street address.
+                    {diagnostics.required.find((r) => r.scope === "read_customers")
+                      ?.granted
+                      ? " read_customers is already granted, so this is not a scope problem. Name, address, phone and email are Level 2 customer data, which an admin-created custom app only receives on some Shopify plans; a custom app created in the Partner Dashboard gets Level 2 on any plan."
+                      : " read_customers is not granted. Add it to the app in Shopify, reinstall, and run this again before changing anything else."}
+                  </p>
+                  {diagnostics.probeError ? (
+                    <p className="mt-1 text-xs text-amber-700">
+                      Shopify said: {diagnostics.probeError}
+                    </p>
+                  ) : null}
+                </div>
+              )}
+
+              {diagnostics.customerDataReadable === null && diagnostics.probeError ? (
+                <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+                  {diagnostics.probeError}
+                </div>
+              ) : null}
+
+              <div className="space-y-1.5">
+                <div className="text-sm font-medium">Scopes this panel uses</div>
+                {diagnostics.scopeError ? (
+                  <p className="text-xs text-destructive">{diagnostics.scopeError}</p>
+                ) : (
+                  <div className="divide-y rounded-md border">
+                    {diagnostics.required.map((row) => (
+                      <div
+                        key={row.scope}
+                        className="flex items-start gap-3 px-3 py-2 text-sm"
+                      >
+                        {row.granted ? (
+                          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-green-600" />
+                        ) : (
+                          <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="font-mono text-xs">{row.scope}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {row.why}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {diagnostics.grantedScopes.length ? (
+                <details className="text-xs">
+                  <summary className="cursor-pointer text-muted-foreground">
+                    All {diagnostics.grantedScopes.length} granted scopes
+                  </summary>
+                  <p className="mt-2 break-words font-mono text-muted-foreground">
+                    {diagnostics.grantedScopes.join(", ")}
+                  </p>
+                </details>
+              ) : null}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle>Publishing Settings</CardTitle>
