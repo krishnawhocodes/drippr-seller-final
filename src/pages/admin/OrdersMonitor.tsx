@@ -19,10 +19,15 @@ import {
 import {
   assignPickup,
   ordersList,
-  refreshOrderCustomer,
   updateOrderCustomer,
   uploadAdminFile,
 } from "@/lib/adminApi";
+import {
+  PAYMENT_DOT_CLASS,
+  PAYMENT_TEXT_CLASS,
+  paymentLabel,
+  paymentTone,
+} from "@/lib/orderPayment";
 import {
   INDIAN_STATES,
   customerDetailsComplete,
@@ -298,7 +303,6 @@ export default function AdminOrdersMonitor() {
   const [partnerPhone, setPartnerPhone] = useState("");
   const [etaText, setEtaText] = useState("");
   const [trackingUrl, setTrackingUrl] = useState("");
-  const [refreshingCustomer, setRefreshingCustomer] = useState(false);
   // Plan Pickup runs in two steps: confirm who the parcel is going to, then
   // arrange the pickup itself. The invoice is built from step one, so it has
   // to be settled before anything else is decided.
@@ -351,8 +355,7 @@ export default function AdminOrdersMonitor() {
 
   const customerFor = (o: OrderDoc) =>
     o.customerName || o.customerEmail || o.raw?.customer?.email || "—";
-  const payLabelFor = (o: OrderDoc) =>
-    (o.financialStatus || "pending").replace(/_/g, " ");
+
 
   // ✅ Calculate deadline with business hours
   const getVendorAcceptByDeadline = (o: OrderDoc): number => {
@@ -629,70 +632,6 @@ export default function AdminOrdersMonitor() {
   }
 
   /**
-   * Pulls the buyer's name and delivery address from Shopify again for one
-   * order. Used after protected customer data access is approved, to repair
-   * orders that arrived while the fields were still being withheld.
-   */
-  async function refreshCustomerFor(order: OrderDoc) {
-    setRefreshingCustomer(true);
-    try {
-      const result = await refreshOrderCustomer(order.id);
-      const nextAddress = (result.shippingAddress ||
-        null) as OrderDoc["shippingAddress"];
-
-      // Fill the form with whatever Shopify was willing to release, without
-      // wiping anything the admin has already typed in by hand.
-      if (nextAddress) {
-        setCustomer((current) => {
-          const merged = { ...current } as CustomerAddress;
-          for (const [key, value] of Object.entries(nextAddress)) {
-            if (value && !String(merged[key as keyof CustomerAddress] || "").trim()) {
-              merged[key as keyof CustomerAddress] = value;
-            }
-          }
-          return merged;
-        });
-      }
-      if (result.customerEmail) {
-        setCustomerEmail((current) => current || result.customerEmail || "");
-      }
-
-      // Keep the open dialog and the table in step with what came back.
-      const merge = (o: OrderDoc): OrderDoc =>
-        o.id === order.id
-          ? {
-              ...o,
-              shippingAddress: nextAddress ?? o.shippingAddress,
-              customerName: result.customerName ?? o.customerName,
-              customerEmail: result.customerEmail ?? o.customerEmail,
-            }
-          : o;
-      setOrders((list) => list.map(merge));
-      setPlanFor((current) => (current ? merge(current) : current));
-      setSelected((current) => (current ? merge(current) : current));
-
-      if (result.stillRedacted) {
-        toast.warning(
-          result.error ||
-            "Shopify returned this order without a street address.",
-        );
-      } else if (result.changed) {
-        toast.success("Customer details updated from Shopify");
-      } else {
-        toast.info("Shopify had nothing new for this order");
-      }
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Could not refetch the customer from Shopify",
-      );
-    } finally {
-      setRefreshingCustomer(false);
-    }
-  }
-
-  /**
    * Takes over an order the seller let expire. Without this the order is
    * unfulfillable: the seller can no longer accept it and a pickup cannot be
    * planned for something still sitting in vendor_pending.
@@ -932,9 +871,13 @@ export default function AdminOrdersMonitor() {
                               <div className="line-clamp-2 text-sm">
                                 {first.name || first.title}
                               </div>
-                              <div className="truncate font-mono text-xs text-muted-foreground">
-                                {first.sku || "no SKU"}
-                              </div>
+                              {/* Only printed when Shopify actually sent one;
+                                  an empty placeholder is worse than nothing. */}
+                              {first.sku ? (
+                                <div className="truncate font-mono text-xs text-muted-foreground">
+                                  {first.sku}
+                                </div>
+                              ) : null}
                               {items.length > 1 && (
                                 <div className="text-xs text-muted-foreground">
                                   +{items.length - 1} more item
@@ -953,8 +896,16 @@ export default function AdminOrdersMonitor() {
 
                         <TableCell>
                           <Badge className={badgeClass(st)}>{badgeText(st)}</Badge>
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            {payLabelFor(o)}
+                          {/* Payment sits quieter than the workflow badge:
+                              two filled badges read as two competing
+                              statuses, and only one is being acted on. */}
+                          <div
+                            className={`mt-1.5 flex items-center gap-1.5 text-xs ${PAYMENT_TEXT_CLASS[paymentTone(o.financialStatus)]}`}
+                          >
+                            <span
+                              className={`h-1.5 w-1.5 shrink-0 rounded-full ${PAYMENT_DOT_CLASS[paymentTone(o.financialStatus)]}`}
+                            />
+                            {paymentLabel(o.financialStatus)}
                           </div>
                         </TableCell>
 
@@ -1049,7 +1000,7 @@ export default function AdminOrdersMonitor() {
           </DialogHeader>
 
           {selected && (
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-5 text-sm">
+            <div className="min-h-0 space-y-4 overflow-y-auto px-6 py-5 text-sm">
               {/* Office hours notice */}
               {!isOfficeOpen && (workflowFor(selected) === "vendor_pending" || workflowFor(selected) === "vendor_accepted") && (
                 <div className="border border-orange-200 bg-orange-50 rounded-md p-3">
@@ -1136,20 +1087,28 @@ export default function AdminOrdersMonitor() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <div className="text-muted-foreground">Merchant</div>
-                  <div>
+                  <div className="text-muted-foreground">Seller</div>
+                  <div title={selected.merchantId}>
                     {selected.merchant?.storeName ||
                       selected.merchant?.name ||
-                      "—"}
+                      "Unknown seller"}
                   </div>
-                  <div className="text-xs text-muted-foreground">
-                    {selected.merchantId}
-                  </div>
+                  {selected.merchant?.phone ? (
+                    <div className="text-xs text-muted-foreground">
+                      {selected.merchant.phone}
+                    </div>
+                  ) : null}
                 </div>
                 <div>
                   <div className="text-muted-foreground">Customer</div>
-                  <div>{selected.customerName || customerFor(selected)}</div>
-                  {selected.customerName && selected.customerEmail ? (
+                  <div>
+                    {selected.customerName || (
+                      <span className="text-muted-foreground">
+                        Not captured yet
+                      </span>
+                    )}
+                  </div>
+                  {selected.customerEmail ? (
                     <div className="text-xs text-muted-foreground">
                       {selected.customerEmail}
                     </div>
@@ -1172,7 +1131,6 @@ export default function AdminOrdersMonitor() {
               <div className="space-y-2 rounded-md border p-3">
                 <div className="flex items-center justify-between gap-2">
                   <div className="font-medium">Delivery Address</div>
-                  <div className="flex items-center gap-1">
                   <Button
                     type="button"
                     variant="ghost"
@@ -1183,20 +1141,6 @@ export default function AdminOrdersMonitor() {
                   >
                     Edit
                   </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    disabled={refreshingCustomer}
-                    onClick={() => refreshCustomerFor(selected)}
-                  >
-                    <RefreshCw
-                      className={`mr-1 h-3 w-3 ${refreshingCustomer ? "animate-spin" : ""}`}
-                    />
-                    Refetch from Shopify
-                  </Button>
-                  </div>
                 </div>
                 {(() => {
                   // Once pickup is planned, the address the admin confirmed is
@@ -1255,9 +1199,11 @@ export default function AdminOrdersMonitor() {
                         <TableCell>
                           <div className="flex flex-col">
                             <div className="font-medium">{li.name || li.title}</div>
-                            <div className="font-mono text-xs text-muted-foreground">
-                              {li.sku || "no SKU"}
-                            </div>
+                            {li.sku ? (
+                              <div className="font-mono text-xs text-muted-foreground">
+                                {li.sku}
+                              </div>
+                            ) : null}
                           </div>
                         </TableCell>
                         <TableCell className="text-right">{li.quantity}</TableCell>
@@ -1357,7 +1303,7 @@ export default function AdminOrdersMonitor() {
           </DialogHeader>
 
           {planFor && (
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-5">
+            <div className="min-h-0 space-y-4 overflow-y-auto px-6 py-5">
               {!isOfficeOpen && (
                 <div className="rounded-md border border-orange-200 bg-orange-50 p-3 text-sm">
                   <div className="flex items-center gap-2 text-orange-800">
@@ -1374,31 +1320,12 @@ export default function AdminOrdersMonitor() {
               {planStep === "customer" ? (
                 <>
                   <div className="rounded-md border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
-                    Copy the buyer&rsquo;s details across from the Shopify order.
-                    Shopify does not release a name, phone, street or PIN to
-                    this app on the store&rsquo;s current plan, and the tax
-                    invoice is billed to whatever is entered here &mdash; so
-                    the order cannot be invoiced until it is filled in. The
-                    state decides whether the order is taxed as CGST + SGST or
-                    as IGST, so set it accurately.
+                    Copy these from the Shopify order. The tax invoice is
+                    billed to exactly what is entered here, and the state
+                    decides whether GST is charged as CGST + SGST or as IGST.
                   </div>
 
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="text-sm font-medium">Buyer</div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2 text-xs"
-                      disabled={refreshingCustomer}
-                      onClick={() => refreshCustomerFor(planFor)}
-                    >
-                      <RefreshCw
-                        className={`mr-1 h-3 w-3 ${refreshingCustomer ? "animate-spin" : ""}`}
-                      />
-                      Try Shopify again
-                    </Button>
-                  </div>
+                  <div className="text-sm font-medium">Buyer</div>
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="space-y-1.5">

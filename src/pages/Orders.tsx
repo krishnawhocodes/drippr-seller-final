@@ -17,6 +17,12 @@ import {
   customerDetailsComplete,
   formatCustomerAddress,
 } from "@/lib/orderCustomer";
+import {
+  PAYMENT_DOT_CLASS,
+  PAYMENT_TEXT_CLASS,
+  paymentLabel,
+  paymentTone,
+} from "@/lib/orderPayment";
 import { generateInvoicePdf } from "@/lib/generateInvoicePdf";
 import type { InvoiceMerchant } from "@/lib/generateInvoicePdf";
 import {
@@ -597,9 +603,12 @@ export default function Orders() {
                                 {first.title}
                                 {first.quantity > 1 ? ` \u00d7 ${first.quantity}` : ""}
                               </div>
-                              <div className="truncate font-mono text-xs text-muted-foreground">
-                                {first.sku || "no SKU"}
-                              </div>
+                              {/* Only printed when Shopify actually sent one. */}
+                              {first.sku ? (
+                                <div className="truncate font-mono text-xs text-muted-foreground">
+                                  {first.sku}
+                                </div>
+                              ) : null}
                               {items.length > 1 && (
                                 <div className="text-xs text-muted-foreground">
                                   +{items.length - 1} more item
@@ -620,8 +629,16 @@ export default function Orders() {
                           <Badge className={workflowBadgeClass(wf)}>
                             {workflowBadgeText(wf)}
                           </Badge>
-                          <div className="mt-1">
-                            <Badge className={payBadgeClass(o)}>{payLabelFor(o)}</Badge>
+                          {/* Payment is stated more quietly than the workflow
+                              badge: two filled badges read as two competing
+                              statuses, and only one is being acted on. */}
+                          <div
+                            className={`mt-1.5 flex items-center gap-1.5 text-xs ${PAYMENT_TEXT_CLASS[paymentTone(o.financialStatus)]}`}
+                          >
+                            <span
+                              className={`h-1.5 w-1.5 shrink-0 rounded-full ${PAYMENT_DOT_CLASS[paymentTone(o.financialStatus)]}`}
+                            />
+                            {paymentLabel(o.financialStatus)}
                           </div>
                         </TableCell>
 
@@ -696,7 +713,7 @@ export default function Orders() {
             </DialogTitle>
           </DialogHeader>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+          <div className="min-h-0 overflow-y-auto px-6 py-5">
           {selected ? (() => {
             const wf = workflowFor(selected);
             const tl = timeLeftMs(selected);
@@ -760,10 +777,9 @@ export default function Orders() {
                   <div>
                     <div className="text-muted-foreground">Payment</div>
                     <div className="flex items-center gap-2">
-                      <Badge className={payBadgeClass(selected)}>{payLabelFor(selected)}</Badge>
-                      <span className="text-xs text-muted-foreground">
-                        {ordLabelFor(selected)}
-                      </span>
+                      <Badge className={payBadgeClass(selected)}>
+                        {paymentLabel(selected.financialStatus)}
+                      </Badge>
                     </div>
                   </div>
 
@@ -959,9 +975,11 @@ export default function Orders() {
                           <TableCell>
                             <div className="flex flex-col">
                               <div className="font-medium">{li.title}</div>
-                              <div className="font-mono text-xs text-muted-foreground">
-                                {li.sku || "no SKU"}
-                              </div>
+                              {li.sku ? (
+                                <div className="font-mono text-xs text-muted-foreground">
+                                  {li.sku}
+                                </div>
+                              ) : null}
                             </div>
                           </TableCell>
                           <TableCell className="text-right">{li.quantity}</TableCell>

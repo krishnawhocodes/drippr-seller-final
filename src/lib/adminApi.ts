@@ -106,25 +106,6 @@ export function updateOrderCustomer(
 }
 
 /**
- * Re-reads the buyer's name and delivery address from Shopify for one order
- * and merges in anything the webhook was not allowed to see.
- *
- * `stillRedacted` is true when Shopify handed back an address with no street
- * line, which means protected customer data access has not been approved yet.
- */
-export function refreshOrderCustomer(orderId: string): Promise<{
-  ok: true;
-  changed: boolean;
-  stillRedacted: boolean;
-  shippingAddress: Record<string, string> | null;
-  customerName: string | null;
-  customerEmail: string | null;
-  error?: string;
-}> {
-  return call("orders.refreshCustomer", { orderId });
-}
-
-/**
  * Signed ImageKit credentials for admin-side uploads (shipping labels).
  * The file goes straight from the browser to ImageKit; only the resulting URL
  * comes back through our API.
