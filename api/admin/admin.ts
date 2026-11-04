@@ -1,6 +1,6 @@
 // api/admin.ts
 import { getAdmin } from "../_lib/firebaseAdmin.js";
-import { shopifyGraphQL } from "../_lib/shopify.js";
+import { shopifyGraphQL, shopifyGraphQLPartial } from "../_lib/shopify.js";
 import ImageKit from "imagekit";
 import {
   buildSpecificationMetafields,
@@ -3022,14 +3022,19 @@ export default async function handler(req: any, res: any) {
             probedOrderNumber = String(
               probeData.orderNumber || probeData.shopifyOrderId || "",
             );
-            const result = await shopifyGraphQL(
+            const result = await shopifyGraphQLPartial(
               `query ProbeOrder($id: ID!) {
                 order(id: $id) { shippingAddress { address1 city zip } }
               }`,
               { id: `gid://shopify/Order/${String(probeData.shopifyOrderId || "")}` },
             );
-            const probed = result?.data?.order?.shippingAddress || null;
+            const probed = result.data?.order?.shippingAddress || null;
             customerDataReadable = Boolean(String(probed?.address1 || "").trim());
+            if (!customerDataReadable && result.errors.length) {
+              // Shopify rejects the blocked fields one by one; the first
+              // message says why, and the rest repeat it per field.
+              probeError = String(result.errors[0]?.message || "").slice(0, 300);
+            }
           }
         } catch (error) {
           probeError =
@@ -3981,23 +3986,19 @@ case "orders.assignPickup": {
         const gid = `gid://shopify/Order/${shopifyOrderId}`;
 
         let fetched: ShopifyOrderCustomer | null = null;
+        let fieldErrors: string[] = [];
         try {
-          let result;
-          try {
-            result = await shopifyGraphQL(orderQuery(true), { id: gid });
-          } catch (customerFieldError) {
+          let result = await shopifyGraphQLPartial(orderQuery(true), { id: gid });
+          if (result.data?.order == null && result.errors.length) {
             // The customer connection needs read_customers, which the order
-            // scopes do not imply. Rather than lose the delivery address over
-            // a scope we only wanted a fallback name from, ask again without
-            // it; the address lives on the order itself.
-            const detail =
-              customerFieldError instanceof Error
-                ? customerFieldError.message
-                : String(customerFieldError);
-            if (!/customer/i.test(detail)) throw customerFieldError;
-            result = await shopifyGraphQL(orderQuery(false), { id: gid });
+            // scopes do not imply. Ask again without it rather than lose the
+            // delivery address, which lives on the order itself.
+            result = await shopifyGraphQLPartial(orderQuery(false), { id: gid });
           }
-          fetched = result?.data?.order || null;
+          fetched = result.data?.order || null;
+          fieldErrors = result.errors
+            .map((error) => String(error?.message || ""))
+            .filter(Boolean);
         } catch (shopifyError) {
           // A scope / protected-data rejection is a configuration problem, not
           // a server fault, so say precisely what to fix instead of a 500.
@@ -4090,6 +4091,11 @@ case "orders.assignPickup": {
         // A street line is the one field that decides whether a parcel can
         // actually be addressed, so report on that rather than "some data".
         const stillRedacted = !String(merged.address1 || "").trim();
+        const planBlocked = fieldErrors.some((message) =>
+          /not approved to access|personally identifiable|ACCESS_DENIED/i.test(
+            message,
+          ),
+        );
         return res.status(200).json({
           ok: true,
           changed,
@@ -4099,7 +4105,9 @@ case "orders.assignPickup": {
           customerEmail: customerEmail || null,
           code: stillRedacted ? "protected_customer_data" : undefined,
           error: stillRedacted
-            ? "Shopify returned this order without a street address. Either the order genuinely has none, or the store's plan withholds Level 2 customer data from custom apps."
+            ? planBlocked
+              ? "Shopify blocked the street address and PIN for this app: they are Level 2 customer data, which needs a plan above Basic. Anything else it allowed (city, state) has been saved."
+              : "Shopify returned this order without a street address. Either the order genuinely has none, or the store's plan withholds Level 2 customer data from custom apps."
             : undefined,
         });
       }

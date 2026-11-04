@@ -940,25 +940,45 @@ export default function AdminOrdersMonitor() {
                     Refetch from Shopify
                   </Button>
                 </div>
-                {formatShopifyAddress(selected.shippingAddress) ? (
-                  <div className="whitespace-pre-line text-sm">
-                    {formatShopifyAddress(selected.shippingAddress)}
-                  </div>
-                ) : (
-                  <div className="text-muted-foreground">
-                    Shopify did not send a delivery address for this order.
-                  </div>
-                )}
-                {!addressIsDeliverable(selected.shippingAddress) && (
-                  <p className="flex gap-1.5 text-xs leading-relaxed text-amber-700">
-                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    <span>
-                      Incomplete — either this order has no street
-                      address, or the store's plan withholds Level 2 customer
-                      data (name, phone, street, city, PIN) from custom apps.
-                    </span>
-                  </p>
-                )}
+                {(() => {
+                  // Once pickup is planned, the address the admin confirmed is
+                  // the one the courier was given, so it wins over whatever
+                  // Shopify was willing to send.
+                  const planned = String(
+                    selected.pickupPlan?.customerAddress || "",
+                  ).trim();
+                  const fromShopify = formatShopifyAddress(
+                    selected.shippingAddress,
+                  );
+                  const shown = planned || fromShopify;
+
+                  return (
+                    <>
+                      {shown ? (
+                        <div className="whitespace-pre-line text-sm">{shown}</div>
+                      ) : (
+                        <div className="text-muted-foreground">
+                          Shopify did not send a delivery address for this order.
+                        </div>
+                      )}
+                      {planned ? (
+                        <p className="text-xs text-muted-foreground">
+                          Confirmed when the pickup was planned.
+                        </p>
+                      ) : !addressIsDeliverable(selected.shippingAddress) ? (
+                        <p className="flex gap-1.5 text-xs leading-relaxed text-amber-700">
+                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          <span>
+                            No street address — either this order has none,
+                            or the store's plan withholds Level 2 customer data
+                            (name, phone, street, PIN) from custom apps. Fill it
+                            in when planning the pickup.
+                          </span>
+                        </p>
+                      ) : null}
+                    </>
+                  );
+                })()}
               </div>
 
               <div className="border rounded-md">
