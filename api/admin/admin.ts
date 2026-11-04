@@ -57,6 +57,17 @@ function formatCustomerAddressLines(address: Record<string, string>) {
     .join("\n");
 }
 
+/** Error carrying the HTTP status the gateway should answer with. */
+class GatewayError extends Error {
+  statusCode: number;
+  currentStatus?: string;
+  constructor(message: string, statusCode: number, currentStatus?: string) {
+    super(message);
+    this.statusCode = statusCode;
+    this.currentStatus = currentStatus;
+  }
+}
+
 type FirestoreMergeRef = {
   set: (
     data: Record<string, unknown>,
@@ -3920,8 +3931,8 @@ export default async function handler(req: any, res: any) {
       // inside switch(action) { ... }
 
 case "orders.assignPickup": {
-  // body: { orderId, pickupWindow, pickupAddress, customerAddress, notes,
-  //         deliveryPartner, shippingLabel }
+  // body: { orderId, pickupWindow, pickupAddress, customerDetails, notes,
+  //         deliveryScope, deliveryPartner, shippingLabel }
   const body = req.body || {};
   const orderId = String(body.orderId || "").trim();
   if (!orderId) return res.status(400).json({ ok: false, error: "orderId is required" });
@@ -3999,24 +4010,33 @@ case "orders.assignPickup": {
   await adminDb.runTransaction(async (tx) => {
     const snap = await tx.get(orderRef);
     if (!snap.exists) {
-      const err: any = new Error("Order not found");
-      err.statusCode = 404;
-      throw err;
+      throw new GatewayError("Order not found", 404);
     }
 
     const order = snap.data() as any;
     const st = order?.workflowStatus || "vendor_pending";
 
-    // planning only after vendor accepted (or admin overdue)
-    if (!(st === "vendor_accepted" || st === "admin_overdue")) {
-      const err: any = new Error("Order is not ready for pickup assignment");
-      err.statusCode = 400;
-      err.currentStatus = st;
-      throw err;
+    // Already planned: say so plainly rather than "not ready", which is
+    // what a double submit used to produce. Re-planning is deliberately not
+    // allowed, since it would replace the label the courier already has.
+    if (st === "pickup_assigned" || st === "dispatched") {
+      throw new GatewayError(
+        st === "dispatched"
+          ? "This order has already been dispatched."
+          : "A pickup has already been assigned for this order.",
+        409,
+        st,
+      );
     }
 
-    // idempotent
-    if (st === "pickup_assigned" || st === "dispatched") return;
+    // Planning only after the vendor accepted (or the admin is overdue).
+    if (!(st === "vendor_accepted" || st === "admin_overdue")) {
+      throw new GatewayError(
+        "This order is still waiting for the seller to accept it.",
+        400,
+        st,
+      );
+    }
 
     tx.set(
       orderRef,
@@ -4142,7 +4162,20 @@ case "orders.assignPickup": {
         return res.status(400).json({ ok: false, error: `Unknown action: ${action}` });
     }
   } catch (e: any) {
-    console.error("admin gateway error:", e?.message || e);
-    return res.status(500).json({ ok: false, error: e?.message || "server error" });
+    // Handlers raise statusCode for conditions the caller can fix - an order
+    // in the wrong state, a document that is gone. Reporting those as 500
+    // would call a server fault something the admin can put right, and would
+    // bury it among the real faults in the logs.
+    const status = Number(e?.statusCode) || 500;
+    if (status >= 500) {
+      console.error("admin gateway error:", e?.message || e);
+    } else {
+      console.warn("admin gateway rejected:", status, e?.message || e);
+    }
+    return res.status(status).json({
+      ok: false,
+      error: e?.message || "server error",
+      ...(e?.currentStatus ? { currentStatus: e.currentStatus } : {}),
+    });
   }
 }
