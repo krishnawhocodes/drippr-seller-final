@@ -20,6 +20,7 @@ import {
   assignPickup,
   ordersList,
   refreshOrderCustomer,
+  updateOrderCustomer,
   uploadAdminFile,
 } from "@/lib/adminApi";
 import {
@@ -302,6 +303,10 @@ export default function AdminOrdersMonitor() {
   // arrange the pickup itself. The invoice is built from step one, so it has
   // to be settled before anything else is decided.
   const [planStep, setPlanStep] = useState<"customer" | "pickup">("customer");
+  // "customer_only" reuses the same first step to fill in the buyer on an
+  // order that was planned or shipped before details were being captured,
+  // without re-running the pickup transition.
+  const [planMode, setPlanMode] = useState<"full" | "customer_only">("full");
   const [customer, setCustomer] = useState<CustomerAddress>({});
   const [customerEmail, setCustomerEmail] = useState("");
   const [labelFile, setLabelFile] = useState<File | null>(null);
@@ -558,6 +563,7 @@ export default function AdminOrdersMonitor() {
   }
 
   function openPlan(o: OrderDoc) {
+    setPlanMode("full");
     setPlanFor(o);
     setPlanOpen(true);
 
@@ -584,6 +590,43 @@ export default function AdminOrdersMonitor() {
 
   const setCustomerField = (key: keyof CustomerAddress, value: string) =>
     setCustomer((current) => ({ ...current, [key]: value }));
+
+  /** Fill in the buyer on an order that is already past planning. */
+  function openCustomerEdit(o: OrderDoc) {
+    setPlanMode("customer_only");
+    setPlanFor(o);
+    setPlanStep("customer");
+    setCustomer(normalizeCustomerAddress(o.shippingAddress));
+    setCustomerEmail(o.customerEmail || "");
+    setDetailOpen(false);
+    setPlanOpen(true);
+  }
+
+  async function saveCustomerOnly() {
+    if (!planFor?.id) return;
+    const missing = missingCustomerFields(customer);
+    if (missing.length) {
+      toast.error("Still needed: " + missing.join(", ") + ".");
+      return;
+    }
+    setBusy(true);
+    try {
+      await updateOrderCustomer(planFor.id, {
+        ...normalizeCustomerAddress(customer),
+        email: customerEmail.trim(),
+      });
+      toast.success("Customer details saved. The invoice is now available.");
+      setPlanOpen(false);
+      setPlanFor(null);
+      fetchOrders();
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not save the details",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
 
   /**
    * Pulls the buyer's name and delivery address from Shopify again for one
@@ -1057,14 +1100,24 @@ export default function AdminOrdersMonitor() {
                       )}
                     </div>
                     {!ready ? (
-                      <p className="flex gap-1.5 text-xs text-amber-700">
-                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                        <span>
-                          The invoice needs the buyer&rsquo;s{" "}
-                          {missingCustomerFields(selected.shippingAddress).join(", ")}
-                          . Capture them when planning the pickup.
-                        </span>
-                      </p>
+                      <div className="space-y-2">
+                        <p className="flex gap-1.5 text-xs text-amber-700">
+                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          <span>
+                            The invoice needs the buyer&rsquo;s{" "}
+                            {missingCustomerFields(selected.shippingAddress).join(", ")}
+                            .
+                          </span>
+                        </p>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => openCustomerEdit(selected)}
+                          disabled={busy}
+                        >
+                          Add customer details
+                        </Button>
+                      </div>
                     ) : !label?.url ? (
                       <p className="text-xs text-muted-foreground">
                         The shipping label is uploaded when the pickup is planned.
@@ -1119,6 +1172,17 @@ export default function AdminOrdersMonitor() {
               <div className="space-y-2 rounded-md border p-3">
                 <div className="flex items-center justify-between gap-2">
                   <div className="font-medium">Delivery Address</div>
+                  <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => openCustomerEdit(selected)}
+                    disabled={busy}
+                  >
+                    Edit
+                  </Button>
                   <Button
                     type="button"
                     variant="ghost"
@@ -1132,6 +1196,7 @@ export default function AdminOrdersMonitor() {
                     />
                     Refetch from Shopify
                   </Button>
+                  </div>
                 </div>
                 {(() => {
                   // Once pickup is planned, the address the admin confirmed is
@@ -1263,26 +1328,32 @@ export default function AdminOrdersMonitor() {
         <DialogContent className="flex max-w-3xl flex-col gap-0 p-0">
           <DialogHeader className="shrink-0 border-b px-6 py-4 pr-12">
             <DialogTitle>
-              Plan Pickup &mdash;{" "}
+              {planMode === "full" ? "Plan Pickup" : "Customer Details"} &mdash;{" "}
               {planFor?.orderNumber || planFor?.shopifyOrderId || planFor?.id}
             </DialogTitle>
-            <div className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
-              <span
-                className={
-                  planStep === "customer" ? "font-medium text-foreground" : ""
-                }
-              >
-                1. Customer details
-              </span>
-              <span>&rarr;</span>
-              <span
-                className={
-                  planStep === "pickup" ? "font-medium text-foreground" : ""
-                }
-              >
-                2. Pickup &amp; label
-              </span>
-            </div>
+            {planMode === "full" ? (
+              <div className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
+                <span
+                  className={
+                    planStep === "customer" ? "font-medium text-foreground" : ""
+                  }
+                >
+                  1. Customer details
+                </span>
+                <span>&rarr;</span>
+                <span
+                  className={
+                    planStep === "pickup" ? "font-medium text-foreground" : ""
+                  }
+                >
+                  2. Pickup &amp; label
+                </span>
+              </div>
+            ) : (
+              <div className="pt-1 text-xs text-muted-foreground">
+                Filling in the buyer so this order can be invoiced.
+              </div>
+            )}
           </DialogHeader>
 
           {planFor && (
@@ -1479,10 +1550,16 @@ export default function AdminOrdersMonitor() {
 
                         <div className="flex flex-col gap-3 sm:flex-row">
                           <Button
-                            onClick={() => setPlanStep("pickup")}
+                            onClick={
+                              planMode === "full"
+                                ? () => setPlanStep("pickup")
+                                : saveCustomerOnly
+                            }
                             disabled={missing.length > 0 || busy}
                           >
-                            Continue to pickup
+                            {planMode === "full"
+                              ? "Continue to pickup"
+                              : "Save details"}
                           </Button>
                           <Button
                             variant="outline"

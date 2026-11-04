@@ -3100,6 +3100,79 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      // Records the buyer's details on an order without touching the workflow.
+      //
+      // Plan Pickup captures these as part of planning, but an order that was
+      // already planned before details were being captured - or one that has
+      // shipped - would otherwise have no way to get them, and so could never
+      // be invoiced. This lets an admin fill them in at any point.
+      case "orders.updateCustomer": {
+        const orderId = String(body.orderId || "").trim();
+        if (!orderId)
+          return res.status(400).json({ ok: false, error: "orderId is required" });
+
+        const raw = body.customerDetails || {};
+        const address = {
+          name: cleanText(raw.name),
+          address1: cleanText(raw.address1),
+          address2: cleanText(raw.address2),
+          city: cleanText(raw.city),
+          province: cleanText(raw.province),
+          zip: cleanText(raw.zip),
+          country: cleanText(raw.country) || "India",
+          phone: cleanText(raw.phone),
+        };
+        const email = cleanText(raw.email);
+
+        const missing = REQUIRED_CUSTOMER_KEYS.filter(
+          (field) => !address[field.key],
+        ).map((field) => field.label);
+        if (missing.length) {
+          return res.status(400).json({
+            ok: false,
+            error: "Still needed: " + missing.join(", ") + ".",
+            missing,
+          });
+        }
+
+        const orderRef = adminDb.collection("orders").doc(orderId);
+        const snap = await orderRef.get();
+        if (!snap.exists)
+          return res.status(404).json({ ok: false, error: "Order not found" });
+
+        const existing = (snap.data() || {}) as Record<string, unknown>;
+        const plan = (existing.pickupPlan || null) as Record<
+          string,
+          unknown
+        > | null;
+
+        const now = Date.now();
+        await orderRef.set(
+          {
+            shippingAddress: address,
+            customerName: address.name,
+            ...(email ? { customerEmail: email } : {}),
+            customerDetailsSource: "admin",
+            customerDetailsCapturedAt: now,
+            customerDetailsCapturedBy: me.uid,
+            // Keep the courier's copy in step with the record when a pickup
+            // has already been planned.
+            ...(plan
+              ? {
+                  pickupPlan: {
+                    ...plan,
+                    customerAddress: formatCustomerAddressLines(address),
+                  },
+                }
+              : {}),
+            updatedAt: now,
+          },
+          { merge: true },
+        );
+
+        return res.status(200).json({ ok: true, shippingAddress: address });
+      }
+
       case "webhooks.register": {
         const shop = process.env.SHOPIFY_STORE_DOMAIN || "";
         const api = process.env.SHOPIFY_API_VERSION || "2025-01";

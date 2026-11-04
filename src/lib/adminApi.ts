@@ -85,6 +85,27 @@ export function assignPickup(payload: {
 }
 
 /**
+ * Records the buyer's details on an order on their own, for orders that were
+ * planned or shipped before details were captured.
+ */
+export function updateOrderCustomer(
+  orderId: string,
+  customerDetails: {
+    name?: string;
+    address1?: string;
+    address2?: string;
+    city?: string;
+    province?: string;
+    zip?: string;
+    country?: string;
+    phone?: string;
+    email?: string;
+  },
+) {
+  return call("orders.updateCustomer", { orderId, customerDetails });
+}
+
+/**
  * Re-reads the buyer's name and delivery address from Shopify for one order
  * and merges in anything the webhook was not allowed to see.
  *
