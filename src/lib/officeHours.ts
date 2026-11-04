@@ -11,6 +11,15 @@
 export const OFFICE_START_HOUR = 9;
 export const OFFICE_END_HOUR = 21;
 
+/** Human wording for the same window, so copy cannot drift from the logic. */
+const hour12 = (h: number) => {
+  const suffix = h >= 12 ? "PM" : "AM";
+  const base = h % 12 === 0 ? 12 : h % 12;
+  return base + " " + suffix;
+};
+export const OFFICE_HOURS_LABEL =
+  hour12(OFFICE_START_HOUR) + " to " + hour12(OFFICE_END_HOUR) + " IST";
+
 const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 

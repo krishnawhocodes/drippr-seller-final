@@ -285,20 +285,23 @@ export default function Orders() {
     return now > acceptBy ? "vendor_expired" : "vendor_pending";
   };
 
+  // Written from the seller's point of view: what is happening to their
+  // order and whether it is on them. Internal wording like "admin planning"
+  // or "admin overdue" describes DRIPPR's queue, not theirs.
   const workflowBadgeText = (st: WorkflowStatus) => {
     switch (st) {
       case "vendor_pending":
-        return "Pending Acceptance";
+        return "Action needed";
       case "vendor_accepted":
-        return "Accepted (Admin Planning)";
+        return "With DRIPPR";
       case "pickup_assigned":
-        return "Pickup Assigned";
+        return "Pickup scheduled";
       case "dispatched":
         return "Dispatched";
       case "vendor_expired":
-        return "Expired";
+        return "Missed window";
       case "admin_overdue":
-        return "Admin Overdue";
+        return "With DRIPPR";
       default:
         return st;
     }
@@ -522,12 +525,12 @@ export default function Orders() {
                     <SelectItem value="all">All Orders</SelectItem>
 
                     {/* Workflow filters */}
-                    <SelectItem value="wf:vendor_pending">Workflow: Pending Acceptance</SelectItem>
-                    <SelectItem value="wf:vendor_accepted">Workflow: Accepted (Admin Planning)</SelectItem>
-                    <SelectItem value="wf:pickup_assigned">Workflow: Pickup Assigned</SelectItem>
-                    <SelectItem value="wf:dispatched">Workflow: Dispatched</SelectItem>
-                    <SelectItem value="wf:vendor_expired">Workflow: Expired</SelectItem>
-                    <SelectItem value="wf:admin_overdue">Workflow: Admin Overdue</SelectItem>
+                    <SelectItem value="wf:vendor_pending">Status: Action needed</SelectItem>
+                    <SelectItem value="wf:vendor_accepted">Status: With DRIPPR</SelectItem>
+                    <SelectItem value="wf:pickup_assigned">Status: Pickup scheduled</SelectItem>
+                    <SelectItem value="wf:dispatched">Status: Dispatched</SelectItem>
+                    <SelectItem value="wf:vendor_expired">Status: Missed window</SelectItem>
+                    <SelectItem value="wf:admin_overdue">Status: With DRIPPR (overdue)</SelectItem>
 
                     {/* Payment / Order filters (previous logic preserved) */}
                     <SelectItem value="pay:pending">Payment: Pending</SelectItem>
@@ -564,7 +567,7 @@ export default function Orders() {
                     <TableHead className="w-[104px]">Order</TableHead>
                     <TableHead>Item &amp; SKU</TableHead>
                     <TableHead className="w-[96px] text-right">Amount</TableHead>
-                    <TableHead className="w-[124px]">Status</TableHead>
+                    <TableHead className="w-[150px]">Status</TableHead>
                     <TableHead className="w-[124px] text-right">&nbsp;</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -626,14 +629,16 @@ export default function Orders() {
                         </TableCell>
 
                         <TableCell>
-                          <Badge className={workflowBadgeClass(wf)}>
+                          <Badge
+                            className={`${workflowBadgeClass(wf)} whitespace-nowrap`}
+                          >
                             {workflowBadgeText(wf)}
                           </Badge>
                           {/* Payment is stated more quietly than the workflow
                               badge: two filled badges read as two competing
                               statuses, and only one is being acted on. */}
                           <div
-                            className={`mt-1.5 flex items-center gap-1.5 text-xs ${PAYMENT_TEXT_CLASS[paymentTone(o.financialStatus)]}`}
+                            className={`mt-1.5 flex items-center gap-1.5 whitespace-nowrap text-xs ${PAYMENT_TEXT_CLASS[paymentTone(o.financialStatus)]}`}
                           >
                             <span
                               className={`h-1.5 w-1.5 shrink-0 rounded-full ${PAYMENT_DOT_CLASS[paymentTone(o.financialStatus)]}`}

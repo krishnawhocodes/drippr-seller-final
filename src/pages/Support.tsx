@@ -8,7 +8,8 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { Mail, Phone, MessageCircle } from "lucide-react";
+import { Mail, MessageCircle, Clock } from "lucide-react";
+import { OFFICE_HOURS_LABEL } from "@/lib/officeHours";
 import { toast } from "sonner";
 
 import { auth, db } from "@/lib/firebase";
@@ -202,45 +203,45 @@ export default function Support() {
                 <CardTitle className="text-lg">Contact Us</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="flex items-start gap-3">
-                  <div className="rounded-lg bg-primary/10 p-2">
-                    <Mail className="h-5 w-5 text-primary" />
-                  </div>
-                  <div>
-                    <p className="font-medium">Email Support</p>
-                    <p className="text-sm text-muted-foreground">sellers@drippr.com</p>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3">
-                  <div className="rounded-lg bg-primary/10 p-2">
-                    <Phone className="h-5 w-5 text-primary" />
-                  </div>
-                  <div>
-                    <p className="font-medium">Phone Support</p>
-                    <p className="text-sm text-muted-foreground">1800-123-4567</p>
-                  </div>
-                </div>
+                {/* Only routes that actually reach someone are listed. A
+                    ticket is the supported path, so it is stated first. */}
                 <div className="flex items-start gap-3">
                   <div className="rounded-lg bg-primary/10 p-2">
                     <MessageCircle className="h-5 w-5 text-primary" />
                   </div>
                   <div>
-                    <p className="font-medium">Ticket Response</p>
-                    <p className="text-sm text-muted-foreground">Within 2-6 hours</p>
+                    <p className="font-medium">Raise a ticket</p>
+                    <p className="text-sm text-muted-foreground">
+                      Use the form here. Replies arrive in this panel and are
+                      answered during office hours.
+                    </p>
                   </div>
                 </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Quick Links</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <Button variant="ghost" className="w-full justify-start">Seller Guide</Button>
-                <Button variant="ghost" className="w-full justify-start">FAQs</Button>
-                <Button variant="ghost" className="w-full justify-start">Payment Policy</Button>
-                <Button variant="ghost" className="w-full justify-start">Shipping Guidelines</Button>
+                <div className="flex items-start gap-3">
+                  <div className="rounded-lg bg-primary/10 p-2">
+                    <Mail className="h-5 w-5 text-primary" />
+                  </div>
+                  <div>
+                    <p className="font-medium">Email</p>
+                    <a
+                      href="mailto:sellers@drippr.in"
+                      className="text-sm text-muted-foreground underline-offset-2 hover:underline"
+                    >
+                      sellers@drippr.in
+                    </a>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <div className="rounded-lg bg-primary/10 p-2">
+                    <Clock className="h-5 w-5 text-primary" />
+                  </div>
+                  <div>
+                    <p className="font-medium">Office hours</p>
+                    <p className="text-sm text-muted-foreground">
+                      {OFFICE_HOURS_LABEL}, every day
+                    </p>
+                  </div>
+                </div>
               </CardContent>
             </Card>
           </div>

@@ -330,32 +330,32 @@ function productStatusPresentation(status: ProductDisplayStatus) {
     case "draft":
       return {
         label: "Draft",
-        className: "bg-purple-500/10 text-purple-700 border-purple-500/20",
+        className: "bg-purple-500/10 text-purple-700 border-purple-500/20 whitespace-nowrap",
       };
     case "review_pending":
       return {
         label: "Review Pending",
-        className: "bg-yellow-500/10 text-yellow-700 border-yellow-500/20",
+        className: "bg-yellow-500/10 text-yellow-700 border-yellow-500/20 whitespace-nowrap",
       };
     case "rejected":
       return {
         label: "Rejected",
-        className: "bg-muted text-muted-foreground border-muted",
+        className: "bg-muted text-muted-foreground border-muted whitespace-nowrap",
       };
     case "in_store_draft":
       return {
         label: "Instore Draft",
-        className: "bg-sky-500/10 text-sky-700 border-sky-500/20",
+        className: "bg-sky-500/10 text-sky-700 border-sky-500/20 whitespace-nowrap",
       };
     case "active":
       return {
         label: "Active",
-        className: "bg-green-500/10 text-green-700 border-green-500/20",
+        className: "bg-green-500/10 text-green-700 border-green-500/20 whitespace-nowrap",
       };
     case "removed":
       return {
         label: "Removed",
-        className: "bg-red-500/10 text-red-700 border-red-500/20",
+        className: "bg-red-500/10 text-red-700 border-red-500/20 whitespace-nowrap",
       };
   }
 }

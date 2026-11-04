@@ -202,20 +202,26 @@ export default function AdminDashboard() {
             <CardTitle>Orders Trend (Last 30 Days)</CardTitle>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={ordersSeries}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="day" />
-                <YAxis />
-                <Tooltip />
-                <Line
-                  type="monotone"
-                  dataKey="orders"
-                  stroke="hsl(var(--primary))"
-                  strokeWidth={2}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            {ordersSeries.length ? (
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={ordersSeries}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="day" />
+                  <YAxis />
+                  <Tooltip />
+                  <Line
+                    type="monotone"
+                    dataKey="orders"
+                    stroke="hsl(var(--primary))"
+                    strokeWidth={2}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-[300px] items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
+                No orders in the last 30 days.
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -224,15 +230,21 @@ export default function AdminDashboard() {
             <CardTitle>Revenue Trend (Last 30 Days)</CardTitle>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={revenueSeries}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="day" />
-                <YAxis />
-                <Tooltip formatter={(v: number) => `₹${v.toLocaleString()}`} />
-                <Bar dataKey="revenue" fill="hsl(var(--accent))" />
-              </BarChart>
-            </ResponsiveContainer>
+            {revenueSeries.length ? (
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={revenueSeries}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="day" />
+                  <YAxis />
+                  <Tooltip formatter={(v: number) => `₹${v.toLocaleString()}`} />
+                  <Bar dataKey="revenue" fill="hsl(var(--accent))" />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-[300px] items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
+                No revenue in the last 30 days.
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

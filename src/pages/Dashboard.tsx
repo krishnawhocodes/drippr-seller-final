@@ -5,7 +5,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { DollarSign, Package, ShoppingCart, TrendingUp } from "lucide-react";
 import { auth, db } from "@/lib/firebase";
-import { statusText, getStatusColor } from "@/lib/orderStatus";
+import {
+  PAYMENT_DOT_CLASS,
+  PAYMENT_TEXT_CLASS,
+  paymentLabel,
+  paymentTone,
+} from "@/lib/orderPayment";
 
 
 import {
@@ -131,21 +136,6 @@ export default function Dashboard() {
     return () => unsub();
   }, [uid]);
 
-  // Badge color based on financialStatus first, then order status
-  const getStatusColor = (o: OrderDoc) => {
-    const fs = (o.financialStatus || "").toLowerCase();
-    if (fs === "paid") return "bg-success/10 text-success border-success/20";
-    if (fs === "pending" || fs === "authorized")
-      return "bg-warning/10 text-warning border-warning/20";
-    if (fs === "refunded" || fs === "voided")
-      return "bg-destructive/10 text-destructive border-destructive/20";
-    if ((o.status || "").toLowerCase() === "open")
-      return "bg-primary/10 text-primary border-primary/20";
-    return "bg-muted text-muted-foreground border-muted";
-  };
-
-  const statusText = (o: OrderDoc) =>
-    (o.financialStatus || o.status || "pending").toLowerCase();
 
   return (
     <DashboardLayout>
@@ -215,7 +205,16 @@ export default function Dashboard() {
                   <div className="space-y-1 flex-1">
                     <div className="flex items-center gap-2">
                       <p className="font-semibold">{order.orderNumber || order.id}</p>
-                      <Badge className={getStatusColor(order)}>{statusText(order)}</Badge>
+                      {/* Same wording and colour as the Orders page, from
+                          the one shared definition. */}
+                      <span
+                        className={`inline-flex items-center gap-1.5 text-xs ${PAYMENT_TEXT_CLASS[paymentTone(order.financialStatus)]}`}
+                      >
+                        <span
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${PAYMENT_DOT_CLASS[paymentTone(order.financialStatus)]}`}
+                        />
+                        {paymentLabel(order.financialStatus)}
+                      </span>
                      
                     </div>
                     <p className="text-sm text-muted-foreground">

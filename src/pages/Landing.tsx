@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { OFFICE_HOURS_LABEL } from "@/lib/officeHours";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { 
@@ -226,30 +227,52 @@ export default function Landing() {
             <div>
               <h4 className="font-semibold mb-4">Seller</h4>
               <ul className="space-y-2 text-sm text-muted-foreground">
-                <li><Link to="/register" className="hover:text-foreground">Register</Link></li>
-                <li><Link to="/login" className="hover:text-foreground">Login</Link></li>
-                <li><a href="#" className="hover:text-foreground">Seller Guide</a></li>
+                <li><Link to="/register" className="hover:text-foreground">Become a seller</Link></li>
+                <li><Link to="/login" className="hover:text-foreground">Seller login</Link></li>
+                <li><Link to="/password-reset" className="hover:text-foreground">Reset password</Link></li>
               </ul>
             </div>
             <div>
-              <h4 className="font-semibold mb-4">Support</h4>
+              <h4 className="font-semibold mb-4">Store</h4>
               <ul className="space-y-2 text-sm text-muted-foreground">
-                <li><a href="#" className="hover:text-foreground">Help Center</a></li>
-                <li><a href="#" className="hover:text-foreground">Contact Us</a></li>
-                <li><a href="#" className="hover:text-foreground">FAQs</a></li>
+                <li>
+                  <a
+                    href="https://drippr.in"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="hover:text-foreground"
+                  >
+                    Shop at drippr.in
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="mailto:sellers@drippr.in"
+                    className="hover:text-foreground"
+                  >
+                    Seller support
+                  </a>
+                </li>
               </ul>
             </div>
             <div>
               <h4 className="font-semibold mb-4">Contact</h4>
               <ul className="space-y-2 text-sm text-muted-foreground">
-                <li>Email: sellers@drippr.com</li>
-                <li>Phone: 1800-123-4567</li>
-                <li>Address: Mumbai, India</li>
+                <li>
+                  <a
+                    href="mailto:sellers@drippr.in"
+                    className="hover:text-foreground"
+                  >
+                    sellers@drippr.in
+                  </a>
+                </li>
+                <li>Support hours: {OFFICE_HOURS_LABEL}</li>
               </ul>
             </div>
           </div>
           <div className="mt-8 pt-8 border-t text-center text-sm text-muted-foreground">
-            <p>© 2025 DRIPPR. All rights reserved.</p>
+            {/* Derived, so the footer cannot go stale in January. */}
+            <p>© {new Date().getFullYear()} DRIPPR. All rights reserved.</p>
           </div>
         </div>
       </footer>

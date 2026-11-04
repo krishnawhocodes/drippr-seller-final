@@ -13,13 +13,25 @@ import {
   collection, doc, onSnapshot, orderBy, query, where, limit,
 } from "firebase/firestore";
 
+type PayoutStatus = "pending" | "processing" | "completed" | "failed";
+
 type Payout = {
   id: string;
   merchantId: string;
   amount: number;           // in store currency (e.g. INR)
   createdAt: number;        // ms epoch
   method: string;           // "Bank Transfer" | "UPI" | etc
-  status: "pending" | "processing" | "completed" | "failed";
+  status: PayoutStatus;
+  /** Bank/UTR reference, once the transfer has been made. */
+  reference?: string;
+};
+
+/** Sentence case for display; the stored values stay machine tokens. */
+const PAYOUT_STATUS_LABEL: Record<PayoutStatus, string> = {
+  pending: "Pending",
+  processing: "Processing",
+  completed: "Paid",
+  failed: "Failed",
 };
 
 type MerchantStats = {
@@ -196,7 +208,7 @@ export default function Payments() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Payout ID</TableHead>
+                    <TableHead>Reference</TableHead>
                     <TableHead>Amount</TableHead>
                     <TableHead>Date</TableHead>
                     <TableHead>Method</TableHead>
@@ -219,25 +231,42 @@ export default function Payments() {
                   ) : (
                     payouts.map((p) => (
                       <TableRow key={p.id}>
-                        <TableCell className="font-medium">{p.id}</TableCell>
-                        <TableCell className="font-semibold text-lg">
+                        {/* A bank reference is what a seller reconciles
+                            against; the Firestore document id means nothing
+                            to them, so it is only a fallback. */}
+                        <TableCell className="font-medium">
+                          {p.reference ? (
+                            <span className="font-mono text-xs">{p.reference}</span>
+                          ) : (
+                            <span className="text-muted-foreground">
+                              Reference pending
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-lg font-semibold">
                           {formatMoney(p.amount, currency)}
                         </TableCell>
                         <TableCell>
-                          {p.createdAt ? new Date(p.createdAt).toLocaleString() : "—"}
+                          {p.createdAt
+                            ? new Date(p.createdAt).toLocaleDateString("en-IN", {
+                                day: "2-digit",
+                                month: "short",
+                                year: "numeric",
+                              })
+                            : "—"}
                         </TableCell>
-                        <TableCell>{p.method || "—"}</TableCell>
+                        <TableCell>{p.method || "Bank transfer"}</TableCell>
                         <TableCell>
                           <Badge
-                            className={
+                            className={`whitespace-nowrap ${
                               p.status === "completed"
                                 ? "bg-success/10 text-success border-success/20"
                                 : p.status === "failed"
-                                ? "bg-destructive/10 text-destructive border-destructive/20"
-                                : "bg-warning/10 text-warning border-warning/20"
-                            }
+                                  ? "bg-destructive/10 text-destructive border-destructive/20"
+                                  : "bg-warning/10 text-warning border-warning/20"
+                            }`}
                           >
-                            {p.status}
+                            {PAYOUT_STATUS_LABEL[p.status] || p.status}
                           </Badge>
                         </TableCell>
                       </TableRow>

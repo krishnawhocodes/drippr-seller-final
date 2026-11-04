@@ -385,18 +385,19 @@ export default function AdminOrdersMonitor() {
     return base as WorkflowStatus;
   };
 
+  // Operational wording: each label says whose move it is.
   const badgeText = (st: WorkflowStatus) => {
     switch (st) {
       case "vendor_pending":
-        return "Pending (Vendor)";
+        return "Awaiting seller";
       case "vendor_expired":
-        return "Expired";
+        return "Seller missed";
       case "vendor_accepted":
-        return "Accepted";
+        return "Needs planning";
       case "admin_overdue":
-        return "Admin Overdue";
+        return "Overdue";
       case "pickup_assigned":
-        return "Pickup Assigned";
+        return "Pickup assigned";
       case "dispatched":
         return "Dispatched";
       default:
@@ -760,16 +761,16 @@ export default function AdminOrdersMonitor() {
                   <CardTitle>All Orders</CardTitle>
                   <div className="text-sm text-muted-foreground flex flex-wrap gap-3 items-center">
                     <span className="flex items-center gap-1">
-                      <Clock className="h-4 w-4" /> Pending: <b>{counts.vendor_pending}</b>
+                      <Clock className="h-4 w-4" /> Awaiting seller: <b>{counts.vendor_pending}</b>
                     </span>
                     <span className="flex items-center gap-1 text-destructive">
-                      <Clock className="h-4 w-4" /> Expired: <b>{counts.vendor_expired}</b>
+                      <Clock className="h-4 w-4" /> Seller missed: <b>{counts.vendor_expired}</b>
                     </span>
                     <span className="flex items-center gap-1">
-                      <Clock className="h-4 w-4" /> Accepted: <b>{counts.vendor_accepted}</b>
+                      <Clock className="h-4 w-4" /> Needs planning: <b>{counts.vendor_accepted}</b>
                     </span>
                     <span className="flex items-center gap-1">
-                      <ClipboardList className="h-4 w-4" /> Pickup Assigned: <b>{counts.pickup_assigned}</b>
+                      <ClipboardList className="h-4 w-4" /> Pickup assigned: <b>{counts.pickup_assigned}</b>
                     </span>
                     <span className="flex items-center gap-1">
                       <Clock className="h-4 w-4" /> Dispatched: <b>{counts.dispatched}</b>
@@ -784,13 +785,13 @@ export default function AdminOrdersMonitor() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All</SelectItem>
-                      <SelectItem value="needs_planning">Needs Planning (Accepted)</SelectItem>
-                      <SelectItem value="wf:vendor_pending">Workflow: Pending</SelectItem>
-                      <SelectItem value="wf:vendor_expired">Workflow: Expired</SelectItem>
-                      <SelectItem value="wf:vendor_accepted">Workflow: Accepted</SelectItem>
-                      <SelectItem value="wf:admin_overdue">Workflow: Admin Overdue</SelectItem>
-                      <SelectItem value="wf:pickup_assigned">Workflow: Pickup Assigned</SelectItem>
-                      <SelectItem value="wf:dispatched">Workflow: Dispatched</SelectItem>
+                      <SelectItem value="needs_planning">Needs planning</SelectItem>
+                      <SelectItem value="wf:vendor_pending">Awaiting seller</SelectItem>
+                      <SelectItem value="wf:vendor_expired">Seller missed</SelectItem>
+                      <SelectItem value="wf:vendor_accepted">Accepted by seller</SelectItem>
+                      <SelectItem value="wf:admin_overdue">Overdue</SelectItem>
+                      <SelectItem value="wf:pickup_assigned">Pickup assigned</SelectItem>
+                      <SelectItem value="wf:dispatched">Dispatched</SelectItem>
                     </SelectContent>
                   </Select>
 
@@ -823,7 +824,7 @@ export default function AdminOrdersMonitor() {
                     <TableHead className="w-[15%]">Seller</TableHead>
                     <TableHead>Item &amp; SKU</TableHead>
                     <TableHead className="w-[96px] text-right">Amount</TableHead>
-                    <TableHead className="w-[116px]">Status</TableHead>
+                    <TableHead className="w-[150px]">Status</TableHead>
                     <TableHead className="w-[124px] text-right">&nbsp;</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -895,12 +896,16 @@ export default function AdminOrdersMonitor() {
                         </TableCell>
 
                         <TableCell>
-                          <Badge className={badgeClass(st)}>{badgeText(st)}</Badge>
+                          <Badge
+                            className={`${badgeClass(st)} whitespace-nowrap`}
+                          >
+                            {badgeText(st)}
+                          </Badge>
                           {/* Payment sits quieter than the workflow badge:
                               two filled badges read as two competing
                               statuses, and only one is being acted on. */}
                           <div
-                            className={`mt-1.5 flex items-center gap-1.5 text-xs ${PAYMENT_TEXT_CLASS[paymentTone(o.financialStatus)]}`}
+                            className={`mt-1.5 flex items-center gap-1.5 whitespace-nowrap text-xs ${PAYMENT_TEXT_CLASS[paymentTone(o.financialStatus)]}`}
                           >
                             <span
                               className={`h-1.5 w-1.5 shrink-0 rounded-full ${PAYMENT_DOT_CLASS[paymentTone(o.financialStatus)]}`}
