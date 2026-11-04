@@ -810,11 +810,11 @@ export default function AdminOrdersMonitor() {
           </CardHeader>
 
           <CardContent>
-            {/* No horizontal scrolling: the columns are fixed and each cell
-                wraps onto a second or third line instead of pushing the table
-                wider than the page. */}
-            <div className="w-full">
-              <Table className="w-full table-fixed">
+            {/* Fixed columns that wrap, so a desktop window needs no
+                sideways scrolling. A phone cannot fit six columns whatever we
+                do, so it scrolls there rather than clipping them away. */}
+            <div className="w-full overflow-x-auto">
+              <Table className="w-full min-w-[780px] table-fixed">
                 <TableHeader>
                   <TableRow>
                     {/* Fixed pixel widths for everything that has a known

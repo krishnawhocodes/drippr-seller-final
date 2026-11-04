@@ -556,10 +556,12 @@ export default function Orders() {
           </CardHeader>
 
           <CardContent>
-            {/* Fixed columns that wrap, rather than a table wide enough to
-                need scrolling in both directions to read one row. */}
-            <div className="w-full">
-              <Table className="w-full table-fixed">
+            {/* Fixed columns that wrap, so the table fits a desktop window
+                without sideways scrolling. On a phone it cannot fit whatever
+                we do, so it scrolls there rather than clipping rows out of
+                reach. */}
+            <div className="w-full overflow-x-auto">
+              <Table className="w-full min-w-[680px] table-fixed">
                 <TableHeader>
                   <TableRow>
                     {/* Fixed widths for the known-size columns; the item

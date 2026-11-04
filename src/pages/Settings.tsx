@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
+import { INDIAN_STATES } from "@/lib/orderCustomer";
 import { Switch } from "@/components/ui/switch";
 import { auth, db } from "@/lib/firebase";
 import {
@@ -533,16 +534,29 @@ export default function Settings() {
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="state">State</Label>
-                      <Input
-                        id="state"
-                        placeholder="e.g. Delhi"
+                      {/* Picked, not typed. GST is charged as CGST + SGST
+                          only when this matches the delivery state, so a
+                          misspelling here would quietly bill every local
+                          order as inter-state. */}
+                      <Select
                         value={state}
-                        onChange={(e) => {
-                          setState(e.target.value);
+                        onValueChange={(value) => {
+                          setState(value);
                           setDirtyStore(true);
                         }}
                         disabled={!uid || loadingDoc || savingStore}
-                      />
+                      >
+                        <SelectTrigger id="state">
+                          <SelectValue placeholder="Select state" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {INDIAN_STATES.map((name) => (
+                            <SelectItem key={name} value={name}>
+                              {name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="pincode">Pincode</Label>
