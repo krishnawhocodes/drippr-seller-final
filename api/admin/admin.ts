@@ -3831,14 +3831,15 @@ case "orders.assignPickup": {
       // Re-reads the buyer's name / delivery address straight from Shopify and
       // merges anything the webhook did not have.
       //
-      // Why this exists: Shopify strips customer PII (name, phone, email,
-      // street, city, zip) out of webhook payloads for apps that have not been
-      // granted "protected customer data" access, leaving only the coarse
-      // province and country. The order then lands here with an address that
-      // cannot be shipped to. Once access is approved this action backfills
-      // every order that was received while it was missing, so nothing has to
-      // be re-placed. It is also the quickest way to tell a redacted order
-      // apart from an order that genuinely has no address.
+      // Why this exists: an order can reach us with only a province and
+      // country, which cannot be shipped to. There are two causes, and this
+      // action separates them. Either the order genuinely has no address, or
+      // Shopify stripped it: name, phone, street, city and zip are Level 2
+      // customer data, which custom apps receive only on some Shopify plans.
+      // Asking the Admin API directly returns the real address when we are
+      // allowed to see it - which also backfills orders received while the
+      // data was being withheld, so none of them has to be re-placed - and
+      // returns an explicit access error when we are not.
       case "orders.refreshCustomer": {
         const orderId = String(body.orderId || "").trim();
         if (!orderId)
@@ -3895,7 +3896,7 @@ case "orders.assignPickup": {
             ok: false,
             code: deniedAccess ? "protected_customer_data" : "shopify_error",
             error: deniedAccess
-              ? "Shopify refused the customer fields. Approve protected customer data access for this app, then run this again."
+              ? "Shopify refused the customer fields for this app. Name, phone and street are Level 2 customer data, which custom apps only receive on some Shopify plans."
               : "Shopify could not be reached for this order.",
             detail: detail.slice(0, 500),
           });
@@ -3981,7 +3982,7 @@ case "orders.assignPickup": {
           customerEmail: customerEmail || null,
           code: stillRedacted ? "protected_customer_data" : undefined,
           error: stillRedacted
-            ? "Shopify returned this order without a street address. Approve protected customer data access for this app, then run this again."
+            ? "Shopify returned this order without a street address. Either the order genuinely has none, or the store's plan withholds Level 2 customer data from custom apps."
             : undefined,
         });
       }

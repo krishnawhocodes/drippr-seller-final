@@ -953,9 +953,9 @@ export default function AdminOrdersMonitor() {
                   <p className="flex gap-1.5 text-xs leading-relaxed text-amber-700">
                     <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                     <span>
-                      Incomplete — Shopify withholds the buyer's name,
-                      phone, street, city and PIN until this app is granted
-                      protected customer data access.
+                      Incomplete — either this order has no street
+                      address, or the store's plan withholds Level 2 customer
+                      data (name, phone, street, city, PIN) from custom apps.
                     </span>
                   </p>
                 )}
@@ -1073,21 +1073,25 @@ export default function AdminOrdersMonitor() {
                 <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
                   <div className="flex items-center gap-2 font-medium text-amber-900">
                     <AlertTriangle className="h-4 w-4" />
-                    Shopify withheld the customer's address
+                    No street address on this order
                   </div>
                   <p className="mt-1 text-xs leading-relaxed text-amber-800">
                     Only the state and country came through, so this parcel
-                    cannot be addressed yet. Shopify hides a buyer's name,
-                    phone, street, city and PIN from apps that have not been
-                    granted <strong>protected customer data</strong> access.
-                    Request it in Shopify under Settings → Apps and sales
-                    channels → Develop apps → your app →
-                    Configuration → Admin API integration → Protected
-                    customer data access, then press “Refetch from
-                    Shopify” to pull this order in. Until then, copy the
-                    address across by hand from the Shopify order page —
-                    whatever you type here is what the seller and the courier
-                    will see.
+                    cannot be addressed yet. Open the order in Shopify admin to
+                    see which of two things happened. If Shopify shows no
+                    street address either, the order never had one — usual
+                    for orders created by hand rather than through checkout. If
+                    Shopify does show the full address, then it is being
+                    stripped on the way to this app: name, phone, street, city
+                    and PIN are <strong>Level 2 customer data</strong>, which
+                    custom apps only receive on some Shopify plans. There is no
+                    setting to switch on — ask Shopify support about Level
+                    2 PII access for custom apps on your plan, then press
+                    “Refetch from Shopify”.
+                  </p>
+                  <p className="mt-1.5 text-xs leading-relaxed text-amber-800">
+                    Either way you can type the address in below: whatever you
+                    enter is what the seller and the courier will see.
                   </p>
                 </div>
               )}
