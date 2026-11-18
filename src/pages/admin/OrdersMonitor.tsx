@@ -15,6 +15,8 @@ import {
   CheckCircle2,
   AlertTriangle,
   Info,
+  FileText,
+  Eye,
 } from "lucide-react";
 import {
   assignPickup,
@@ -22,6 +24,10 @@ import {
   updateOrderCustomer,
   uploadAdminFile,
 } from "@/lib/adminApi";
+import {
+  generateShippingLabel,
+  labelReference,
+} from "@/lib/generateShippingLabel";
 import {
   PAYMENT_DOT_CLASS,
   PAYMENT_TEXT_CLASS,
@@ -311,6 +317,7 @@ export default function AdminOrdersMonitor() {
   // order that was planned or shipped before details were being captured,
   // without re-running the pickup transition.
   const [planMode, setPlanMode] = useState<"full" | "customer_only">("full");
+  const [previewingLabel, setPreviewingLabel] = useState(false);
   const [customer, setCustomer] = useState<CustomerAddress>({});
   const [customerEmail, setCustomerEmail] = useState("");
   const [labelFile, setLabelFile] = useState<File | null>(null);
@@ -606,6 +613,35 @@ export default function AdminOrdersMonitor() {
     setPlanOpen(true);
   }
 
+  /** Opens the label DRIPPR would print, so it can be checked before use. */
+  async function previewLabel() {
+    if (!planFor) return;
+    setPreviewingLabel(true);
+    try {
+      const blob = await generateShippingLabel({
+        order: {
+          orderNumber: planFor.orderNumber,
+          shopifyOrderId: planFor.shopifyOrderId,
+          createdAt: planFor.createdAt,
+          financialStatus: planFor.financialStatus,
+          shippingAddress: normalizeCustomerAddress(customer),
+          lineItems: planFor.lineItems,
+        },
+        seller: planFor.merchant || null,
+      });
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener");
+      // Give the new tab time to take the blob before releasing it.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not build the label",
+      );
+    } finally {
+      setPreviewingLabel(false);
+    }
+  }
+
   async function saveCustomerOnly() {
     if (!planFor?.id) return;
     const missing = missingCustomerFields(customer);
@@ -666,22 +702,54 @@ export default function AdminOrdersMonitor() {
         return;
       }
 
-      // Upload the label first so a failed upload does not leave the order
-      // marked as planned without its label. Every parcel carries one: DRIPPR
-      // prints the local ones, the courier returns the rest.
-      if (!labelFile) {
-        toast.error(
-          deliveryScope === "same_city"
-            ? "Upload the DRIPPR shipping label for this local delivery."
-            : "Upload the courier's shipping label for this delivery.",
-        );
+      // Every parcel ships with a label. A local delivery has no courier to
+      // produce one, so DRIPPR prints it here; anything going out of city
+      // travels on the courier's own, which the admin uploads.
+      const local = deliveryScope === "same_city";
+      if (!local && !labelFile) {
+        toast.error("Upload the courier's shipping label for this delivery.");
         return;
       }
 
-      let shippingLabel: { url: string; name?: string } | null = null;
-      if (labelFile) {
+      let labelToUpload: File | null = labelFile;
+      if (local && !labelToUpload) {
         try {
-          shippingLabel = await uploadAdminFile(labelFile, "/shipping-labels");
+          const blob = await generateShippingLabel({
+            order: {
+              orderNumber: planFor.orderNumber,
+              shopifyOrderId: planFor.shopifyOrderId,
+              createdAt: planFor.createdAt,
+              financialStatus: planFor.financialStatus,
+              shippingAddress: normalizeCustomerAddress(customer),
+              lineItems: planFor.lineItems,
+            },
+            seller: planFor.merchant || null,
+          });
+          labelToUpload = new File(
+            [blob],
+            `${labelReference({
+              orderNumber: planFor.orderNumber,
+              shopifyOrderId: planFor.shopifyOrderId,
+              createdAt: planFor.createdAt,
+            })}-label.pdf`,
+            { type: "application/pdf" },
+          );
+        } catch (error) {
+          toast.error(
+            `Could not generate the shipping label: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          return;
+        }
+      }
+
+      // Upload before the transition, so a failed upload never leaves an
+      // order marked as planned without the label it promises.
+      let shippingLabel: { url: string; name?: string } | null = null;
+      if (labelToUpload) {
+        try {
+          shippingLabel = await uploadAdminFile(labelToUpload, "/shipping-labels");
         } catch (error) {
           toast.error(
             `Shipping label upload failed: ${
@@ -1644,33 +1712,59 @@ export default function AdminOrdersMonitor() {
                     </p>
                   </div>
 
-                  {/* Every parcel ships with a label; only its source differs. */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="plan-shipping-label">
-                      Shipping Label <span className="text-destructive">*</span>
-                    </Label>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <Input
-                        id="plan-shipping-label"
-                        type="file"
-                        accept="application/pdf,image/png,image/jpeg,image/jpg"
-                        className="max-w-sm"
-                        onChange={(e) => setLabelFile(e.target.files?.[0] || null)}
-                        disabled={busy}
-                      />
-                      {labelFile ? (
-                        <span className="text-xs text-muted-foreground">
-                          {labelFile.name}
-                        </span>
-                      ) : null}
+                  {/* Every parcel ships with a label; only its source
+                      differs. Local deliveries have no courier to produce one,
+                      so DRIPPR prints it on assign. */}
+                  {deliveryScope === "same_city" ? (
+                    <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <FileText className="h-4 w-4" />
+                        DRIPPR will print the shipping label
+                      </div>
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        Generated when you assign the pickup and shared with the
+                        seller to print for the parcel. It carries the delivery
+                        address, a scannable order barcode and the pickup
+                        address \u2014 never the buyer&rsquo;s phone number.
+                      </p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={busy || previewingLabel}
+                        onClick={previewLabel}
+                      >
+                        <Eye className="mr-2 h-3.5 w-3.5" />
+                        {previewingLabel ? "Preparing\u2026" : "Preview label"}
+                      </Button>
                     </div>
-                    <p className="text-xs text-muted-foreground">
-                      {deliveryScope === "same_city"
-                        ? "The DRIPPR label for this local delivery. PDF or image."
-                        : "The courier's label from Shiprocket. PDF or image."}{" "}
-                      Shared with the seller so they can print it for the parcel.
-                    </p>
-                  </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      <Label htmlFor="plan-shipping-label">
+                        Courier shipping label{" "}
+                        <span className="text-destructive">*</span>
+                      </Label>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <Input
+                          id="plan-shipping-label"
+                          type="file"
+                          accept="application/pdf,image/png,image/jpeg,image/jpg"
+                          className="max-w-sm"
+                          onChange={(e) => setLabelFile(e.target.files?.[0] || null)}
+                          disabled={busy}
+                        />
+                        {labelFile ? (
+                          <span className="text-xs text-muted-foreground">
+                            {labelFile.name}
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        The label returned by Shiprocket. PDF or image. Shared
+                        with the seller so they can print it for the parcel.
+                      </p>
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <Input

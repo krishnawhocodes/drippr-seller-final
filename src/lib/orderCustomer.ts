@@ -108,6 +108,24 @@ export function normalizeCustomerAddress(
   };
 }
 
+/**
+ * What kind of business the seller runs.
+ *
+ * Stored as the stable keys below, never as the label, so the wording can be
+ * reworded without orphaning every merchant already signed up.
+ */
+export const BUSINESS_TYPES = [
+  { value: "retailer_brand_owner", label: "Retailer / Brand owner" },
+  { value: "manufacturer_wholesaler", label: "Manufacturer / Wholesaler" },
+] as const;
+
+export type BusinessType = (typeof BUSINESS_TYPES)[number]["value"];
+
+export function businessTypeLabel(value: unknown): string {
+  const match = BUSINESS_TYPES.find((type) => type.value === String(value || ""));
+  return match ? match.label : "";
+}
+
 /** The 36 states and union territories, for the invoice's place of supply. */
 export const INDIAN_STATES = [
   "Andaman and Nicobar Islands",

@@ -10,10 +10,16 @@ import { auth, db } from "@/lib/firebase";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import type { Merchant } from "@/lib/types";
 import { useState } from "react";
+import { BUSINESS_TYPES, type BusinessType } from "@/lib/orderCustomer";
 
 export default function Register() {
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
+  // Radix's Select renders no native form control, so FormData never carried
+  // this field and every signup's answer was silently discarded.
+  const [businessType, setBusinessType] = useState<BusinessType>(
+    BUSINESS_TYPES[0].value,
+  );
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -38,6 +44,7 @@ export default function Register() {
         email,
         phone,
         businessName: business_name,
+        businessType,
         displayName: name,
         status: "active",
         kycStatus: "pending",
@@ -96,11 +103,20 @@ export default function Register() {
               </div>
               <div>
                 <Label htmlFor="business-type">Business Type</Label>
-                <Select name="businessType" defaultValue="individual">
-                  <SelectTrigger id="business-type"><SelectValue placeholder="Select" /></SelectTrigger>
+                <Select
+                  value={businessType}
+                  onValueChange={(value) => setBusinessType(value as BusinessType)}
+                  name="businessType"
+                >
+                  <SelectTrigger id="business-type">
+                    <SelectValue placeholder="Select" />
+                  </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="individual">Individual</SelectItem>
-                    <SelectItem value="company">Company</SelectItem>
+                    {BUSINESS_TYPES.map((type) => (
+                      <SelectItem key={type.value} value={type.value}>
+                        {type.label}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

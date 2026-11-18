@@ -8,6 +8,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { INDIAN_STATES } from "@/lib/orderCustomer";
+import VerifyContactDialog from "@/components/VerifyContactDialog";
+import type { VerificationChannel } from "@/lib/accountApi";
 import { Switch } from "@/components/ui/switch";
 import { auth, db } from "@/lib/firebase";
 import {
@@ -61,12 +63,6 @@ export default function Settings() {
   // ---------- Auth ----------
   const [uid, setUid] = useState<string | null>(auth.currentUser?.uid ?? null);
   const [authEmail, setAuthEmail] = useState<string | null>(auth.currentUser?.email ?? null);
-  const joinDateText = useMemo(() => {
-    const createdAt = auth.currentUser?.metadata?.creationTime
-      ? new Date(auth.currentUser.metadata.creationTime).toLocaleDateString()
-      : null;
-    return createdAt ?? "";
-  }, [uid]);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
@@ -79,6 +75,23 @@ export default function Settings() {
   // ---------- Live Merchant doc ----------
   const [loadingDoc, setLoadingDoc] = useState(true);
   const [merchant, setMerchant] = useState<MerchantDoc | null>(null);
+
+  const joinDateText = useMemo(() => {
+    // Firebase knows when the account was made; the merchant document knows
+    // when the seller was onboarded. Either beats an empty box.
+    const source =
+      auth.currentUser?.metadata?.creationTime ?? merchant?.createdAt ?? null;
+    if (!source) return "—";
+    const date = new Date(source);
+    return Number.isNaN(date.getTime())
+      ? "—"
+      : date.toLocaleDateString("en-IN", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, merchant?.createdAt]);
 
   useEffect(() => {
     if (!uid) return;
@@ -166,6 +179,8 @@ export default function Settings() {
 
   // ========== STORE ==========
   const [storeName, setStoreName] = useState("");
+  // Which contact detail the verification dialog is currently changing.
+  const [verifying, setVerifying] = useState<VerificationChannel | null>(null);
   const [businessCategory, setBusinessCategory] = useState("");
   const [gstin, setGstin] = useState("");
   const [address, setAddress] = useState("");
@@ -358,7 +373,7 @@ export default function Settings() {
               </CardHeader>
               <CardContent>
                 <form onSubmit={handleSaveProfile} className="space-y-4">
-                  <div className="grid sm:grid-cols-2 gap-4">
+                  <div className="grid gap-4 sm:grid-cols-2">
                     <div className="space-y-2">
                       <Label htmlFor="name">Full Name</Label>
                       <Input
@@ -373,44 +388,90 @@ export default function Settings() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="email">Email</Label>
+                      <Label htmlFor="storeName">Store Name</Label>
                       <Input
-                        id="email"
-                        type="email"
-                        value={authEmail || ""}
-                        disabled
+                        id="storeName"
+                        placeholder="The name buyers see"
+                        value={storeName}
+                        onChange={(e) => {
+                          setStoreName(e.target.value);
+                          setDirtyStore(true);
+                        }}
+                        disabled={!uid || loadingDoc || savingStore}
                       />
+                      <p className="text-xs text-muted-foreground">
+                        Shown on your invoices and to DRIPPR support.
+                      </p>
                     </div>
                   </div>
 
-                  <div className="grid sm:grid-cols-2 gap-4">
+                  {/* Email and phone are identity, not profile text: each is
+                      changed through a code sent to the new destination, so a
+                      typo or a stolen session cannot move the account. */}
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="email">Email</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          id="email"
+                          type="email"
+                          value={authEmail || ""}
+                          readOnly
+                          className="bg-muted/40"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setVerifying("email")}
+                          disabled={!uid || loadingDoc}
+                        >
+                          Change
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        You sign in with this address.
+                      </p>
+                    </div>
                     <div className="space-y-2">
                       <Label htmlFor="phone">Phone</Label>
-                      <Input
-                        id="phone"
-                        placeholder="+91 98765 43210"
-                        value={phone}
-                        onChange={(e) => {
-                          setPhone(e.target.value);
-                          setDirtyProfile(true);
-                        }}
-                        disabled={!uid || loadingDoc || savingProfile}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="joinDate">Member Since</Label>
-                      <Input id="joinDate" value={joinDateText} disabled />
+                      <div className="flex gap-2">
+                        <Input
+                          id="phone"
+                          value={phone || ""}
+                          readOnly
+                          placeholder="Not set"
+                          className="bg-muted/40"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setVerifying("phone")}
+                          disabled={!uid || loadingDoc}
+                        >
+                          Change
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Used for pickup calls.
+                      </p>
                     </div>
                   </div>
 
-                  <Button type="submit" disabled={!uid || savingProfile}>
-                    {savingProfile ? "Saving…" : "Save Changes"}
+                  <div className="space-y-2">
+                    <Label htmlFor="joinDate">Member Since</Label>
+                    <Input id="joinDate" value={joinDateText} readOnly className="bg-muted/40 sm:max-w-xs" />
+                  </div>
+
+                  <Button type="submit" disabled={!uid || savingProfile || savingStore}>
+                    {savingProfile || savingStore ? "Saving…" : "Save Changes"}
                   </Button>
                 </form>
               </CardContent>
             </Card>
           </TabsContent>
 
+          {/* Store */}
+          <TabsContent value="store">
           <div className="rounded-lg border p-4 space-y-3 bg-muted/20">
             <div className="flex items-center justify-between gap-4">
               <div>
@@ -446,10 +507,8 @@ export default function Settings() {
                 />
               </div>
             )}
-          </div> 
+          </div>
 
-          {/* Store */}
-          <TabsContent value="store">
             <Card>
               <CardHeader>
                 <CardTitle>Store Information</CardTitle>
@@ -457,20 +516,6 @@ export default function Settings() {
               </CardHeader>
               <CardContent>
                 <form onSubmit={handleSaveStore} className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="storeName">Store Name</Label>
-                    <Input
-                      id="storeName"
-                      placeholder="Enter store name"
-                      value={storeName}
-                      onChange={(e) => {
-                        setStoreName(e.target.value);
-                        setDirtyStore(true);
-                      }}
-                      disabled={!uid || loadingDoc || savingStore}
-                    />
-                  </div>
-
                   <div className="space-y-2">
                     <Label htmlFor="category">Business Category</Label>
                     <Input
@@ -779,6 +824,20 @@ export default function Settings() {
             </Card>
           </TabsContent>
         </Tabs>
+
+        <VerifyContactDialog
+          open={verifying !== null}
+          onOpenChange={(next) => setVerifying(next ? verifying : null)}
+          channel={verifying ?? "email"}
+          current={verifying === "phone" ? phone : authEmail}
+          onVerified={(value) => {
+            // The server has already written it; mirror it here so the field
+            // updates without a reload.
+            if (verifying === "email") setAuthEmail(value);
+            else setPhone(value);
+            setVerifying(null);
+          }}
+        />
       </div>
     </DashboardLayout>
   );

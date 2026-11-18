@@ -38,3 +38,11 @@ dist
 # built test bundle
 tests/workflow/flow.mjs
 tests/invoice/totals.mjs
+tests/label/code128.mjs
+
+# Local verification harness (never shipped)
+src/verify-entry.tsx
+verify.html
+vite.verify.config.ts
+.verify/
+.tmpverify/

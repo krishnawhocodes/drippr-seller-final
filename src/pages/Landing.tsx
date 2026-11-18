@@ -247,7 +247,7 @@ export default function Landing() {
                 </li>
                 <li>
                   <a
-                    href="mailto:sellers@drippr.in"
+                    href="mailto:contact@drippr.in"
                     className="hover:text-foreground"
                   >
                     Seller support
@@ -260,10 +260,10 @@ export default function Landing() {
               <ul className="space-y-2 text-sm text-muted-foreground">
                 <li>
                   <a
-                    href="mailto:sellers@drippr.in"
+                    href="mailto:contact@drippr.in"
                     className="hover:text-foreground"
                   >
-                    sellers@drippr.in
+                    contact@drippr.in
                   </a>
                 </li>
                 <li>Support hours: {OFFICE_HOURS_LABEL}</li>

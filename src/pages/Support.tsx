@@ -224,10 +224,10 @@ export default function Support() {
                   <div>
                     <p className="font-medium">Email</p>
                     <a
-                      href="mailto:sellers@drippr.in"
+                      href="mailto:contact@drippr.in"
                       className="text-sm text-muted-foreground underline-offset-2 hover:underline"
                     >
-                      sellers@drippr.in
+                      contact@drippr.in
                     </a>
                   </div>
                 </div>

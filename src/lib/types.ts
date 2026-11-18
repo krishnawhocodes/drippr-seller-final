@@ -4,6 +4,8 @@ export type Merchant = {
   email: string;
   phone: string;
   businessName: string;
+  /** "retailer_brand_owner" | "manufacturer_wholesaler"; see BUSINESS_TYPES. */
+  businessType?: string;
   displayName?: string;
   status: "active" | "blocked";
   kycStatus?: "pending" | "verified" | "rejected";

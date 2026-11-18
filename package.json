@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "test:workflow": "node tests/workflow/build.mjs && node tests/workflow/flow.mjs",
     "test:invoice": "node tests/invoice/build.mjs && node tests/invoice/totals.mjs",
-    "test": "npm run test:workflow && npm run test:invoice"
+    "test:label": "node tests/label/build.mjs && node tests/label/code128.mjs",
+    "test": "npm run test:workflow && npm run test:invoice && npm run test:label"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

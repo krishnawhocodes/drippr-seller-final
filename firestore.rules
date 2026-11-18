@@ -130,6 +130,9 @@ service cloud.firestore {
     // skuClaims, shopifyProductOwners and adminSettings are also covered by
     // the default deny below.
     match /webhookEvents/{id} { allow read, write: if false; }
+    // Pending email / phone change codes. Server only: the browser asks for
+    // a code and submits one, and never reads the stored hash.
+    match /accountVerifications/{id} { allow read, write: if false; }
     match /debugWrites/{id}   { allow read, write: if false; }
 
     /* ---------- default deny ---------- */

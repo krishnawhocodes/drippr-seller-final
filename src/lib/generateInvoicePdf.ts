@@ -110,12 +110,13 @@ function formatAddress(address?: InvoiceAddress | null) {
     address.province,
     address.zip,
   ]).join(", ");
+  // The buyer's phone is deliberately left off. An invoice is kept, filed and
+  // forwarded; the number is needed to deliver the parcel, not to bill it.
   return cleanLines([
     address.address1,
     address.address2,
     cityLine,
     address.country,
-    address.phone ? `Phone: ${address.phone}` : "",
   ]);
 }
 
