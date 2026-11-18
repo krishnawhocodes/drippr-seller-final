@@ -344,6 +344,7 @@ export default function MediaBucket() {
               <input
                 ref={fileInputRef}
                 type="file"
+                aria-label="Choose images to upload"
                 multiple
                 accept="image/*"
                 onChange={handlePick}
@@ -469,11 +470,14 @@ export default function MediaBucket() {
                           <Input
                             value={img.url}
                             readOnly
+                            aria-label="Image URL"
                             className="flex-1"
                           />
                           <Button
                             variant="outline"
                             size="icon"
+                            aria-label="Copy image URL"
+                            title="Copy image URL"
                             onClick={() => copy(img.url)}
                           >
                             <Copy className="h-4 w-4" />

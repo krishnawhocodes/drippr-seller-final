@@ -223,6 +223,7 @@ export default function Merchants() {
                     <TableCell onClick={(e) => e.stopPropagation()}>
                       <Switch
                         checked={!!merchant.enabled}
+                        aria-label={`${merchant.enabled ? "Disable" : "Enable"} ${merchantStoreName(merchant) || merchantOwnerName(merchant) || "this seller"}`}
                         onCheckedChange={() => {
                           /* handled onClick below */
                         }}

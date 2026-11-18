@@ -74,7 +74,11 @@ export default function Register() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-hero p-4 py-12">
       <Card className="w-full max-w-2xl">
         <CardHeader className="text-center">
-          <img className="mx-auto mb-4 h-12 w-12 rounded-lg bg-primary flex items-center justify-center text-primary-foreground font-bold text-2xl" src="../../logo_rounded.png" />
+          <img
+            className="mx-auto mb-4 h-12 w-12 rounded-lg bg-primary object-cover"
+            src="/logo_rounded.png"
+            alt="DRIPPR"
+          />
           <CardTitle className="text-2xl">Register as Seller</CardTitle>
           <CardDescription>Create your seller account on DRIPPR</CardDescription>
         </CardHeader>

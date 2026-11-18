@@ -51,7 +51,11 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     <div className="flex h-full flex-col bg-sidebar">
       <div className="flex h-16 items-center border-b border-sidebar-border px-6">
         <Link to="/" className="flex items-center gap-2">
-          <img className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center text-primary-foreground font-bold" src="../../logo_rounded.png" />
+          <img
+            className="h-8 w-8 rounded-lg bg-primary object-cover"
+            src="/logo_rounded.png"
+            alt="DRIPPR"
+          />
           {/* <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center text-primary-foreground font-bold">
             D
           </div> */}
@@ -109,7 +113,12 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             {/* Mobile Menu */}
             <Sheet>
               <SheetTrigger asChild>
-                <Button variant="ghost" size="icon" className="lg:hidden">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="lg:hidden"
+                  aria-label="Open menu"
+                >
                   <Menu className="h-5 w-5" />
                 </Button>
               </SheetTrigger>
@@ -127,7 +136,12 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
           <div className="flex items-center gap-2">
             <Link to="/dashboard/notifications">
-              <Button variant="ghost" size="icon" className="relative">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="relative"
+                aria-label="Notifications"
+              >
                 <Bell className="h-5 w-5" />
                 <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-accent" />
               </Button>
@@ -135,7 +149,12 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="rounded-full">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="rounded-full"
+                  aria-label="Account menu"
+                >
                   <User className="h-5 w-5" />
                 </Button>
               </DropdownMenuTrigger>
